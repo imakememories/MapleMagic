@@ -1,0 +1,13 @@
+# Tiny end-to-end check: a few minutes.
+name: smoke
+pairings: [[Burn, Rally], [Rally, Burn], [Faeries, Elves]]
+generations: 2
+games_per_gen: 64
+parallel: 64
+sims: 32
+eval_games: 32
+eval_sims: 32
+heuristic_sims: 32
+buffer_size: 50000
+d_model: 128
+layers: 2

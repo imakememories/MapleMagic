@@ -1,0 +1,2940 @@
+{
+ "contract": {
+  "atom": "u32be(tag_byte_len) || utf8(tag) || u64be(payload_byte_len) || payload",
+  "extraction": "first-8-sha256-digest-bytes-big-endian-no-mask",
+  "initial_ordinal_rule": "initial-library-shuffle-requires-ordinal-zero",
+  "ordered_atoms": [
+   [
+    "version",
+    "mtg-kernel-environment-randomization-sha256-v2"
+   ],
+   [
+    "namespace",
+    "environment-randomization-substream"
+   ],
+   [
+    "field-name",
+    "pair_environment_seed",
+    "u64",
+    "8-byte-big-endian"
+   ],
+   [
+    "field-name",
+    "physical_owner",
+    "str",
+    "utf-8"
+   ],
+   [
+    "field-name",
+    "purpose",
+    "str",
+    "utf-8"
+   ],
+   [
+    "field-name",
+    "ordinal",
+    "u64",
+    "8-byte-big-endian"
+   ]
+  ],
+  "overflow_rule": "ordinal-u64-max-rejected-before-derivation-roots-may-equal-u64-max",
+  "owners": [
+   "p0",
+   "p1"
+  ],
+  "purposes": [
+   "initial-library-shuffle",
+   "in-game-library-shuffle"
+  ],
+  "shuffle_algorithm": "splitmix64-descending-fisher-yates-modulo"
+ },
+ "derived_seeds": [
+  {
+   "derived_seed": 2236756796466880348,
+   "ordinal": 0,
+   "pair_environment_seed": 0,
+   "physical_owner": "p0",
+   "purpose": "initial-library-shuffle"
+  },
+  {
+   "derived_seed": 13010935043456581978,
+   "ordinal": 0,
+   "pair_environment_seed": 0,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 2460523621681622887,
+   "ordinal": 1,
+   "pair_environment_seed": 0,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 7672569065670300251,
+   "ordinal": 2,
+   "pair_environment_seed": 0,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 13964112886533481843,
+   "ordinal": 0,
+   "pair_environment_seed": 0,
+   "physical_owner": "p1",
+   "purpose": "initial-library-shuffle"
+  },
+  {
+   "derived_seed": 12225118304131047950,
+   "ordinal": 0,
+   "pair_environment_seed": 0,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 13716528212812680957,
+   "ordinal": 1,
+   "pair_environment_seed": 0,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 10061633983983178341,
+   "ordinal": 2,
+   "pair_environment_seed": 0,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 8641928050731078222,
+   "ordinal": 0,
+   "pair_environment_seed": 1,
+   "physical_owner": "p0",
+   "purpose": "initial-library-shuffle"
+  },
+  {
+   "derived_seed": 16274466760356515610,
+   "ordinal": 0,
+   "pair_environment_seed": 1,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 753798437182009664,
+   "ordinal": 1,
+   "pair_environment_seed": 1,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 3601597361724219315,
+   "ordinal": 2,
+   "pair_environment_seed": 1,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 3068376328903463223,
+   "ordinal": 0,
+   "pair_environment_seed": 1,
+   "physical_owner": "p1",
+   "purpose": "initial-library-shuffle"
+  },
+  {
+   "derived_seed": 11423317062603741771,
+   "ordinal": 0,
+   "pair_environment_seed": 1,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 14828848117996798512,
+   "ordinal": 1,
+   "pair_environment_seed": 1,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 13123072596398395228,
+   "ordinal": 2,
+   "pair_environment_seed": 1,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 7479945427805527300,
+   "ordinal": 0,
+   "pair_environment_seed": 940001,
+   "physical_owner": "p0",
+   "purpose": "initial-library-shuffle"
+  },
+  {
+   "derived_seed": 18366857772681821653,
+   "ordinal": 0,
+   "pair_environment_seed": 940001,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 12751100291809325192,
+   "ordinal": 1,
+   "pair_environment_seed": 940001,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 6670485074847456682,
+   "ordinal": 2,
+   "pair_environment_seed": 940001,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 17206394138497251163,
+   "ordinal": 0,
+   "pair_environment_seed": 940001,
+   "physical_owner": "p1",
+   "purpose": "initial-library-shuffle"
+  },
+  {
+   "derived_seed": 17531072857281775366,
+   "ordinal": 0,
+   "pair_environment_seed": 940001,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 1762879544008435176,
+   "ordinal": 1,
+   "pair_environment_seed": 940001,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 1210776904384526418,
+   "ordinal": 2,
+   "pair_environment_seed": 940001,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 8490260916904447912,
+   "ordinal": 0,
+   "pair_environment_seed": 81985529216486895,
+   "physical_owner": "p0",
+   "purpose": "initial-library-shuffle"
+  },
+  {
+   "derived_seed": 17083603055985015258,
+   "ordinal": 0,
+   "pair_environment_seed": 81985529216486895,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 8558568034095339851,
+   "ordinal": 1,
+   "pair_environment_seed": 81985529216486895,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 10096243207286096852,
+   "ordinal": 2,
+   "pair_environment_seed": 81985529216486895,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 8816155190414696932,
+   "ordinal": 0,
+   "pair_environment_seed": 81985529216486895,
+   "physical_owner": "p1",
+   "purpose": "initial-library-shuffle"
+  },
+  {
+   "derived_seed": 5749042152706895731,
+   "ordinal": 0,
+   "pair_environment_seed": 81985529216486895,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 15759591074333842515,
+   "ordinal": 1,
+   "pair_environment_seed": 81985529216486895,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 18203798015346260552,
+   "ordinal": 2,
+   "pair_environment_seed": 81985529216486895,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 7067568462167360645,
+   "ordinal": 0,
+   "pair_environment_seed": 18446744073709551615,
+   "physical_owner": "p0",
+   "purpose": "initial-library-shuffle"
+  },
+  {
+   "derived_seed": 4164404353528973178,
+   "ordinal": 0,
+   "pair_environment_seed": 18446744073709551615,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 11989080582837660985,
+   "ordinal": 1,
+   "pair_environment_seed": 18446744073709551615,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 15993671485480731034,
+   "ordinal": 2,
+   "pair_environment_seed": 18446744073709551615,
+   "physical_owner": "p0",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 11761289871805581319,
+   "ordinal": 0,
+   "pair_environment_seed": 18446744073709551615,
+   "physical_owner": "p1",
+   "purpose": "initial-library-shuffle"
+  },
+  {
+   "derived_seed": 4652392220761572183,
+   "ordinal": 0,
+   "pair_environment_seed": 18446744073709551615,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 4567711058214990253,
+   "ordinal": 1,
+   "pair_environment_seed": 18446744073709551615,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  },
+  {
+   "derived_seed": 607790406270284973,
+   "ordinal": 2,
+   "pair_environment_seed": 18446744073709551615,
+   "physical_owner": "p1",
+   "purpose": "in-game-library-shuffle"
+  }
+ ],
+ "identity": "mtg-kernel-environment-randomization-sha256-v2",
+ "namespace": "environment-randomization-substream",
+ "permutations": [
+  {
+   "case": "len0",
+   "derived_seed": 2236756796466880348,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 13010935043456581978,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 2460523621681622887,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 7672569065670300251,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 13964112886533481843,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 12225118304131047950,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 13716528212812680957,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 10061633983983178341,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 8641928050731078222,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 16274466760356515610,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 753798437182009664,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 3601597361724219315,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 3068376328903463223,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 11423317062603741771,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 14828848117996798512,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 13123072596398395228,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 7479945427805527300,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 18366857772681821653,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 12751100291809325192,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 6670485074847456682,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 17206394138497251163,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 17531072857281775366,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 1762879544008435176,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 1210776904384526418,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 8490260916904447912,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 17083603055985015258,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 8558568034095339851,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 10096243207286096852,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 8816155190414696932,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 5749042152706895731,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 15759591074333842515,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 18203798015346260552,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 7067568462167360645,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 4164404353528973178,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 11989080582837660985,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 15993671485480731034,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 11761289871805581319,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 4652392220761572183,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 4567711058214990253,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len0",
+   "derived_seed": 607790406270284973,
+   "input_ids": [],
+   "permutation": []
+  },
+  {
+   "case": "len1",
+   "derived_seed": 2236756796466880348,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 13010935043456581978,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 2460523621681622887,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 7672569065670300251,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 13964112886533481843,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 12225118304131047950,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 13716528212812680957,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 10061633983983178341,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 8641928050731078222,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 16274466760356515610,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 753798437182009664,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 3601597361724219315,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 3068376328903463223,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 11423317062603741771,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 14828848117996798512,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 13123072596398395228,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 7479945427805527300,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 18366857772681821653,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 12751100291809325192,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 6670485074847456682,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 17206394138497251163,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 17531072857281775366,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 1762879544008435176,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 1210776904384526418,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 8490260916904447912,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 17083603055985015258,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 8558568034095339851,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 10096243207286096852,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 8816155190414696932,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 5749042152706895731,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 15759591074333842515,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 18203798015346260552,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 7067568462167360645,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 4164404353528973178,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 11989080582837660985,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 15993671485480731034,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 11761289871805581319,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 4652392220761572183,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 4567711058214990253,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len1",
+   "derived_seed": 607790406270284973,
+   "input_ids": [
+    7
+   ],
+   "permutation": [
+    7
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 2236756796466880348,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 13010935043456581978,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 2460523621681622887,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 7672569065670300251,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 13964112886533481843,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 12225118304131047950,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 13716528212812680957,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 10061633983983178341,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 8641928050731078222,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 16274466760356515610,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 753798437182009664,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 3601597361724219315,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 3068376328903463223,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 11423317062603741771,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 14828848117996798512,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 13123072596398395228,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 7479945427805527300,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 18366857772681821653,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 12751100291809325192,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 6670485074847456682,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 17206394138497251163,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 17531072857281775366,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 1762879544008435176,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 1210776904384526418,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 8490260916904447912,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 17083603055985015258,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 8558568034095339851,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 10096243207286096852,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 8816155190414696932,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 5749042152706895731,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 15759591074333842515,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 18203798015346260552,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 7067568462167360645,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 4164404353528973178,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 11989080582837660985,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 15993671485480731034,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 11761289871805581319,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 4652392220761572183,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    22,
+    11
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 4567711058214990253,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "len2",
+   "derived_seed": 607790406270284973,
+   "input_ids": [
+    11,
+    22
+   ],
+   "permutation": [
+    11,
+    22
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 2236756796466880348,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    9,
+    15,
+    4,
+    1,
+    3
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 13010935043456581978,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    4,
+    15,
+    1,
+    3,
+    9
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 2460523621681622887,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    9,
+    1,
+    15,
+    3,
+    4
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 7672569065670300251,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    4,
+    9,
+    1,
+    3,
+    15
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 13964112886533481843,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    3,
+    4,
+    9,
+    15,
+    1
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 12225118304131047950,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    1,
+    3,
+    4,
+    9,
+    15
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 13716528212812680957,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    15,
+    1,
+    9,
+    3,
+    4
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 10061633983983178341,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    15,
+    1,
+    3,
+    4,
+    9
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 8641928050731078222,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    1,
+    15,
+    3,
+    9,
+    4
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 16274466760356515610,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    9,
+    4,
+    1,
+    3,
+    15
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 753798437182009664,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    15,
+    9,
+    3,
+    1,
+    4
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 3601597361724219315,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    9,
+    3,
+    4,
+    15,
+    1
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 3068376328903463223,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    1,
+    9,
+    3,
+    15,
+    4
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 11423317062603741771,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    4,
+    1,
+    3,
+    9,
+    15
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 14828848117996798512,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    15,
+    3,
+    9,
+    1,
+    4
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 13123072596398395228,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    1,
+    4,
+    15,
+    9,
+    3
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 7479945427805527300,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    3,
+    9,
+    4,
+    1,
+    15
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 18366857772681821653,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    1,
+    4,
+    9,
+    15,
+    3
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 12751100291809325192,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    15,
+    9,
+    4,
+    1,
+    3
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 6670485074847456682,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    9,
+    3,
+    4,
+    15,
+    1
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 17206394138497251163,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    9,
+    15,
+    3,
+    1,
+    4
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 17531072857281775366,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    1,
+    15,
+    9,
+    3,
+    4
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 1762879544008435176,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    15,
+    1,
+    3,
+    4,
+    9
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 1210776904384526418,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    4,
+    9,
+    1,
+    15,
+    3
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 8490260916904447912,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    9,
+    15,
+    1,
+    4,
+    3
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 17083603055985015258,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    1,
+    9,
+    4,
+    3,
+    15
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 8558568034095339851,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    9,
+    4,
+    15,
+    3,
+    1
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 10096243207286096852,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    1,
+    3,
+    15,
+    4,
+    9
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 8816155190414696932,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    9,
+    3,
+    4,
+    15,
+    1
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 5749042152706895731,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    9,
+    1,
+    3,
+    15,
+    4
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 15759591074333842515,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    4,
+    1,
+    15,
+    3,
+    9
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 18203798015346260552,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    15,
+    9,
+    3,
+    1,
+    4
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 7067568462167360645,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    15,
+    1,
+    3,
+    4,
+    9
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 4164404353528973178,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    3,
+    4,
+    1,
+    9,
+    15
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 11989080582837660985,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    9,
+    15,
+    4,
+    1,
+    3
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 15993671485480731034,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    4,
+    15,
+    1,
+    9,
+    3
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 11761289871805581319,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    1,
+    15,
+    4,
+    3,
+    9
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 4652392220761572183,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    3,
+    9,
+    1,
+    4,
+    15
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 4567711058214990253,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    1,
+    15,
+    3,
+    9,
+    4
+   ]
+  },
+  {
+   "case": "normal5",
+   "derived_seed": 607790406270284973,
+   "input_ids": [
+    3,
+    1,
+    4,
+    15,
+    9
+   ],
+   "permutation": [
+    1,
+    3,
+    15,
+    4,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 2236756796466880348,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    2,
+    9,
+    9,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 13010935043456581978,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    2,
+    9,
+    9,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 2460523621681622887,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    9,
+    2,
+    9,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 7672569065670300251,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    2,
+    9,
+    9,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 13964112886533481843,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    9,
+    2,
+    2,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 12225118304131047950,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 13716528212812680957,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    9,
+    2,
+    9,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 10061633983983178341,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    9,
+    9,
+    9,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 8641928050731078222,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    2,
+    9,
+    2,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 16274466760356515610,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    9,
+    9,
+    9,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 753798437182009664,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    2,
+    9,
+    9,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 3601597361724219315,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    9,
+    9,
+    2,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 3068376328903463223,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    2,
+    9,
+    2,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 11423317062603741771,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 14828848117996798512,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    9,
+    2,
+    9,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 13123072596398395228,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    9,
+    2,
+    2,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 7479945427805527300,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    2,
+    9,
+    9,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 18366857772681821653,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    9,
+    2,
+    2,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 12751100291809325192,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    2,
+    9,
+    9,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 6670485074847456682,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    9,
+    9,
+    2,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 17206394138497251163,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    2,
+    9,
+    9,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 17531072857281775366,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    2,
+    2,
+    9,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 1762879544008435176,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    9,
+    9,
+    9,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 1210776904384526418,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    2,
+    9,
+    2,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 8490260916904447912,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    2,
+    9,
+    9,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 17083603055985015258,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    2,
+    9,
+    9,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 8558568034095339851,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    9,
+    2,
+    9,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 10096243207286096852,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    9,
+    2,
+    9,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 8816155190414696932,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    9,
+    9,
+    2,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 5749042152706895731,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    9,
+    9,
+    2,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 15759591074333842515,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    9,
+    2,
+    9,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 18203798015346260552,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    2,
+    9,
+    9,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 7067568462167360645,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    9,
+    9,
+    9,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 4164404353528973178,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 11989080582837660985,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    2,
+    2,
+    9,
+    9,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 15993671485480731034,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    2,
+    9,
+    2,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 11761289871805581319,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    2,
+    9,
+    9,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 4652392220761572183,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    2,
+    9,
+    9,
+    2
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 4567711058214990253,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    2,
+    9,
+    2,
+    9
+   ]
+  },
+  {
+   "case": "duplicates",
+   "derived_seed": 607790406270284973,
+   "input_ids": [
+    9,
+    9,
+    9,
+    2,
+    2
+   ],
+   "permutation": [
+    9,
+    9,
+    2,
+    9,
+    2
+   ]
+  }
+ ],
+ "reject_cases": [
+  {
+   "expected_code": "invalid-owner",
+   "input": {
+    "ordinal": 0,
+    "pair_environment_seed": 1,
+    "physical_owner": "P0",
+    "purpose": "in-game-library-shuffle"
+   },
+   "name": "invalid-owner"
+  },
+  {
+   "expected_code": "invalid-purpose",
+   "input": {
+    "ordinal": 0,
+    "pair_environment_seed": 1,
+    "physical_owner": "p0",
+    "purpose": "live-shuffle"
+   },
+   "name": "invalid-purpose"
+  },
+  {
+   "expected_code": "nonzero-initial-ordinal",
+   "input": {
+    "ordinal": 1,
+    "pair_environment_seed": 1,
+    "physical_owner": "p1",
+    "purpose": "initial-library-shuffle"
+   },
+   "name": "nonzero-initial-ordinal"
+  },
+  {
+   "expected_code": "ordinal-overflow",
+   "input": {
+    "ordinal": 18446744073709551615,
+    "pair_environment_seed": 1,
+    "physical_owner": "p0",
+    "purpose": "in-game-library-shuffle"
+   },
+   "name": "ordinal-overflow-u64max"
+  }
+ ],
+ "schema": "mtg-kernel-environment-randomization-v2-goldens/v1"
+}

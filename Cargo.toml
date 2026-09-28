@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["engine", "mmz", "mmz-py"]
+
+[workspace.package]
+edition = "2021"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = 1

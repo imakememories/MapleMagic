@@ -1,0 +1,12 @@
+[package]
+name = "mmz"
+version = "0.1.0"
+edition.workspace = true
+
+[features]
+default = ["mimalloc"]
+
+[dependencies]
+mmz-engine = { path = "../engine" }
+mimalloc = { version = "0.1", default-features = false, optional = true }
+rayon = "1.12"

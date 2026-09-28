@@ -1,0 +1,4 @@
+# Portable MinGW-w64 GCC (WinLibs, msvcrt) for C deps such as mimalloc.
+[env]
+CC_x86_64_pc_windows_gnu = "C:/Users/manni/tools/mingw64/bin/gcc.exe"
+AR_x86_64_pc_windows_gnu = "C:/Users/manni/tools/mingw64/bin/ar.exe"

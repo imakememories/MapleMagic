@@ -1,0 +1,17 @@
+[build-system]
+requires = ["maturin>=1.5"]
+build-backend = "maturin"
+
+[project]
+name = "mymagezero"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24", "torch>=2.1", "pyyaml>=6.0"]
+
+[project.scripts]
+mmz = "mymagezero.cli:main"
+
+[tool.maturin]
+manifest-path = "mmz-py/Cargo.toml"
+python-source = "python"
+module-name = "mymagezero._core"

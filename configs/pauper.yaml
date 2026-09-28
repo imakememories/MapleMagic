@@ -1,0 +1,18 @@
+# Full pool: every ordered pairing of the nine Pauper decks.
+name: pauper
+pairings: all
+generations: 200
+games_per_gen: 1024
+parallel: 768
+sims: 96
+leaves_per_step: 8
+temp_decisions: 40
+buffer_size: 600000
+batch_size: 512
+reuse: 4.0
+d_model: 192
+layers: 4
+eval_every: 2
+eval_games: 216
+eval_sims: 96
+heuristic_sims: 200
