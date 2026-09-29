@@ -12,9 +12,9 @@
 //! [`HEURISTIC`] seats are searched in Rust with the board heuristic and
 //! never reach the caller.
 
-use crate::features::{choice_fields, observe, ACTION_FIELDS, TOKEN_FIELDS};
+use crate::features::{choice_fields, observe_with, ACTION_FIELDS, TOKEN_FIELDS};
 use crate::game::{Game, Outcome};
-use crate::ismcts::{Config, Eval, HeuristicEval, Search};
+use crate::ismcts::{Config, Eval, HeuristicEval, Search, SearchStats};
 use mtg_kernel::ids::PlayerId;
 use mtg_kernel::state::SplitMix64;
 use rayon::prelude::*;
@@ -24,7 +24,8 @@ pub const RANDOM: u8 = 254;
 
 #[derive(Debug, Clone)]
 pub struct SelfPlayConfig {
-    pub sims: u32,
+    /// Simulations per move for each network model id (0, 1).
+    pub model_sims: [u32; 2],
     /// Leaves each search contributes per batch (virtual loss spreads them).
     pub leaves_per_step: usize,
     /// Decisions (per game) that sample moves in proportion to visits
@@ -42,6 +43,11 @@ pub struct SelfPlayConfig {
     pub max_games: Option<u64>,
     /// Sims for heuristic-model seats.
     pub heuristic_sims: u32,
+    /// MAPLE world count per network model id (0 = SO-ISMCTS). The other
+    /// MAPLE settings come from `search`; heuristic seats never use MAPLE.
+    pub maple_worlds: [u32; 2],
+    /// Per model id: encode the opponent's (guessed) hand by identity.
+    pub perfect_obs: [bool; 2],
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +103,8 @@ pub struct SelfPlay {
     results: Vec<GameResult>,
     /// Slot index and leaf count for each slot contributing to the last batch.
     batch_plan: Vec<(usize, usize)>,
+    /// Search counters per network model id, over finished searches.
+    stats: [SearchStats; 2],
 }
 
 impl SelfPlay {
@@ -112,7 +120,7 @@ impl SelfPlay {
                 rng: SplitMix64::seed(seed ^ (i as u64).wrapping_mul(0x9E3779B97F4A7C15)),
             })
             .collect();
-        SelfPlay { cfg, slots, started: 0, seed, samples: Vec::new(), results: Vec::new(), batch_plan: Vec::new() }
+        SelfPlay { cfg, slots, started: 0, seed, samples: Vec::new(), results: Vec::new(), batch_plan: Vec::new(), stats: Default::default() }
     }
 
     pub fn games_started(&self) -> u64 {
@@ -144,11 +152,14 @@ impl SelfPlay {
             }
         }
         let cfg = &self.cfg;
-        let finished: Vec<(Vec<Sample>, Option<GameResult>)> =
+        let finished: Vec<(Vec<Sample>, Option<GameResult>, Vec<(u8, SearchStats)>)> =
             self.slots.par_iter_mut().map(|slot| advance(slot, cfg)).collect();
-        for (samples, result) in finished {
+        for (samples, result, stats) in finished {
             self.samples.extend(samples);
             self.results.extend(result);
+            for (m, s) in stats {
+                self.stats[m as usize] += s;
+            }
         }
         self.batch_plan.clear();
         let mut out = Vec::new();
@@ -159,8 +170,9 @@ impl SelfPlay {
             self.batch_plan.push((i, slot.leaves.len()));
             let game = slot.game.as_ref().unwrap();
             let model = slot.models[game.to_act().index()];
+            let perfect = self.cfg.perfect_obs[model as usize];
             for leaf in &slot.leaves {
-                out.push(LeafRequest { tokens: observe(leaf, leaf.to_act()), actions: choice_fields(leaf), model });
+                out.push(LeafRequest { tokens: observe_with(leaf, leaf.to_act(), perfect), actions: choice_fields(leaf), model });
             }
         }
         out
@@ -195,12 +207,18 @@ impl SelfPlay {
     pub fn take_results(&mut self) -> Vec<GameResult> {
         std::mem::take(&mut self.results)
     }
+
+    /// Search counters per network model id, summed over finished searches.
+    pub fn stats(&self) -> [SearchStats; 2] {
+        self.stats
+    }
 }
 
 /// Drive one slot until its search needs evaluations (or it has no game).
-fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameResult>) {
+fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameResult>, Vec<(u8, SearchStats)>) {
     let mut samples = Vec::new();
     let mut result = None;
+    let mut stats = Vec::new();
     loop {
         let Some(game) = slot.game.as_mut() else { break };
         if let Some(outcome) = game.outcome() {
@@ -225,20 +243,25 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
             continue;
         }
         if model == HEURISTIC {
-            let mut s = Search::new(game, cfg.search.clone(), slot.rng.next_u64());
+            let c = Config { maple_worlds: 0, perfect_obs: false, ..cfg.search.clone() };
+            let mut s = Search::new(game, c, slot.rng.next_u64());
             s.run(cfg.heuristic_sims, 8, &mut HeuristicEval);
             let c = s.best();
             game.apply(c);
             continue;
         }
+        let m = model as usize;
+        let sims = cfg.model_sims[m];
         let search = slot.search.get_or_insert_with(|| {
             let mut c = cfg.search.clone();
             if !cfg.record {
                 c.root_noise = 0.0;
             }
+            c.maple_worlds = cfg.maple_worlds[m];
+            c.perfect_obs = cfg.perfect_obs[m];
             Search::new(game, c, slot.rng.next_u64())
         });
-        if search.simulations >= cfg.sims {
+        if search.simulations >= sims {
             let visits = search.root_visits();
             let total: f32 = visits.iter().sum::<f32>().max(1e-6);
             let pick = if game.decisions < cfg.temp_decisions {
@@ -257,18 +280,19 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
             };
             if cfg.record && model == 0 {
                 slot.pending.push(Pending {
-                    tokens: observe(game, me),
+                    tokens: observe_with(game, me, cfg.perfect_obs[m]),
                     actions: choice_fields(game),
                     policy: visits.iter().map(|v| v / total).collect(),
                     root_value: search.root_value(),
                     player: me,
                 });
             }
+            stats.push((model, search.stats));
             slot.search = None;
             game.apply(pick);
             continue;
         }
-        let want = cfg.leaves_per_step.min((cfg.sims - search.simulations) as usize).max(1);
+        let want = cfg.leaves_per_step.min((sims - search.simulations) as usize).max(1);
         let leaves = search.gather(want);
         if leaves.is_empty() {
             continue; // all simulations hit terminal states; loop again
@@ -276,7 +300,7 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
         slot.leaves = leaves;
         break;
     }
-    (samples, result)
+    (samples, result, stats)
 }
 
 #[cfg(test)]
@@ -285,16 +309,33 @@ mod tests {
 
     #[test]
     fn selfplay_runs_games_and_records_samples() {
+        run_games(0, [false, false]);
+    }
+
+    #[test]
+    fn selfplay_with_maple_runs_games_and_records_samples() {
+        let sp = run_games(5, [false, false]);
+        let [s0, s1] = sp.stats();
+        assert!(s0.leaf_worlds > s0.sims, "model 0 aggregates worlds: {s0:?}");
+        assert!(s1.sims > 0 && s1.leaf_worlds <= s1.sims, "model 1 is plain IS-MCTS: {s1:?}");
+        run_games(3, [true, false]);
+    }
+
+    /// Model 0 (MAPLE with `maple` worlds) against model 1 (plain), Burn vs
+    /// Rally, with a uniform-prior, zero-value stand-in for the network.
+    fn run_games(maple: u32, perfect_obs: [bool; 2]) -> SelfPlay {
         let cfg = SelfPlayConfig {
-            sims: 16,
+            model_sims: [16, 12],
             leaves_per_step: 4,
             temp_decisions: 10,
             search: Config::default(),
             pairings: vec![("Burn".into(), "Rally".into())],
-            seat_models: [0, 0],
+            seat_models: [0, 1],
             record: true,
             max_games: Some(4),
             heuristic_sims: 16,
+            maple_worlds: [maple, 0],
+            perfect_obs,
         };
         let mut sp = SelfPlay::new(4, cfg, 1);
         let mut steps = 0;
@@ -317,5 +358,6 @@ mod tests {
             assert_eq!(s.actions.len(), s.policy.len());
             assert!((s.policy.iter().sum::<f32>() - 1.0).abs() < 1e-3);
         }
+        sp
     }
 }

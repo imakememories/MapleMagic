@@ -1,0 +1,22 @@
+# See mid.yaml; only the search differs.
+name: mid_c
+pairings: all
+generations: 20
+games_per_gen: 256
+parallel: 256
+sims: 64
+leaves_per_step: 8
+temp_decisions: 40
+buffer_size: 200000
+batch_size: 512
+reuse: 4.0
+d_model: 160
+layers: 3
+eval_every: 5
+eval_games: 128
+eval_sims: 64
+heuristic_sims: 200
+seed: 0
+maple_worlds: 5
+maple_select: ref
+perfect_obs: true

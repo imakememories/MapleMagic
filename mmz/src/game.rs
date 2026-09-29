@@ -252,6 +252,15 @@ impl Game {
     /// cards, unknown library cards of both players), keeping card counts.
     /// Ported from mtg-kernel's `redeterminize_hidden_zones_v1`.
     pub fn determinize(&mut self, observer: PlayerId, seed: u64) {
+        self.determinize_with(observer, seed, false);
+    }
+
+    /// [`Self::determinize`], optionally leaving the observer's own library
+    /// alone. Needed while the observer is searching their library: the
+    /// engine's pending effect refers to those exact cards (and they are
+    /// revealed to the observer until the search shuffles them), so
+    /// resampling them makes the engine halt.
+    pub fn determinize_with(&mut self, observer: PlayerId, seed: u64, keep_own_library: bool) {
         let state = &mut self.state;
         let mut rng = SplitMix64::seed(seed);
         for owner in [PlayerId::P0, PlayerId::P1] {
@@ -268,7 +277,8 @@ impl Game {
                     }
                 }
             }
-            for (pos, &id) in state.players[owner.index()].library.iter().enumerate() {
+            let library = if keep_own_library && owner == observer { &[][..] } else { &state.players[owner.index()].library[..] };
+            for (pos, &id) in library.iter().enumerate() {
                 let zcc = state.objects.get(id).zone_change_count;
                 let known = state.known_library_cards(observer, owner).iter().any(|e| {
                     e.position as usize == pos && e.object == id && e.zone_change_count == zcc

@@ -6,7 +6,7 @@
 
 use mmz::features::{action_vocab, token_vocab, ACTION_FIELDS, MAX_TOKENS, TOKEN_FIELDS};
 use mmz::game::{deck_names, Outcome};
-use mmz::ismcts::{Config, Eval};
+use mmz::ismcts::{Config, Eval, MapleSelect};
 use mmz::selfplay::{SelfPlay as RsSelfPlay, SelfPlayConfig, HEURISTIC, RANDOM};
 use numpy::{IntoPyArray, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
@@ -44,9 +44,11 @@ struct SelfPlay {
 #[pymethods]
 impl SelfPlay {
     /// parallel: games in flight. seat_models: model id per seat (0/1 for
-    /// networks, "heuristic" or "random" for built-in agents).
+    /// networks, "heuristic" or "random" for built-in agents). sims is model
+    /// 0's budget and opp_sims model 1's (default: sims). maple_worlds and
+    /// perfect_obs are per model id; maple_select is "ref" or "union".
     #[new]
-    #[pyo3(signature = (parallel, pairings, sims=200, leaves_per_step=4, temp_decisions=30, c_puct=1.0, root_noise=0.25, dirichlet_alpha=0.3, fpu_reduction=0.2, seat_models=None, record=true, max_games=None, heuristic_sims=200, seed=0))]
+    #[pyo3(signature = (parallel, pairings, sims=200, leaves_per_step=4, temp_decisions=30, c_puct=1.0, root_noise=0.25, dirichlet_alpha=0.3, fpu_reduction=0.2, seat_models=None, record=true, max_games=None, heuristic_sims=200, seed=0, opp_sims=None, maple_worlds=(0, 0), maple_select="ref", maple_resample=false, maple_dedupe=true, perfect_obs=(false, false)))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         parallel: usize,
@@ -63,7 +65,18 @@ impl SelfPlay {
         max_games: Option<u64>,
         heuristic_sims: u32,
         seed: u64,
+        opp_sims: Option<u32>,
+        maple_worlds: (u32, u32),
+        maple_select: &str,
+        maple_resample: bool,
+        maple_dedupe: bool,
+        perfect_obs: (bool, bool),
     ) -> PyResult<Self> {
+        let maple_select = match maple_select {
+            "ref" => MapleSelect::RefWorld,
+            "union" => MapleSelect::Union,
+            s => return Err(PyValueError::new_err(format!("maple_select must be \"ref\" or \"union\", not {s:?}"))),
+        };
         let names = deck_names();
         for (a, b) in &pairings {
             for d in [a, b] {
@@ -86,10 +99,22 @@ impl SelfPlay {
             m.extract::<u8>()
         };
         let cfg = SelfPlayConfig {
-            sims,
+            model_sims: [sims, opp_sims.unwrap_or(sims)],
             leaves_per_step,
             temp_decisions,
-            search: Config { c_puct, root_noise, dirichlet_alpha, fpu_reduction, virtual_loss: 1.0 },
+            search: Config {
+                c_puct,
+                root_noise,
+                dirichlet_alpha,
+                fpu_reduction,
+                virtual_loss: 1.0,
+                maple_select,
+                maple_resample,
+                maple_dedupe,
+                ..Config::default()
+            },
+            maple_worlds: [maple_worlds.0, maple_worlds.1],
+            perfect_obs: [perfect_obs.0, perfect_obs.1],
             pairings,
             seat_models: match &seat_models {
                 Some((a, b)) => [model_id(a)?, model_id(b)?],
@@ -205,6 +230,22 @@ impl SelfPlay {
     #[getter]
     fn games_started(&self) -> u64 {
         self.inner.games_started()
+    }
+
+    /// Search counters for model ids 0 and 1, summed over finished searches.
+    fn search_stats<'py>(&self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let mut out = Vec::new();
+        for s in self.inner.stats() {
+            let d = PyDict::new(py);
+            d.set_item("sims", s.sims)?;
+            d.set_item("leaf_worlds", s.leaf_worlds)?;
+            d.set_item("unique_leaves", s.unique_leaves)?;
+            d.set_item("dropped_illegal", s.dropped_illegal)?;
+            d.set_item("dropped_diverged", s.dropped_diverged)?;
+            d.set_item("terminal_worlds", s.terminal_worlds)?;
+            out.push(d);
+        }
+        Ok(out)
     }
 }
 

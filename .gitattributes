@@ -1,2 +1,4 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+# Pinned by SHA-256 in engine tests: keep LF bytes on every platform.
+data/** text eol=lf

@@ -95,6 +95,13 @@ fn global_token(g: u16, value: i32) -> [u16; TOKEN_FIELDS] {
 /// Encode what `viewer` can see. Returns at most [`MAX_TOKENS`] tokens
 /// (oldest graveyard cards are dropped first when over).
 pub fn observe(g: &Game, viewer: PlayerId) -> Vec<[u16; TOKEN_FIELDS]> {
+    observe_with(g, viewer, false)
+}
+
+/// [`observe`], or with `perfect` the opponent's whole hand by identity
+/// (for a determinized world that is the guessed hand). Libraries stay
+/// counts either way.
+pub fn observe_with(g: &Game, viewer: PlayerId, perfect: bool) -> Vec<[u16; TOKEN_FIELDS]> {
     let st = &g.state;
     let me = viewer;
     let opp = viewer.opponent();
@@ -135,7 +142,7 @@ pub fn observe(g: &Game, viewer: PlayerId) -> Vec<[u16; TOKEN_FIELDS]> {
     // Opponent hand: known cards by identity, the rest hidden.
     for &id in &po.hand {
         let zcc = st.objects.get(id).zone_change_count;
-        let known = st.known_hand_cards(me, opp).iter().any(|e| e.object == id && e.zone_change_count == zcc);
+        let known = perfect || st.known_hand_cards(me, opp).iter().any(|e| e.object == id && e.zone_change_count == zcc);
         if known {
             out.push(object_token(st, id, me, Zone::Hand, false));
         } else {
@@ -223,6 +230,12 @@ mod tests {
                 let mut d = g.clone();
                 d.determinize(me, rng.next_u64());
                 assert_eq!(observe(&d, me), obs);
+                // A perfect observation shows the (guessed) hand by identity
+                // but keeps the same token count.
+                let p = observe_with(&d, me, true);
+                assert_eq!(p.len(), obs.len());
+                let opp_hand = |o: &[[u16; TOKEN_FIELDS]]| o.iter().filter(|t| t[1] == place_code(Zone::Hand, false) && t[0] == 0).count();
+                assert_eq!(opp_hand(&p), 0);
                 let n = g.choices().len();
                 g.apply((rng.next_u64() % n as u64) as usize);
             }
