@@ -1,17 +1,11 @@
-//! Lean game wrapper over the raw engine: a flat list of semantic choices per
-//! decision, auto-paid casts, one-creature-at-a-time combat, and hidden-zone
-//! redeterminization for IS-MCTS.
-//!
-//! Every engine `Decision` is turned into a `Vec<Choice>`. A choice carries a
-//! stable semantic `key` (card definitions and relations, never raw object
-//! ids) so tree statistics line up across determinizations, plus the engine
-//! work needed to execute it. Decisions with exactly one choice are applied
-//! automatically and never surface to the caller.
+//! The engine as a flat list of choices per decision. Choice keys name cards,
+//! never object ids, so they match across determinizations. Forced decisions
+//! are applied automatically.
 
-use mtg_kernel::card_def::{ManaAbilityCostDef, CARD_DEFS};
+use mtg_kernel::card_def::{CardType, ManaAbilityCostDef, CARD_DEFS};
 use mtg_kernel::engine::{
-    self, available_mana_ability_choices, mana_ability_cost_targets, Action, CastMode, Decision,
-    OptionalCostChoice,
+    self, available_mana_ability_choices, effective_power, effective_toughness, mana_ability_cost_targets, Action,
+    CastMode, Decision, OptionalCostChoice,
 };
 use mtg_kernel::event::{self, ProposedEvent};
 use mtg_kernel::ids::{ObjectId, PlayerId};
@@ -22,13 +16,11 @@ use mtg_kernel::state::{GameState, ObjectStateV4, SplitMix64, Target, Zone};
 /// Hard stop for runaway games (loops the engine cannot detect).
 pub const MAX_TURNS: u32 = 60;
 const MAX_AUTO_STEPS: u32 = 100_000;
-/// Surfaced decisions per game before calling it a draw. Players may hold
-/// priority and repeat free activations, so a game could otherwise loop.
+/// Surfaced decisions per game before calling it a draw.
 pub const MAX_DECISIONS: u32 = 5_000;
 const AUTOPAY_NODE_CAP: usize = 256;
 
-/// What kind of choice this is. Stable numbering: used in action keys and
-/// as a model feature.
+/// Stable numbering: used in keys and as a model feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Kind {
@@ -56,27 +48,28 @@ pub enum Kind {
     OrderTrigger = 21,
 }
 
-/// Semantic description of a choice, used both as the tree key and as model
-/// input. `src` is the card definition acting/being chosen (u16::MAX = none).
-/// `tgt` is the other object's semantic signature or a player (see
-/// [`obj_sig`] / [`player_sig`]). `arg` is a small integer payload (mode
-/// index, color, bool, ability index).
+/// A choice's tree key and model input. `role` is in the key only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ActFeat {
     pub kind: Kind,
     pub src: u16,
     pub tgt: u32,
     pub arg: u16,
+    pub role: u32,
 }
 
 impl ActFeat {
     fn new(kind: Kind, src: u16, tgt: u32, arg: u16) -> Self {
-        ActFeat { kind, src, tgt, arg }
+        ActFeat { kind, src, tgt, arg, role: 0 }
+    }
+
+    fn with_role(self, role: u32) -> Self {
+        ActFeat { role, ..self }
     }
 
     pub fn key(&self) -> u64 {
         let mut h: u64 = 0xcbf29ce484222325;
-        for v in [self.kind as u64, self.src as u64, self.tgt as u64, self.arg as u64] {
+        for v in [self.kind as u64, self.src as u64, self.tgt as u64, self.arg as u64, self.role as u64] {
             h ^= v;
             h = h.wrapping_mul(0x100000001b3);
             h ^= h >> 29;
@@ -138,9 +131,6 @@ pub fn deck_names() -> Vec<&'static str> {
     RUNTIME_DECKS.iter().map(|d| d.id).collect()
 }
 
-/// Semantic signature of an object relative to `viewer`: card definition,
-/// controller (self/opp), zone, tapped. Two objects with equal signatures are
-/// interchangeable choices.
 pub fn obj_sig(state: &GameState, id: ObjectId, viewer: PlayerId) -> u32 {
     let o = state.objects.get(id);
     let mine = (o.controller == viewer) as u32;
@@ -161,6 +151,30 @@ pub fn zone_code(z: Zone) -> u8 {
         Zone::Stack => 4,
         Zone::Exile => 5,
         _ => 6,
+    }
+}
+
+fn obj_role(st: &GameState, id: ObjectId) -> u32 {
+    let o = st.objects.get(id);
+    if o.zone != Zone::Battlefield {
+        return 0;
+    }
+    let combat = &st.engine.combat;
+    let attacking = combat.attackers.contains(&id) as u32;
+    let blocking = combat.blocked_by.iter().any(|(_, bs)| bs.contains(&id)) as u32;
+    let blocked = combat.blocked_by.iter().any(|(a, _)| *a == id) as u32;
+    let mut r = (o.damage as u32).min(15) | attacking << 4 | blocking << 5 | blocked << 6;
+    if CARD_DEFS[o.card_def as usize].has_type(CardType::Creature) {
+        let size = |v: i32| (v.clamp(-1, 62) + 1) as u32;
+        r |= size(effective_power(st, id)) << 7 | size(effective_toughness(st, id)) << 13;
+    }
+    r
+}
+
+fn target_role(st: &GameState, t: Target) -> u32 {
+    match t {
+        Target::Object(id) => obj_role(st, id),
+        Target::Player(_) => 0,
     }
 }
 
@@ -189,8 +203,7 @@ fn shuffled(ids: &[u16], rng: &mut SplitMix64) -> Vec<u16> {
 }
 
 impl Game {
-    /// New game between two runtime decks (see [`deck_names`]). The starting
-    /// player is chosen by `seed`.
+    /// New game between two runtime decks (see [`deck_names`]).
     pub fn new(deck0: &str, deck1: &str, seed: u64) -> Result<Game, String> {
         let d0 = runtime_deck_by_id(deck0).ok_or_else(|| format!("unknown deck {deck0}"))?;
         let d1 = runtime_deck_by_id(deck1).ok_or_else(|| format!("unknown deck {deck1}"))?;
@@ -239,8 +252,7 @@ impl Game {
         &self.choices
     }
 
-    /// Apply choice `i` of [`Self::choices`], then advance through every
-    /// forced decision to the next real one (or the end of the game).
+    /// Apply choice `i`, then any forced decisions after it.
     pub fn apply(&mut self, i: usize) {
         let c = self.choices[i].exec.clone();
         self.decisions += 1;
@@ -248,67 +260,31 @@ impl Game {
         self.settle();
     }
 
-    /// Resample every card `observer` cannot see (opponent's unknown hand
-    /// cards, unknown library cards of both players), keeping card counts.
-    /// Ported from mtg-kernel's `redeterminize_hidden_zones_v1`.
+    /// Resample every card `observer` can't see, keeping card counts.
     pub fn determinize(&mut self, observer: PlayerId, seed: u64) {
         self.determinize_with(observer, seed, false);
     }
 
-    /// [`Self::determinize`], optionally leaving the observer's own library
-    /// alone. Needed while the observer is searching their library: the
-    /// engine's pending effect refers to those exact cards (and they are
-    /// revealed to the observer until the search shuffles them), so
-    /// resampling them makes the engine halt.
+    /// [`Self::determinize`], optionally keeping the observer's own library,
+    /// which must stay put while the observer is searching it.
     pub fn determinize_with(&mut self, observer: PlayerId, seed: u64, keep_own_library: bool) {
-        let state = &mut self.state;
         let mut rng = SplitMix64::seed(seed);
         for owner in [PlayerId::P0, PlayerId::P1] {
-            let mut slots = Vec::new();
-            if owner != observer {
-                for &id in &state.players[owner.index()].hand {
-                    let zcc = state.objects.get(id).zone_change_count;
-                    let known = state
-                        .known_hand_cards(observer, owner)
-                        .iter()
-                        .any(|e| e.object == id && e.zone_change_count == zcc);
-                    if !known {
-                        slots.push(id);
-                    }
-                }
-            }
-            let library = if keep_own_library && owner == observer { &[][..] } else { &state.players[owner.index()].library[..] };
-            for (pos, &id) in library.iter().enumerate() {
-                let zcc = state.objects.get(id).zone_change_count;
-                let known = state.known_library_cards(observer, owner).iter().any(|e| {
-                    e.position as usize == pos && e.object == id && e.zone_change_count == zcc
-                });
-                if !known {
-                    slots.push(id);
-                }
-            }
-            let mut defs: Vec<u16> = slots.iter().map(|&id| state.objects.get(id).card_def).collect();
+            let slots = unseen_slots(&self.state, observer, owner, keep_own_library && owner == observer);
+            let mut defs: Vec<u16> = slots.iter().map(|&id| self.state.objects.get(id).card_def).collect();
+            defs.sort_unstable();
             for i in (1..defs.len()).rev() {
                 let j = (rng.next_u64() % (i as u64 + 1)) as usize;
                 defs.swap(i, j);
             }
             for (id, def) in slots.into_iter().zip(defs) {
-                let o = state.objects.get_mut(id);
-                if o.card_def != def {
-                    o.card_def = def;
-                    o.name = CARD_DEFS[def as usize].name.to_string();
-                    o.v4 = ObjectStateV4::from_card_def(def);
-                }
+                set_card(&mut self.state, id, def);
             }
         }
-        // Choices can depend on hidden cards (e.g. the actor's own library is
-        // never visible). Rebuild them for the new world.
         if self.outcome.is_none() && matches!(self.pending, Pending::None) {
             self.settle();
         }
     }
-
-    // ------------------------------------------------------------ internals
 
     fn abort(&mut self, why: String) {
         if self.abort_reason.is_none() {
@@ -426,8 +402,7 @@ impl Game {
         }
     }
 
-    /// For a multi-part decision: either submit it to the engine (returns
-    /// true) or build the choices for its next part (returns false).
+    /// Submit a finished multi-part decision (true), or build its next part's choices (false).
     fn flush_pending(&mut self) -> bool {
         let viewer = self.actor;
         let st = &self.state;
@@ -440,9 +415,9 @@ impl Game {
                 } else {
                     let id = eligible[*next];
                     let d = def_of(st, id);
-                    let sig = obj_sig(st, id, viewer);
-                    out.push(mk(ActFeat::new(Kind::Attack, d, sig, 0), Exec::Attack(id, true)));
-                    out.push(mk(ActFeat::new(Kind::NoAttack, d, sig, 0), Exec::Attack(id, false)));
+                    let (sig, role) = (obj_sig(st, id, viewer), obj_role(st, id));
+                    out.push(mk(ActFeat::new(Kind::Attack, d, sig, 0).with_role(role), Exec::Attack(id, true)));
+                    out.push(mk(ActFeat::new(Kind::NoAttack, d, sig, 0).with_role(role), Exec::Attack(id, false)));
                     None
                 }
             }
@@ -453,13 +428,16 @@ impl Game {
                     let (b, attackers) = &blockers[*next];
                     let d = def_of(st, *b);
                     out.push(mk(
-                        ActFeat::new(Kind::NoBlock, d, obj_sig(st, *b, viewer), 0),
+                        ActFeat::new(Kind::NoBlock, d, obj_sig(st, *b, viewer), 0).with_role(obj_role(st, *b)),
                         Exec::Block(*b, None),
                     ));
                     for &a in attackers {
                         push_unique(
                             &mut out,
-                            mk(ActFeat::new(Kind::Block, d, obj_sig(st, a, viewer), 0), Exec::Block(*b, Some(a))),
+                            mk(
+                                ActFeat::new(Kind::Block, d, obj_sig(st, a, viewer), 0).with_role(obj_role(st, a)),
+                                Exec::Block(*b, Some(a)),
+                            ),
                         );
                     }
                     None
@@ -502,9 +480,7 @@ impl Game {
                 };
                 self.pending = Pending::None;
                 if let Err(e) = engine::step(&mut self.state, action.clone()) {
-                    // Combined declaration broke a rule the per-creature
-                    // split can't see (menace, blocking limits): fall back to
-                    // declaring nothing.
+                    // The per-creature split can't see menace or blocking limits.
                     let ok = fallback.is_some_and(|f| engine::step(&mut self.state, f).is_ok());
                     if !ok {
                         self.abort(format!("submit {action:?}: {e}"));
@@ -561,7 +537,10 @@ impl Game {
                             for &t in &cost_targets {
                                 push_unique(
                                     &mut out,
-                                    mk(ActFeat::new(Kind::ManaAbility, d, obj_sig(st, t, player), color_code(c)), Exec::Engine(Action::ActivateManaAbilityWithCostTarget(id, c, t))),
+                                    mk(
+                                        ActFeat::new(Kind::ManaAbility, d, obj_sig(st, t, player), color_code(c)).with_role(obj_role(st, t)),
+                                        Exec::Engine(Action::ActivateManaAbilityWithCostTarget(id, c, t)),
+                                    ),
                                 );
                             }
                         } else {
@@ -584,7 +563,8 @@ impl Game {
                 self.actor = player;
                 let d = def_of(st, spell);
                 for t in legal_targets {
-                    push_unique(&mut out, mk(ActFeat::new(Kind::Target, d, target_sig(st, t, player), 0), Exec::Engine(Action::ChooseTarget(t))));
+                    let feat = ActFeat::new(Kind::Target, d, target_sig(st, t, player), 0).with_role(target_role(st, t));
+                    push_unique(&mut out, mk(feat, Exec::Engine(Action::ChooseTarget(t))));
                 }
                 if can_finish {
                     out.push(mk(ActFeat::new(Kind::FinishTargets, d, 0, 0), Exec::Engine(Action::FinishEffectSelection)));
@@ -594,7 +574,8 @@ impl Game {
                 self.actor = player;
                 let d = def_of(st, source);
                 for id in candidates {
-                    push_unique(&mut out, mk(ActFeat::new(Kind::CostTarget, d, obj_sig(st, id, player), 0), Exec::Engine(Action::ChooseCostTarget(id))));
+                    let feat = ActFeat::new(Kind::CostTarget, d, obj_sig(st, id, player), 0).with_role(obj_role(st, id));
+                    push_unique(&mut out, mk(feat, Exec::Engine(Action::ChooseCostTarget(id))));
                 }
             }
             Decision::ChooseCastMode { player, spell, options } => {
@@ -633,7 +614,8 @@ impl Game {
                 self.actor = player;
                 let d = def_of(st, source);
                 for t in legal_targets {
-                    push_unique(&mut out, mk(ActFeat::new(Kind::EffectTarget, d, target_sig(st, t, player), 0), Exec::Engine(Action::ChooseEffectTarget(t))));
+                    let feat = ActFeat::new(Kind::EffectTarget, d, target_sig(st, t, player), 0).with_role(target_role(st, t));
+                    push_unique(&mut out, mk(feat, Exec::Engine(Action::ChooseEffectTarget(t))));
                 }
                 if can_finish {
                     out.push(mk(ActFeat::new(Kind::FinishTargets, d, 0, 0), Exec::Engine(Action::FinishEffectSelection)));
@@ -702,12 +684,37 @@ impl Game {
     }
 }
 
+pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerId, keep_library: bool) -> Vec<ObjectId> {
+    let ps = &state.players[owner.index()];
+    let zcc = |id: ObjectId| state.objects.get(id).zone_change_count;
+    let mut slots = Vec::new();
+    if owner != observer {
+        let known = state.known_hand_cards(observer, owner);
+        slots.extend(ps.hand.iter().copied().filter(|&id| !known.iter().any(|e| e.object == id && e.zone_change_count == zcc(id))));
+    }
+    if !keep_library {
+        let known = state.known_library_cards(observer, owner);
+        for (pos, &id) in ps.library.iter().enumerate() {
+            if !known.iter().any(|e| e.position as usize == pos && e.object == id && e.zone_change_count == zcc(id)) {
+                slots.push(id);
+            }
+        }
+    }
+    slots
+}
+
+pub(crate) fn set_card(state: &mut GameState, id: ObjectId, def: u16) {
+    let o = state.objects.get_mut(id);
+    o.card_def = def;
+    o.name = CARD_DEFS[def as usize].name.to_string();
+    o.v4 = ObjectStateV4::from_card_def(def);
+}
+
 fn mk(feat: ActFeat, exec: Exec) -> Choice {
     Choice { key: feat.key(), feat, exec }
 }
 
-/// Keep only the first of several semantically identical choices (two
-/// copies of the same card in hand, two identical untapped tokens...).
+/// Keep only the first of several identical choices.
 fn push_unique(out: &mut Vec<Choice>, c: Choice) {
     if !out.iter().any(|x| x.key == c.key) {
         out.push(c);
@@ -742,15 +749,8 @@ fn tap(st: &mut GameState, id: ObjectId, color: ManaColor) -> Result<(), String>
     engine::step(st, a)
 }
 
-/// Find, for every spell/ability not castable from the current pool, a
-/// minimal set of free-source taps that makes it castable.
-///
-/// Works on one scratch copy of the state: taps are simulated by writing the
-/// mana straight into the pool (and marking the sources tapped), and the
-/// engine's read-only castability checks are asked at each step. Sources are
-/// grouped into interchangeable types (same card, same colors); the search is
-/// breadth-first over multisets of (type, color), so the first payment found
-/// uses the fewest sources, and single-color sources are preferred.
+/// For every spell or ability not castable from the pool, the fewest free
+/// sources to tap that make it castable (breadth-first, single colors first).
 fn autopay_goals(
     st: &GameState,
     player: PlayerId,
@@ -986,9 +986,31 @@ mod tests {
     }
 
     #[test]
+    fn copies_that_differ_are_separate_choices() {
+        let mut rng = SplitMix64::seed(11);
+        let mut split = 0;
+        for a in deck_names() {
+            for b in deck_names() {
+                let mut g = Game::new(a, b, 1).unwrap();
+                while !g.is_over() {
+                    let cs = g.choices();
+                    for (i, x) in cs.iter().enumerate() {
+                        for y in &cs[i + 1..] {
+                            assert_ne!(x.key, y.key);
+                            let same = (x.feat.kind, x.feat.src, x.feat.tgt, x.feat.arg) == (y.feat.kind, y.feat.src, y.feat.tgt, y.feat.arg);
+                            split += same as u32;
+                        }
+                    }
+                    let n = cs.len();
+                    g.apply((rng.next_u64() % n as u64) as usize);
+                }
+            }
+        }
+        assert!(split > 0, "no decision offered two copies of one card that differ");
+    }
+
+    #[test]
     fn autopay_lets_burn_cast_from_lands() {
-        // Burn should cast spells in random play; if auto-pay were broken,
-        // no Cast choices would ever appear because the pool starts empty.
         let mut rng = SplitMix64::seed(3);
         let mut casts = 0;
         for seed in 0..20 {

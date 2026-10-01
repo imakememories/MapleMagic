@@ -1,24 +1,9 @@
-//! Observation and action encodings for the network.
+//! Observation and action encodings for the network, from one player's view:
+//! hidden cards are encoded as unknown, so a determinized world encodes the
+//! same as the real one.
 //!
-//! An observation is a set of tokens, each `TOKEN_FIELDS` small integers
-//! that the model embeds separately and sums. Everything is from one
-//! player's point of view: unknown opponent hand cards appear only as
-//! "hidden card" tokens and libraries only as counts, so a determinized
-//! (resampled) world encodes the same as the real one.
-//!
-//! Token fields:
-//!   0 card: card definition + 1 (0 = none/hidden), or `GLOBAL_BASE + g` for
-//!     global scalar tokens
-//!   1 place: zone x owner (see `place_code`), 1 = global
-//!   2 flags: tapped | sick<<1 | attacking<<2 | blocking<<3 | blocked<<4
-//!   3 power bucket (value for global tokens)
-//!   4 toughness bucket
-//!   5 damage marked
-//!   6 +1/+1 counters
-//!   7 -1/-1 counters
-//!
-//! Action fields (see [`action_fields`]): kind, source card, target card,
-//! target code, arg.
+//! Token fields: card + 1 (0 = hidden) or a global, place, flags, power,
+//! toughness, damage, +1/+1 counters, -1/-1 counters.
 
 use crate::game::{ActFeat, Game};
 use mtg_kernel::card_def::{CardType, CARD_DEFS};
@@ -92,15 +77,12 @@ fn global_token(g: u16, value: i32) -> [u16; TOKEN_FIELDS] {
     t
 }
 
-/// Encode what `viewer` can see. Returns at most [`MAX_TOKENS`] tokens
-/// (oldest graveyard cards are dropped first when over).
+/// What `viewer` can see, in at most [`MAX_TOKENS`] tokens.
 pub fn observe(g: &Game, viewer: PlayerId) -> Vec<[u16; TOKEN_FIELDS]> {
     observe_with(g, viewer, false)
 }
 
-/// [`observe`], or with `perfect` the opponent's whole hand by identity
-/// (for a determinized world that is the guessed hand). Libraries stay
-/// counts either way.
+/// [`observe`], or with `perfect` the opponent's whole hand by identity.
 pub fn observe_with(g: &Game, viewer: PlayerId, perfect: bool) -> Vec<[u16; TOKEN_FIELDS]> {
     let st = &g.state;
     let me = viewer;
@@ -177,8 +159,7 @@ pub fn observe_with(g: &Game, viewer: PlayerId, perfect: bool) -> Vec<[u16; TOKE
     out
 }
 
-/// Split an [`ActFeat`] into model fields: kind, source card, target card,
-/// target code (0 none, 1 me, 2 opponent, 3+ place*2+tapped), arg.
+/// Kind, source card, target card, target code (0 none, 1 me, 2 opponent, 3+ place), arg.
 pub fn action_fields(f: &ActFeat) -> [u16; ACTION_FIELDS] {
     let src = if f.src == u16::MAX { 0 } else { f.src + 1 };
     let (tcard, tcode) = if f.tgt & (1 << 24) != 0 {
@@ -230,8 +211,6 @@ mod tests {
                 let mut d = g.clone();
                 d.determinize(me, rng.next_u64());
                 assert_eq!(observe(&d, me), obs);
-                // A perfect observation shows the (guessed) hand by identity
-                // but keeps the same token count.
                 let p = observe_with(&d, me, true);
                 assert_eq!(p.len(), obs.len());
                 let opp_hand = |o: &[[u16; TOKEN_FIELDS]]| o.iter().filter(|t| t[1] == place_code(Zone::Hand, false) && t[0] == 0).count();

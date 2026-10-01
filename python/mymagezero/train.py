@@ -1,9 +1,4 @@
-"""Generational AlphaZero loop: self-play -> replay buffer -> train -> evaluate.
-
-Self-play runs in Rust (`SelfPlay`); this module only evaluates leaf batches
-on the GPU and trains. Evaluation games pit the new network against the
-built-in heuristic searcher and against the previous generation.
-"""
+"""Generational AlphaZero loop: self-play (in Rust), train, evaluate."""
 from __future__ import annotations
 
 import copy
@@ -54,17 +49,14 @@ class Config:
     eval_games: int = 128
     eval_sims: int = 96
     heuristic_sims: int = 200
-    # Search: MAPLE worlds per search (0 = plain IS-MCTS), "ref" or "union"
-    # selection, fresh worlds per simulation, and perfect-information leaf
-    # observations (the network sees the guessed opponent hand).
+    # Search: MAPLE worlds (0 = IS-MCTS), and whether the network sees the guessed hand.
     maple_worlds: int = 0
     maple_select: str = "ref"
     maple_resample: bool = False
     perfect_obs: bool = False
-    # Rows per network forward pass; 0 sizes it for this machine and model
-    # (see model.plan_eval). MAPLE multiplies the leaf batch, and on Windows
-    # the GPU allocator's cache is charged to system commit: unbounded, it
-    # froze a 16 GB machine.
+    # PIMC (AlphaZe**) worlds, with `sims` split across them.
+    pimc_worlds: int = 0
+    # Rows per forward pass; 0 sizes it for this machine (model.plan_eval).
     max_eval_batch: int = 0
     seed: int = 0
     extra: dict = field(default_factory=dict)
@@ -86,6 +78,7 @@ class Config:
             "maple_select": self.maple_select,
             "maple_resample": self.maple_resample,
             "perfect_obs": self.perfect_obs,
+            "pimc_worlds": self.pimc_worlds,
         }
 
 
@@ -123,12 +116,29 @@ class Replay:
             self.pos = (self.pos + 1) % self.cap
             self.n = min(self.n + 1, self.cap)
 
-    def sample(self, bs: int, rng: np.random.Generator):
-        idx = rng.integers(0, self.n, bs)
+    def batch(self, idx: np.ndarray):
         tl = self.tok_len[idx]
         al = self.act_len[idx]
         tw, aw = max(int(tl.max()), 1), max(int(al.max()), 1)
         return (self.tok[idx, :tw], tl, self.act[idx, :aw], al, self.pi[idx, :aw], self.z[idx])
+
+    def sample(self, bs: int, rng: np.random.Generator):
+        return self.batch(rng.integers(0, self.n, bs))
+
+    def save(self, path: str):
+        tmp = path + ".tmp.npz"
+        np.savez(tmp, tok=self.tok, tok_len=self.tok_len, act=self.act, act_len=self.act_len, pi=self.pi, z=self.z,
+                 n=self.n, pos=self.pos)
+        os.replace(tmp, path)
+
+    def load(self, path: str) -> bool:
+        with np.load(path) as f:
+            if f["tok"].shape != self.tok.shape or f["act"].shape != self.act.shape:
+                return False
+            for k in ("tok", "tok_len", "act", "act_len", "pi", "z"):
+                getattr(self, k)[:] = f[k]
+            self.n, self.pos = int(f["n"]), int(f["pos"])
+        return True
 
 
 class DeviceFailure(RuntimeError):
@@ -136,9 +146,7 @@ class DeviceFailure(RuntimeError):
 
 
 def check_softmax(p: np.ndarray):
-    """Priors are a softmax, so every row sums to 1. After a system stall the
-    ROCm device has been seen to stop executing kernels while returning
-    zeros; fail loudly instead of training on garbage."""
+    """Fail if the GPU silently stopped computing (priors no longer sum to 1)."""
     sums = p.sum(1)
     if not np.all(np.abs(sums - 1.0) < 1e-2):
         raise DeviceFailure(
@@ -148,8 +156,7 @@ def check_softmax(p: np.ndarray):
 
 
 def drive(sp: SelfPlay, nets: dict, device, on_samples=None, plan: EvalPlan | None = None) -> dict:
-    """Run a SelfPlay to completion, evaluating leaves with `nets[model_id]`
-    in forward passes sized by `plan` (default: planned for nets[0])."""
+    """Run a SelfPlay to completion, evaluating leaves with `nets[model_id]`."""
     plan = plan or plan_eval(nets[0], device, MAX_TOKENS, MAX_ACTIONS)
     max_batch = plan.max_batch
     evals = {0: 0, 1: 0}
@@ -183,6 +190,18 @@ def drive(sp: SelfPlay, nets: dict, device, on_samples=None, plan: EvalPlan | No
     return {"evals": evals[0] + evals[1], "evals_a": evals[0], "evals_b": evals[1], "seconds": time.time() - t0}
 
 
+@torch.no_grad()
+def heldout_losses(net: Net, replay: Replay, idx: np.ndarray, device, cfg: Config) -> tuple[float, float]:
+    net.eval()
+    pl = vl = 0.0
+    for at in range(0, len(idx), cfg.batch_size):
+        rows = idx[at:at + cfg.batch_size]
+        _, p, v = losses(net, replay.batch(rows), device, cfg.value_weight)
+        pl += float(p) * len(rows)
+        vl += float(v) * len(rows)
+    return pl / len(idx), vl / len(idx)
+
+
 def summarize_stats(s: dict) -> dict:
     """Per-simulation rates from one model's search counters."""
     n = max(s["sims"], 1)
@@ -191,15 +210,15 @@ def summarize_stats(s: dict) -> dict:
         "evals_per_sim": round(s["unique_leaves"] / n, 3),
         "dropped_illegal_per_sim": round(s["dropped_illegal"] / n, 3),
         "dropped_diverged_per_sim": round(s["dropped_diverged"] / n, 3),
+        "no_world_per_sim": round(s["no_world_sims"] / n, 4),
+        "stale_priors_per_sim": round(s["stale_priors"] / n, 4),
     }
 
 
 def match(cfg: Config, net_a, opponent, games: int, device, seed: int,
           search_a: dict | None = None, search_b: dict | None = None, opp_sims: int | None = None) -> dict:
-    """Score of net_a (model 0) against `opponent` (a Net as model 1, or
-    "heuristic"/"random"), both seats and all pairings. search_a/search_b
-    are search settings (see Config.search_settings) per side; both default
-    to cfg's. The selection rule and resampling are shared: side A's win."""
+    """Score of net_a against `opponent` (a Net, "heuristic" or "random"), with
+    search settings per side (default: cfg's)."""
     nets = {0: net_a}
     opp_id = 1
     if isinstance(opponent, str):
@@ -212,15 +231,18 @@ def match(cfg: Config, net_a, opponent, games: int, device, seed: int,
         min(games, cfg.parallel), cfg.pairing_list(), sims=cfg.eval_sims, leaves_per_step=cfg.leaves_per_step,
         temp_decisions=0, c_puct=cfg.c_puct, root_noise=0.0, seat_models=(0, opp_id), record=False,
         max_games=games, heuristic_sims=cfg.heuristic_sims, seed=seed, opp_sims=opp_sims,
-        maple_worlds=(sa["maple_worlds"], sb["maple_worlds"]), maple_select=sa["maple_select"],
-        maple_resample=sa["maple_resample"], perfect_obs=(sa["perfect_obs"], sb["perfect_obs"]),
+        maple_worlds=(sa["maple_worlds"], sb["maple_worlds"]),
+        maple_select=(sa["maple_select"], sb["maple_select"]),
+        maple_resample=(sa["maple_resample"], sb["maple_resample"]), perfect_obs=(sa["perfect_obs"], sb["perfect_obs"]),
+        pimc_worlds=(sa.get("pimc_worlds", 0), sb.get("pimc_worlds", 0)),
     )
     plan = plan_eval(net_a, device, MAX_TOKENS, MAX_ACTIONS, cfg.max_eval_batch)
     stats = drive(sp, nets, device, plan=plan)
     stats["plan"] = plan
     stats["search_stats"] = sp.search_stats()
+    games = sp.take_results()
     w = l = d = 0
-    for r in sp.take_results():
+    for r in games:
         if r["winner"] is None:
             d += 1
         elif r["models"][r["winner"]] == 0:
@@ -229,7 +251,8 @@ def match(cfg: Config, net_a, opponent, games: int, device, seed: int,
             l += 1
     n = max(w + l + d, 1)
     score = (w + 0.5 * d) / n
-    return {"w": w, "l": l, "d": d, "score": score, "ci95": 1.96 * math.sqrt(score * (1 - score) / n), **stats}
+    return {"w": w, "l": l, "d": d, "score": score, "ci95": 1.96 * math.sqrt(score * (1 - score) / n),
+            "games": games, **stats}
 
 
 def run(cfg: Config, resume: bool = True):
@@ -240,22 +263,28 @@ def run(cfg: Config, resume: bool = True):
         yaml.safe_dump(asdict(cfg), f)
     log_path = os.path.join(out, "log.jsonl")
     latest = os.path.join(out, "latest.pt")
+    replay_path = os.path.join(out, "replay.npz")
 
-    torch.manual_seed(cfg.seed)
-    rng = np.random.default_rng(cfg.seed)
+    from . import ACTION_FIELDS, TOKEN_FIELDS
+    replay = Replay(cfg.buffer_size, TOKEN_FIELDS, ACTION_FIELDS)
     start_gen = 0
+    opt_state = None
     if resume and os.path.exists(latest):
         net = load(latest, device)
-        start_gen = torch.load(latest, map_location="cpu", weights_only=False).get("gen", -1) + 1
-        print(f"resumed from {latest} at generation {start_gen}")
+        ck = torch.load(latest, map_location="cpu", weights_only=False)
+        start_gen = ck.get("gen", -1) + 1
+        opt_state = ck.get("opt")
+        kept = os.path.exists(replay_path) and replay.load(replay_path)
+        print(f"resumed from {latest} at generation {start_gen}, replay buffer {replay.n if kept else 'empty'}")
     else:
         net = Net(cfg.d_model, cfg.layers, cfg.heads).to(device)
         if os.path.exists(log_path):
-            # A fresh start keeps the old log beside the new one.
             os.replace(log_path, os.path.join(out, f"log.{time.strftime('%Y%m%d-%H%M%S')}.jsonl"))
+    torch.manual_seed(cfg.seed + start_gen)
+    rng = np.random.default_rng(cfg.seed + start_gen)
     opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
-    from . import ACTION_FIELDS, TOKEN_FIELDS
-    replay = Replay(cfg.buffer_size, TOKEN_FIELDS, ACTION_FIELDS)
+    if opt_state is not None:
+        opt.load_state_dict(opt_state)
     print(f"device {device}, params {sum(p.numel() for p in net.parameters()) / 1e6:.2f}M, "
           f"{len(cfg.pairing_list())} pairings")
     plan = plan_eval(net, device, MAX_TOKENS, MAX_ACTIONS, cfg.max_eval_batch)
@@ -264,6 +293,7 @@ def run(cfg: Config, resume: bool = True):
     for gen in range(start_gen, cfg.generations):
         # --- self-play
         prev = copy.deepcopy(net).eval()
+        first = replay.pos
         new = [0]
 
         def add(s):
@@ -276,13 +306,16 @@ def run(cfg: Config, resume: bool = True):
             dirichlet_alpha=cfg.dirichlet_alpha, record=True, max_games=cfg.games_per_gen,
             seed=cfg.seed * 100_003 + gen, maple_worlds=(cfg.maple_worlds, cfg.maple_worlds),
             maple_select=cfg.maple_select, maple_resample=cfg.maple_resample,
-            perfect_obs=(cfg.perfect_obs, cfg.perfect_obs),
+            perfect_obs=(cfg.perfect_obs, cfg.perfect_obs), pimc_worlds=(cfg.pimc_worlds, cfg.pimc_worlds),
         )
         sp_stats = drive(sp, {0: net}, device, on_samples=add, plan=plan)
         search = summarize_stats(sp.search_stats()[0])
         results = sp.take_results()
         aborted = sum(r["aborted"] for r in results)
         mean_dec = float(np.mean([r["decisions"] for r in results])) if results else 0.0
+
+        held = (first + rng.permutation(min(new[0], replay.cap))[:4096]) % replay.cap
+        held_pl, held_vl = heldout_losses(net, replay, held, device, cfg) if len(held) else (0.0, 0.0)
 
         # --- train
         steps = max(1, int(new[0] * cfg.reuse / cfg.batch_size))
@@ -313,11 +346,13 @@ def run(cfg: Config, resume: bool = True):
             "selfplay_s": round(sp_stats["seconds"], 1),
             "evals_per_s": round(sp_stats["evals"] / max(sp_stats["seconds"], 1e-6)),
             "evals_per_move": round(sp_stats["evals"] / max(new[0], 1), 1),
-            **({"search": search} if cfg.maple_worlds else {}),
+            **({"search": search} if cfg.maple_worlds or cfg.pimc_worlds else {}),
             "train_steps": steps,
             "train_s": round(train_s, 1),
             "policy_loss": round(pl_sum / steps, 4),
             "value_loss": round(vl_sum / steps, 4),
+            "heldout_policy_loss": round(held_pl, 4),
+            "heldout_value_loss": round(held_vl, 4),
         }
 
         # --- evaluate
@@ -329,8 +364,9 @@ def run(cfg: Config, resume: bool = True):
             rec["eval_s"] = round(h["seconds"] + p["seconds"], 1)
 
         meta = {"gen": gen, "search": cfg.search_settings()}
-        save(net, latest, meta)
         save(net, os.path.join(out, f"gen{gen:04d}.pt"), meta)
+        replay.save(replay_path)
+        save(net, latest, {**meta, "opt": opt.state_dict()})
         with open(log_path, "a") as f:
             f.write(json.dumps(rec) + "\n")
         print(json.dumps(rec), flush=True)

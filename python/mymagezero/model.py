@@ -1,11 +1,5 @@
-"""Policy/value network.
-
-Observation tokens (one per visible object, plus global scalars) are embedded
-field by field, summed, and run through a transformer encoder with a learned
-summary token. Each legal choice is embedded the same way, attends over the
-encoded tokens (so "target this creature" can look at that creature), and is
-scored against the summary. The value head reads the summary.
-"""
+"""Policy/value network: a transformer over observation tokens; each choice
+attends over them and is scored against a summary token, which the value head reads."""
 from __future__ import annotations
 
 import math
@@ -90,10 +84,7 @@ def evaluate(net: Net, tok, tok_len, act, act_len, device, amp_dtype=torch.float
 
 
 def available_commit_bytes() -> float:
-    """System commit headroom on Windows, where every byte the GPU allocator
-    reserves is also charged to system commit (RAM + page file); running
-    out of it stalls the whole machine. Elsewhere there is no such charge,
-    so this returns infinity."""
+    """Free system commit on Windows, which GPU allocations are charged to; infinite elsewhere."""
     if os.name != "nt":
         return math.inf
     import ctypes
@@ -112,9 +103,7 @@ def available_commit_bytes() -> float:
 
 @dataclass
 class EvalPlan:
-    """How to split network evaluations so the GPU allocator's cache stays
-    bounded: at most `max_batch` rows per forward pass, and empty the cache
-    once it reserves more than `flush_at` bytes."""
+    """At most `max_batch` rows per forward pass; empty the cache above `flush_at` bytes."""
     max_batch: int
     flush_at: float
     bytes_per_row: float = 0.0
@@ -127,14 +116,8 @@ class EvalPlan:
 
 
 def plan_eval(net: Net, device, tok_width: int, act_width: int, max_batch: int = 0, share: float = 0.25) -> EvalPlan:
-    """Size evaluation passes for this network on this machine.
-
-    Measures the peak memory of one forward pass at the widest shapes, then
-    gives the cache a `share` of the smaller of free GPU memory and (on
-    Windows) system commit headroom. Varying batch shapes make the caching
-    allocator hold ~3x the live memory, so passes are sized to need at most
-    half the budget and the cache is emptied past the budget. An explicit
-    `max_batch` keeps that size and only derives the flush point."""
+    """Size forward passes to half of `share` of the free GPU memory or commit,
+    whichever is smaller, from one measured pass at the widest shapes."""
     if device.type != "cuda":
         return EvalPlan(max_batch or 2048, math.inf)
     rows = 256
@@ -176,7 +159,7 @@ def save(net: Net, path: str, extra: dict | None = None):
 def load_meta(path: str) -> dict:
     """Everything a checkpoint stores besides the weights (gen, search...)."""
     ck = torch.load(path, map_location="cpu", weights_only=False)
-    return {k: v for k, v in ck.items() if k != "state"}
+    return {k: v for k, v in ck.items() if k not in ("state", "opt")}
 
 
 def load(path: str, device) -> Net:

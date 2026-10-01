@@ -1,29 +1,6 @@
-//! Single-observer information-set MCTS (SO-ISMCTS) with PUCT, and MAPLE.
-//!
-//! Every simulation starts from a fresh determinization of the root: cards
-//! the searching player cannot see are resampled. Tree nodes are reached by
-//! the sequence of semantic choice keys from the root, so the same node
-//! gathers statistics across all determinizations. Because the legal choices
-//! differ between determinizations, each edge counts how often it was
-//! available and PUCT uses that count in place of the parent visit count
-//! (the "subset-armed bandit" form of ISMCTS).
-//!
-//! Forced decisions are applied automatically, so one key path can reach the
-//! opponent's decision in one world and ours in another (they hold an
-//! instant or they don't). Each edge therefore has one child per player to
-//! act, and a node only ever holds one player's choices.
-//!
-//! MAPLE (Multi-State Aggregated Policy Evaluation, arXiv 2605.24139), on
-//! when [`Config::maple_worlds`] > 0: k worlds are sampled once per search,
-//! each simulation applies its path to all of them (dropping worlds where a
-//! key is illegal), and the leaf is evaluated in every surviving world.
-//! Priors are averaged per key over the worlds where it is legal and values
-//! are averaged, so one node's statistics reflect k hypotheses at once.
-//!
-//! The search is step-driven so a batched evaluator (a GPU network) can sit
-//! outside it: [`Search::gather`] runs selection until it has a batch of
-//! leaves, the caller evaluates them, and [`Search::feed`] backs the values
-//! up. Virtual loss keeps concurrent simulations of one tree apart.
+//! Information-set MCTS with PUCT, and the MAPLE and PIMC (AlphaZe\*\*)
+//! variants. [`Search::gather`] and [`Search::feed`] let a batched network
+//! evaluate leaves outside the search.
 
 use crate::features::{choice_fields, observe_with};
 use crate::game::{Game, Outcome};
@@ -31,16 +8,13 @@ use mtg_kernel::ids::PlayerId;
 use mtg_kernel::state::SplitMix64;
 use std::hash::{Hash, Hasher};
 
-/// How MAPLE picks the player and the candidate keys at a node where the
-/// alive worlds disagree.
+/// How MAPLE picks the acting player and legal keys when worlds disagree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MapleSelect {
-    /// A uniformly random alive world decides: its player acts and PUCT
-    /// runs over its legal keys. Unbiased; k=1 with resampling is SO-ISMCTS.
+    /// A random alive world decides.
     #[default]
     RefWorld,
-    /// The paper's rule: the majority player acts and PUCT runs over the
-    /// union of the alive worlds' legal keys.
+    /// The majority player acts, over the union of legal keys.
     Union,
 }
 
@@ -58,12 +32,12 @@ pub struct Config {
     pub maple_select: MapleSelect,
     /// Draw fresh worlds for every simulation instead of once per search.
     pub maple_resample: bool,
-    /// Evaluate identical leaf observations once, weighted by their count.
-    /// Exact for evaluators that only read the observation (the network);
-    /// turn it off for evaluators that read hidden state (rollouts).
+    /// Evaluate identical leaf observations once (off for rollouts, which read hidden state).
     pub maple_dedupe: bool,
     /// Observation encoding the evaluator uses (only affects dedupe).
     pub perfect_obs: bool,
+    /// PIMC world count (0 = off): independent trees in fixed worlds.
+    pub pimc_worlds: u32,
 }
 
 impl Default for Config {
@@ -79,6 +53,7 @@ impl Default for Config {
             maple_resample: false,
             maple_dedupe: true,
             perfect_obs: false,
+            pimc_worlds: 0,
         }
     }
 }
@@ -98,6 +73,8 @@ pub struct SearchStats {
     pub dropped_diverged: u64,
     /// Worlds that ended the game along a path.
     pub terminal_worlds: u64,
+    pub no_world_sims: u64,
+    pub stale_priors: u64,
 }
 
 impl std::ops::AddAssign for SearchStats {
@@ -108,11 +85,12 @@ impl std::ops::AddAssign for SearchStats {
         self.dropped_illegal += o.dropped_illegal;
         self.dropped_diverged += o.dropped_diverged;
         self.terminal_worlds += o.terminal_worlds;
+        self.no_world_sims += o.no_world_sims;
+        self.stale_priors += o.stale_priors;
     }
 }
 
-/// Evaluation of one leaf: priors aligned with `leaf.choices()`, and a
-/// value in [-1, 1] from the point of view of `leaf.to_act()`.
+/// Priors aligned with `leaf.choices()`; value in [-1, 1] for `leaf.to_act()`.
 #[derive(Debug, Clone)]
 pub struct Eval {
     pub priors: Vec<f32>,
@@ -170,9 +148,10 @@ pub struct Search {
     nodes: Vec<Node>,
     rng: SplitMix64,
     pending: Vec<PendingSim>,
-    /// MAPLE worlds sampled once per search (empty unless MAPLE is on and
-    /// not resampling).
+    /// Fixed worlds: MAPLE's, or PIMC's (world `i` searched from root node `i`).
     worlds: Vec<Game>,
+    /// PIMC: the world the next simulation descends in.
+    next_world: usize,
     pub simulations: u32,
     pub stats: SearchStats,
 }
@@ -185,11 +164,7 @@ fn terminal_value(o: Outcome, pov: PlayerId) -> f32 {
     }
 }
 
-/// Aggregate per-world priors into one prior per key (paper eq. 2). Each
-/// entry is (legal keys, priors aligned with them, weight); priors may be
-/// longer than the keys (padding) and need not be normalized. A key's prior
-/// is the weighted mean over the worlds where it is legal; the result is
-/// normalized to sum to 1, in order of first appearance.
+/// Each key's weighted mean prior over the worlds where it is legal, normalized.
 pub fn aggregate_priors(per_world: &[(&[u64], &[f32], f32)]) -> Vec<(u64, f32)> {
     let mut acc: Vec<(u64, f32, f32)> = Vec::new();
     for &(keys, priors, w) in per_world {
@@ -227,20 +202,27 @@ impl Search {
             rng: SplitMix64::seed(seed),
             pending: Vec::new(),
             worlds: Vec::new(),
+            next_world: 0,
             simulations: 0,
             stats: SearchStats::default(),
             cfg,
         };
+        assert!(s.cfg.maple_worlds == 0 || s.cfg.pimc_worlds == 0, "MAPLE and PIMC are exclusive");
         if s.cfg.maple_worlds > 0 && !s.cfg.maple_resample && !s.root.is_over() {
-            s.worlds = s.sample_worlds();
+            s.worlds = s.sample_worlds(s.cfg.maple_worlds);
+        }
+        if s.cfg.pimc_worlds > 0 && !s.root.is_over() {
+            s.worlds = s.sample_worlds(s.cfg.pimc_worlds);
+            for _ in 1..s.worlds.len() {
+                s.nodes.push(Node::new(observer));
+            }
         }
         s
     }
 
-    /// Up to `maple_worlds` determinizations where the observer is to act
-    /// (resampling hidden cards can make a root decision forced).
-    fn sample_worlds(&mut self) -> Vec<Game> {
-        let k = self.cfg.maple_worlds as usize;
+    /// Up to `k` determinizations where the observer is to act.
+    fn sample_worlds(&mut self, k: u32) -> Vec<Game> {
+        let k = k as usize;
         let mut out = Vec::with_capacity(k);
         let mut tries = 0;
         while out.len() < k && tries < k as u32 * ROOT_TRIES {
@@ -252,11 +234,7 @@ impl Search {
         out
     }
 
-    /// Run selection for up to `max_leaves` simulations. Simulations that
-    /// end at a terminal state are backed up immediately; the rest return
-    /// their leaf position(s) for evaluation. The returned games must be
-    /// evaluated and passed to [`Self::feed`] in the same order. With MAPLE
-    /// on, one simulation can return up to `maple_worlds` leaves.
+    /// Leaves for up to `max_leaves` simulations; evaluate them and pass the results to [`Self::feed`] in order.
     pub fn gather(&mut self, max_leaves: usize) -> Vec<Game> {
         if self.cfg.maple_worlds > 0 {
             return self.gather_maple(max_leaves);
@@ -265,48 +243,61 @@ impl Search {
         let mut attempts = 0;
         while leaves.len() < max_leaves && attempts < max_leaves * 4 {
             attempts += 1;
-            let Some(mut g) = self.root_world() else {
-                // No determinization keeps the observer to act: count the
-                // simulation without information so the search progresses.
+            let start = if self.cfg.pimc_worlds > 0 {
+                // PIMC: the worlds take turns, each from its own root.
+                (!self.worlds.is_empty()).then(|| {
+                    let w = self.next_world % self.worlds.len();
+                    self.next_world += 1;
+                    (self.worlds[w].clone(), w as u32)
+                })
+            } else {
+                self.root_world().map(|g| (g, 0))
+            };
+            let Some((g, root)) = start else {
+                // No world keeps the observer to act.
                 self.simulations += 1;
                 self.stats.sims += 1;
+                self.stats.no_world_sims += 1;
                 continue;
             };
-            let mut node = 0u32;
-            let mut path: Vec<(u32, usize, PlayerId)> = Vec::new();
-            loop {
-                if let Some(o) = g.outcome() {
-                    let v = terminal_value(o, self.observer);
-                    self.backup_observer(&path, v);
-                    self.simulations += 1;
-                    self.stats.sims += 1;
-                    self.stats.terminal_worlds += 1;
-                    break;
-                }
-                if !self.nodes[node as usize].expanded {
-                    // Leaf. Mark it now so parallel simulations in this batch
-                    // don't queue it twice; they will pass through it with
-                    // uniform-ish priors until the evaluation arrives.
-                    self.nodes[node as usize].expanded = true;
-                    self.add_virtual_loss(&path);
-                    self.pending.push(PendingSim { path, leaf_node: node, weights: vec![1.0], term_sum: 0.0, term_n: 0.0 });
-                    self.stats.leaf_worlds += 1;
-                    self.stats.unique_leaves += 1;
-                    leaves.push(g);
-                    break;
-                }
-                let chooser = g.to_act();
-                let e = self.select(node, &keys_of(&g));
-                let key = self.nodes[node as usize].edges[e].key;
-                let idx = g.choices().iter().position(|c| c.key == key).expect("selected key is legal");
-                path.push((node, e, chooser));
-                g.apply(idx);
-                if !g.is_over() {
-                    node = self.child(node, e, g.to_act());
-                }
-            }
+            self.descend(g, root, &mut leaves);
         }
         leaves
+    }
+
+    /// One simulation in world `g` from root node `root`.
+    fn descend(&mut self, mut g: Game, root: u32, leaves: &mut Vec<Game>) {
+        let mut node = root;
+        let mut path: Vec<(u32, usize, PlayerId)> = Vec::new();
+        loop {
+            if let Some(o) = g.outcome() {
+                let v = terminal_value(o, self.observer);
+                self.backup_observer(&path, v);
+                self.simulations += 1;
+                self.stats.sims += 1;
+                self.stats.terminal_worlds += 1;
+                return;
+            }
+            if !self.nodes[node as usize].expanded {
+                // Marked now so other simulations in this batch don't queue it again.
+                self.nodes[node as usize].expanded = true;
+                self.add_virtual_loss(&path);
+                self.pending.push(PendingSim { path, leaf_node: node, weights: vec![1.0], term_sum: 0.0, term_n: 0.0 });
+                self.stats.leaf_worlds += 1;
+                self.stats.unique_leaves += 1;
+                leaves.push(g);
+                return;
+            }
+            let chooser = g.to_act();
+            let e = self.select(node, &keys_of(&g));
+            let key = self.nodes[node as usize].edges[e].key;
+            let idx = g.choices().iter().position(|c| c.key == key).expect("selected key is legal");
+            path.push((node, e, chooser));
+            g.apply(idx);
+            if !g.is_over() {
+                node = self.child(node, e, g.to_act());
+            }
+        }
     }
 
     /// A determinization of the root where the observer is to act.
@@ -314,9 +305,7 @@ impl Search {
         (0..ROOT_TRIES).find_map(|_| self.determinize_root())
     }
 
-    /// One determinization attempt. If resampling breaks the root (the
-    /// observer is mid-search of their own library, which the engine's
-    /// pending effect refers to), retry keeping that library as it is.
+    /// One determinization, retried keeping the observer's library if resampling it breaks the root.
     fn determinize_root(&mut self) -> Option<Game> {
         let seed = self.rng.next_u64();
         let ok = |g: &Game| !g.is_over() && g.to_act() == self.observer;
@@ -336,10 +325,11 @@ impl Search {
         let mut attempts = 0;
         while done < max_sims && attempts < max_sims * 4 {
             attempts += 1;
-            let mut alive = if self.cfg.maple_resample { self.sample_worlds() } else { self.worlds.clone() };
+            let mut alive = if self.cfg.maple_resample { self.sample_worlds(self.cfg.maple_worlds) } else { self.worlds.clone() };
             if alive.is_empty() {
                 self.simulations += 1;
                 self.stats.sims += 1;
+                self.stats.no_world_sims += 1;
                 done += 1;
                 continue;
             }
@@ -432,8 +422,7 @@ impl Search {
         leaves
     }
 
-    /// Merge worlds the evaluator cannot tell apart (same observation for
-    /// the player to act and same choices).
+    /// Merge worlds the evaluator can't tell apart.
     fn dedupe(&self, worlds: Vec<Game>) -> (Vec<Game>, Vec<f32>) {
         let mut games: Vec<Game> = Vec::with_capacity(worlds.len());
         let mut hashes: Vec<u64> = Vec::with_capacity(worlds.len());
@@ -470,13 +459,21 @@ impl Search {
             let keys: Vec<Vec<u64>> = ls.iter().map(keys_of).collect();
             let per_world: Vec<(&[u64], &[f32], f32)> =
                 keys.iter().zip(es).zip(&sim.weights).map(|((k, e), &w)| (k.as_slice(), e.priors.as_slice(), w)).collect();
+            let priors = aggregate_priors(&per_world);
             let node = &mut self.nodes[sim.leaf_node as usize];
-            for (key, p) in aggregate_priors(&per_world) {
+            let mean = 1.0 / priors.len().max(1) as f32;
+            let mut stale = 0;
+            for e in node.edges.iter_mut().filter(|e| !priors.iter().any(|p| p.0 == e.key)) {
+                e.prior = mean;
+                stale += 1;
+            }
+            for (key, p) in priors {
                 match node.edges.iter_mut().find(|e| e.key == key) {
                     Some(e) => e.prior = p,
                     None => node.edges.push(Edge { key, prior: p, visits: 0.0, value_sum: 0.0, avail: 0.0, child: [NONE; 2] }),
                 }
             }
+            self.stats.stale_priors += stale;
             let (mut num, mut den) = (sim.term_sum, sim.term_n);
             for ((l, e), &w) in ls.iter().zip(es).zip(&sim.weights) {
                 let v = if l.to_act() == self.observer { e.value } else { -e.value };
@@ -487,7 +484,7 @@ impl Search {
             self.simulations += 1;
             self.stats.sims += 1;
         }
-        if self.cfg.root_noise > 0.0 && self.simulations > 0 && !self.nodes[0].edges.is_empty() {
+        if self.cfg.root_noise > 0.0 && self.simulations > 0 && self.roots().all(|r| !self.nodes[r].edges.is_empty()) {
             self.apply_root_noise_once();
         }
     }
@@ -508,41 +505,72 @@ impl Search {
         }
     }
 
-    /// Visit counts per root choice, aligned with `root.choices()`.
-    pub fn root_visits(&self) -> Vec<f32> {
-        let edges = &self.nodes[0].edges;
+    /// Root node ids: one per PIMC world, else just node 0.
+    fn roots(&self) -> std::ops::Range<usize> {
+        0..if self.cfg.pimc_worlds > 0 { self.worlds.len().max(1) } else { 1 }
+    }
+
+    /// (visits, value sum, prior) per root choice, from root node `root`.
+    fn root_edges(&self, root: usize) -> Vec<(f32, f32, f32)> {
+        let edges = &self.nodes[root].edges;
         self.root
             .choices()
             .iter()
-            .map(|c| edges.iter().find(|e| e.key == c.key).map_or(0.0, |e| e.visits))
+            .map(|c| edges.iter().find(|e| e.key == c.key).map_or((0.0, 0.0, 0.0), |e| (e.visits, e.value_sum, e.prior)))
             .collect()
+    }
+
+    /// Visits per root choice; with PIMC, the mean per-world distribution scaled to the total.
+    pub fn root_visits(&self) -> Vec<f32> {
+        if self.cfg.pimc_worlds == 0 {
+            return self.root_edges(0).iter().map(|e| e.0).collect();
+        }
+        let mut avg = vec![0.0f32; self.root.choices().len()];
+        let (mut total, mut worlds) = (0.0f32, 0.0f32);
+        for r in self.roots() {
+            let visits: Vec<f32> = self.root_edges(r).iter().map(|e| e.0).collect();
+            let sum: f32 = visits.iter().sum();
+            if sum > 0.0 {
+                for (a, v) in avg.iter_mut().zip(&visits) {
+                    *a += v / sum;
+                }
+                total += sum;
+                worlds += 1.0;
+            }
+        }
+        if worlds > 0.0 {
+            avg.iter_mut().for_each(|a| *a *= total / worlds);
+        }
+        avg
     }
 
     /// Most visited root choice (ties: higher mean value, then prior).
     pub fn best(&self) -> usize {
-        let edges = &self.nodes[0].edges;
+        let visits = self.root_visits();
+        let per_root: Vec<Vec<(f32, f32, f32)>> = self.roots().map(|r| self.root_edges(r)).collect();
         let score = |i: usize| {
-            let key = self.root.choices()[i].key;
-            edges.iter().find(|e| e.key == key).map_or((0.0, -2.0, 0.0), |e| {
-                (e.visits, if e.visits > 0.0 { e.value_sum / e.visits } else { -2.0 }, e.prior)
-            })
+            let (n, w, p) = per_root.iter().fold((0.0, 0.0, 0.0), |(n, w, p), r| (n + r[i].0, w + r[i].1, p + r[i].2));
+            (visits[i], if n > 0.0 { w / n } else { -2.0 }, p)
         };
         (0..self.root.choices().len())
             .max_by(|&a, &b| score(a).partial_cmp(&score(b)).unwrap())
             .unwrap_or(0)
     }
 
-    /// Mean value of the root from the searching player's point of view.
+    /// Mean root value for the searching player (PIMC: mean over worlds).
     pub fn root_value(&self) -> f32 {
-        let edges = &self.nodes[0].edges;
-        let (n, w) = edges.iter().fold((0.0, 0.0), |(n, w), e| (n + e.visits, w + e.value_sum));
-        if n > 0.0 { w / n } else { 0.0 }
+        let (mut sum, mut worlds) = (0.0, 0.0);
+        for r in self.roots() {
+            let (n, w) = self.nodes[r].edges.iter().fold((0.0, 0.0), |(n, w), e| (n + e.visits, w + e.value_sum));
+            if n > 0.0 {
+                sum += w / n;
+                worlds += 1.0;
+            }
+        }
+        if worlds > 0.0 { sum / worlds } else { 0.0 }
     }
 
-    // ------------------------------------------------------------ internals
-
-    /// The child of `node`'s edge `e` where `actor` is to act, created on
-    /// first use.
+    /// The child through edge `e` where `actor` is to act, created on first use.
     fn child(&mut self, node: u32, e: usize, actor: PlayerId) -> u32 {
         let c = self.nodes[node as usize].edges[e].child[actor.index()];
         if c != NONE {
@@ -559,8 +587,7 @@ impl Search {
     fn select(&mut self, node: u32, keys: &[u64]) -> usize {
         let cfg = self.cfg.clone();
         let n = &mut self.nodes[node as usize];
-        // Edges for choices seen for the first time in this determinization
-        // get the mean prior of the node's known edges.
+        // Keys new to this node get its mean prior.
         let mean_prior = if n.edges.is_empty() { 1.0 } else { n.edges.iter().map(|e| e.prior).sum::<f32>() / n.edges.len() as f32 };
         let mut legal: Vec<usize> = Vec::with_capacity(keys.len());
         for &key in keys {
@@ -623,11 +650,13 @@ impl Search {
         let alpha = self.cfg.dirichlet_alpha;
         let eps = self.cfg.root_noise;
         self.cfg.root_noise = 0.0;
-        let edges = &mut self.nodes[0].edges;
-        let noise: Vec<f32> = (0..edges.len()).map(|_| gamma_sample(&mut self.rng, alpha)).collect();
-        let total: f32 = noise.iter().sum::<f32>().max(1e-9);
-        for (e, n) in edges.iter_mut().zip(noise) {
-            e.prior = (1.0 - eps) * e.prior + eps * n / total;
+        for r in self.roots() {
+            let edges = &mut self.nodes[r].edges;
+            let noise: Vec<f32> = (0..edges.len()).map(|_| gamma_sample(&mut self.rng, alpha)).collect();
+            let total: f32 = noise.iter().sum::<f32>().max(1e-9);
+            for (e, n) in edges.iter_mut().zip(noise) {
+                e.prior = (1.0 - eps) * e.prior + eps * n / total;
+            }
         }
     }
 }
@@ -658,10 +687,7 @@ fn gamma_sample(rng: &mut SplitMix64, alpha: f32) -> f32 {
     }
 }
 
-// ------------------------------------------------------ simple evaluators
-
-/// Uniform priors; value from a hand-written board evaluation. Cheap, no
-/// playouts: for testing the search and as a bootstrap before a network.
+/// Uniform priors and a hand-written board evaluation.
 pub struct HeuristicEval;
 
 pub fn heuristic_value(g: &Game, pov: PlayerId) -> f32 {
@@ -698,8 +724,7 @@ impl Evaluator for HeuristicEval {
     }
 }
 
-/// Uniform priors; value = mean result of random playouts, cut off after
-/// `max_decisions` and scored by [`heuristic_value`].
+/// Uniform priors; value from random playouts scored by [`heuristic_value`].
 pub struct RolloutEval {
     pub rng: SplitMix64,
     pub rollouts: u32,
@@ -736,8 +761,18 @@ mod tests {
         Config { maple_worlds: k, maple_select: sel, ..Config::default() }
     }
 
+    fn pimc(k: u32) -> Config {
+        Config { pimc_worlds: k, ..Config::default() }
+    }
+
     fn configs() -> Vec<Config> {
-        vec![Config::default(), maple(5, MapleSelect::RefWorld), maple(5, MapleSelect::Union), Config { maple_resample: true, ..maple(3, MapleSelect::RefWorld) }]
+        vec![
+            Config::default(),
+            maple(5, MapleSelect::RefWorld),
+            maple(5, MapleSelect::Union),
+            Config { maple_resample: true, ..maple(3, MapleSelect::RefWorld) },
+            pimc(5),
+        ]
     }
 
     #[test]
@@ -748,7 +783,9 @@ mod tests {
             s.run(200, 8, &mut HeuristicEval);
             let total: f32 = s.root_visits().iter().sum();
             assert!(s.simulations >= 200);
-            assert!((total - s.simulations as f32).abs() <= 1.0, "{cfg:?}: {total} vs {}", s.simulations);
+            // Each root's first simulation expands it without visiting an edge.
+            let roots = s.roots().len() as f32;
+            assert!((total - s.simulations as f32).abs() <= roots, "{cfg:?}: {total} vs {}", s.simulations);
             assert!(s.best() < g.choices().len());
             assert_eq!(s.stats.sims, s.simulations as u64);
         }
@@ -774,8 +811,48 @@ mod tests {
         assert!(s.stats.unique_leaves <= s.stats.leaf_worlds);
     }
 
-    /// Find a position where one choice leads to the opponent's decision in
-    /// some determinizations and to the observer's in others.
+    /// Nodes reachable from `root`, `root` included.
+    fn subtree(s: &Search, root: u32) -> Vec<u32> {
+        let mut out = vec![root];
+        let mut i = 0;
+        while i < out.len() {
+            for e in &s.nodes[out[i] as usize].edges {
+                out.extend(e.child.iter().filter(|&&c| c != NONE));
+            }
+            i += 1;
+        }
+        out
+    }
+
+    #[test]
+    fn pimc_searches_each_world_in_its_own_tree() {
+        let g = Game::new("Faeries", "Spy", 5).unwrap();
+        let mut s = Search::new(&g, pimc(5), 11);
+        s.run(200, 8, &mut HeuristicEval);
+        assert_eq!(s.worlds.len(), 5);
+        assert_eq!(s.simulations, 200);
+        let mut seen = std::collections::HashSet::new();
+        for r in 0..5u32 {
+            let visits: f32 = s.nodes[r as usize].edges.iter().map(|e| e.visits).sum();
+            // The first simulation expands the root and visits no edge.
+            assert_eq!(visits, 39.0, "world {r}");
+            for n in subtree(&s, r) {
+                assert!(seen.insert(n), "node {n} is shared between worlds");
+            }
+        }
+        // The move comes from the average of the per-world distributions.
+        let mut avg = vec![0.0f32; g.choices().len()];
+        for r in 0..5 {
+            for (a, e) in avg.iter_mut().zip(s.root_edges(r)) {
+                *a += e.0 / 39.0 / 5.0;
+            }
+        }
+        for (v, a) in s.root_visits().iter().zip(&avg) {
+            assert!((v - a * 195.0).abs() < 1e-3, "{v} vs {}", a * 195.0);
+        }
+    }
+
+    /// A position where one choice leads to either player's decision, depending on hidden cards.
     fn diverging_position() -> Option<(Game, u64)> {
         let mut rng = SplitMix64::seed(9);
         for seed in 0..40 {
@@ -809,6 +886,63 @@ mod tests {
     }
 
     #[test]
+    fn edges_made_while_a_node_awaits_evaluation_get_real_priors() {
+        let mut rng = SplitMix64::seed(5);
+        let mut g = Game::new("Terror", "Burn", 0).unwrap();
+        let resample = Config { maple_resample: true, ..maple(3, MapleSelect::RefWorld) };
+        let mut stale = 0;
+        for _ in 0..40 {
+            if g.is_over() {
+                break;
+            }
+            for (cfg, bound) in [(Config::default(), 0.5), (pimc(5), 0.5), (resample.clone(), 0.99)] {
+                let mut s = Search::new(&g, cfg.clone(), rng.next_u64());
+                s.run(64, 8, &mut HeuristicEval);
+                let worst = s.nodes.iter().flat_map(|n| n.edges.iter()).map(|e| e.prior).fold(0.0f32, f32::max);
+                assert!(worst <= bound + 1e-6, "{cfg:?}: an edge kept prior {worst} at decision {}", g.decisions);
+                stale += s.stats.stale_priors;
+            }
+            let n = g.choices().len();
+            g.apply((rng.next_u64() % n as u64) as usize);
+        }
+        assert!(stale > 0, "no search passed through a node awaiting evaluation");
+    }
+
+    #[test]
+    fn search_ignores_where_hidden_cards_sit() {
+        use crate::game::{set_card, unseen_slots};
+        let mut rng = SplitMix64::seed(21);
+        let mut checked = 0;
+        for seed in 0..20 {
+            let mut g = Game::new("Faeries", "Terror", seed).unwrap();
+            while !g.is_over() && checked < 12 {
+                let (me, st) = (g.to_act(), &g.state);
+                let hand = unseen_slots(st, me, me.opponent(), true);
+                let all = unseen_slots(st, me, me.opponent(), false);
+                let def = |id| st.objects.get(id).card_def;
+                let pair = hand.iter().find_map(|&h| all.iter().find(|&&l| !hand.contains(&l) && def(l) != def(h)).map(|&l| (h, l)));
+                if let Some((h, l)) = pair {
+                    let mut swapped = g.clone();
+                    let (dh, dl) = (def(h), def(l));
+                    set_card(&mut swapped.state, h, dl);
+                    set_card(&mut swapped.state, l, dh);
+                    for cfg in [Config::default(), maple(5, MapleSelect::RefWorld), pimc(5)] {
+                        let mut a = Search::new(&g, cfg.clone(), 9);
+                        let mut b = Search::new(&swapped, cfg.clone(), 9);
+                        a.run(48, 8, &mut HeuristicEval);
+                        b.run(48, 8, &mut HeuristicEval);
+                        assert_eq!(a.root_visits(), b.root_visits(), "{cfg:?}");
+                    }
+                    checked += 1;
+                }
+                let n = g.choices().len();
+                g.apply((rng.next_u64() % n as u64) as usize);
+            }
+        }
+        assert!(checked >= 12, "only {checked} positions with a hidden card to swap");
+    }
+
+    #[test]
     fn children_are_split_by_player_to_act() {
         let (g, key) = diverging_position().expect("a position where the next actor depends on hidden cards");
         let mut s = Search::new(&g, Config::default(), 1);
@@ -826,9 +960,7 @@ mod tests {
         }
     }
 
-    /// Mid-way through searching their own library (Wildfire's land
-    /// fetchers), a plain determinization makes the engine halt. The search
-    /// must still put its visits on the real root's choices.
+    /// Determinizing mid-way through a library search halts the engine.
     #[test]
     fn searching_own_library_still_gets_visits() {
         let mut rng = SplitMix64::seed(1);
@@ -839,7 +971,7 @@ mod tests {
                 let mut d = g.clone();
                 d.determinize(g.to_act(), rng.next_u64());
                 if d.is_over() && g.choices().len() > 1 {
-                    for cfg in [Config::default(), maple(3, MapleSelect::RefWorld)] {
+                    for cfg in [Config::default(), maple(3, MapleSelect::RefWorld), pimc(3)] {
                         let mut s = Search::new(&g, cfg, rng.next_u64());
                         s.run(16, 8, &mut HeuristicEval);
                         assert!(s.root_visits().iter().sum::<f32>() > 0.0, "no root visits at seed {seed}");
@@ -858,8 +990,7 @@ mod tests {
 
     #[test]
     fn aggregate_priors_averages_over_worlds_where_legal() {
-        // Key 3 is legal only in the first world; it keeps that world's prior
-        // instead of being diluted by the world where it is illegal.
+        // Key 3 is legal only in the first world, so it keeps that world's prior.
         let a = aggregate_priors(&[(&[1, 3], &[1.0, 1.0], 1.0), (&[1, 2], &[3.0, 1.0, 9.0], 1.0)]);
         let get = |k: u64| a.iter().find(|x| x.0 == k).unwrap().1;
         let raw = [(0.5 + 0.75) / 2.0, 0.5, 0.25];

@@ -1,10 +1,10 @@
-# 20 generations over every pairing. mid_b, mid_bu, mid_c and mid_d change only the search.
-name: mid_a
+# See mid.yaml. AlphaZe** (PIMC): 5 worlds of 32 sims each.
+name: mid_d
 pairings: all
 generations: 20
 games_per_gen: 256
 parallel: 256
-sims: 64
+sims: 160
 leaves_per_step: 8
 temp_decisions: 40
 buffer_size: 200000
@@ -14,6 +14,8 @@ d_model: 160
 layers: 3
 eval_every: 5
 eval_games: 128
-eval_sims: 64
+eval_sims: 160
 heuristic_sims: 200
 seed: 0
+pimc_worlds: 5
+perfect_obs: false

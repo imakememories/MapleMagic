@@ -1,20 +1,9 @@
-//! Many games at once, each with its own IS-MCTS tree, evaluated in shared
-//! batches by an outside evaluator (the network, on the GPU).
-//!
-//! Each call to [`SelfPlay::gather`] advances every game until its search
-//! needs leaf evaluations and returns all of them as one batch;
-//! [`SelfPlay::feed`] hands the results back. Moves are made once a search
-//! reaches its simulation budget. Finished games yield training samples
-//! (observation, choices, visit distribution, final result).
-//!
-//! Every seat has a model id: evaluations are tagged with it so the caller
-//! can run different networks per seat (for evaluation matches).
-//! [`HEURISTIC`] seats are searched in Rust with the board heuristic and
-//! never reach the caller.
+//! Many games at once, with leaf evaluations batched for the network.
+//! [`HEURISTIC`] and [`RANDOM`] seats are played in Rust.
 
 use crate::features::{choice_fields, observe_with, ACTION_FIELDS, TOKEN_FIELDS};
 use crate::game::{Game, Outcome};
-use crate::ismcts::{Config, Eval, HeuristicEval, Search, SearchStats};
+use crate::ismcts::{Config, Eval, HeuristicEval, MapleSelect, Search, SearchStats};
 use mtg_kernel::ids::PlayerId;
 use mtg_kernel::state::SplitMix64;
 use rayon::prelude::*;
@@ -28,14 +17,12 @@ pub struct SelfPlayConfig {
     pub model_sims: [u32; 2],
     /// Leaves each search contributes per batch (virtual loss spreads them).
     pub leaves_per_step: usize,
-    /// Decisions (per game) that sample moves in proportion to visits
-    /// instead of taking the most visited one.
+    /// Decisions per game that sample moves in proportion to visits.
     pub temp_decisions: u32,
     pub search: Config,
     /// Deck pairings (seat 0 deck, seat 1 deck) to draw games from.
     pub pairings: Vec<(String, String)>,
-    /// Model id per seat. Games alternate which physical seat each model
-    /// takes, so both play both decks of a pairing equally.
+    /// Model id per seat; the models swap seats every other game.
     pub seat_models: [u8; 2],
     /// Record training samples for seats with model 0.
     pub record: bool,
@@ -43,11 +30,12 @@ pub struct SelfPlayConfig {
     pub max_games: Option<u64>,
     /// Sims for heuristic-model seats.
     pub heuristic_sims: u32,
-    /// MAPLE world count per network model id (0 = SO-ISMCTS). The other
-    /// MAPLE settings come from `search`; heuristic seats never use MAPLE.
+    /// The search settings below are per network model id.
     pub maple_worlds: [u32; 2],
-    /// Per model id: encode the opponent's (guessed) hand by identity.
+    pub maple_select: [MapleSelect; 2],
+    pub maple_resample: [bool; 2],
     pub perfect_obs: [bool; 2],
+    pub pimc_worlds: [u32; 2],
 }
 
 #[derive(Debug, Clone)]
@@ -127,26 +115,17 @@ impl SelfPlay {
         self.started
     }
 
-    /// Advance all games; return every leaf needing evaluation. Empty once
-    /// `max_games` games have all finished.
+    /// Advance all games and return the leaves to evaluate (empty once all games are done).
     pub fn gather(&mut self) -> Vec<LeafRequest> {
         // Start new games single-threaded (game ids must be deterministic).
         for slot in self.slots.iter_mut() {
             if slot.game.is_none() && self.cfg.max_games.is_none_or(|m| self.started < m) {
                 let id = self.started;
                 self.started += 1;
-                let pairing = &self.cfg.pairings[(id / 2) as usize % self.cfg.pairings.len()];
-                // Alternate seats: in odd games the models swap seats.
-                let (m0, m1) = if id % 2 == 0 {
-                    (self.cfg.seat_models[0], self.cfg.seat_models[1])
-                } else {
-                    (self.cfg.seat_models[1], self.cfg.seat_models[0])
-                };
-                let (d0, d1) = if id % 2 == 0 { (&pairing.0, &pairing.1) } else { (&pairing.1, &pairing.0) };
-                let game_seed = self.seed.wrapping_mul(1_000_003).wrapping_add(id / 2);
-                slot.game = Some(Game::new(d0, d1, game_seed).expect("valid deck names"));
-                slot.decks = [d0.clone(), d1.clone()];
-                slot.models = [m0, m1];
+                let (decks, models, game_seed) = game_setup(&self.cfg, self.seed, id);
+                slot.game = Some(Game::new(&decks[0], &decks[1], game_seed).expect("valid deck names"));
+                slot.decks = decks;
+                slot.models = models;
                 slot.search = None;
                 slot.pending.clear();
             }
@@ -214,6 +193,27 @@ impl SelfPlay {
     }
 }
 
+fn game_setup(cfg: &SelfPlayConfig, seed: u64, id: u64) -> ([String; 2], [u8; 2], u64) {
+    let pairing = &cfg.pairings[(id / 2) as usize % cfg.pairings.len()];
+    let [a, b] = cfg.seat_models;
+    let models = if id % 2 == 0 { [a, b] } else { [b, a] };
+    let deal = if a != b { id / 2 } else { id };
+    ([pairing.0.clone(), pairing.1.clone()], models, seed.wrapping_mul(1_000_003).wrapping_add(deal))
+}
+
+fn search_config(cfg: &SelfPlayConfig, m: usize) -> Config {
+    let mut c = cfg.search.clone();
+    if !cfg.record {
+        c.root_noise = 0.0;
+    }
+    c.maple_worlds = cfg.maple_worlds[m];
+    c.maple_select = cfg.maple_select[m];
+    c.maple_resample = cfg.maple_resample[m];
+    c.pimc_worlds = cfg.pimc_worlds[m];
+    c.perfect_obs = cfg.perfect_obs[m];
+    c
+}
+
 /// Drive one slot until its search needs evaluations (or it has no game).
 fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameResult>, Vec<(u8, SearchStats)>) {
     let mut samples = Vec::new();
@@ -243,7 +243,7 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
             continue;
         }
         if model == HEURISTIC {
-            let c = Config { maple_worlds: 0, perfect_obs: false, ..cfg.search.clone() };
+            let c = Config { root_noise: 0.0, maple_worlds: 0, pimc_worlds: 0, perfect_obs: false, ..cfg.search.clone() };
             let mut s = Search::new(game, c, slot.rng.next_u64());
             s.run(cfg.heuristic_sims, 8, &mut HeuristicEval);
             let c = s.best();
@@ -252,15 +252,7 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
         }
         let m = model as usize;
         let sims = cfg.model_sims[m];
-        let search = slot.search.get_or_insert_with(|| {
-            let mut c = cfg.search.clone();
-            if !cfg.record {
-                c.root_noise = 0.0;
-            }
-            c.maple_worlds = cfg.maple_worlds[m];
-            c.perfect_obs = cfg.perfect_obs[m];
-            Search::new(game, c, slot.rng.next_u64())
-        });
+        let search = slot.search.get_or_insert_with(|| Search::new(game, search_config(cfg, m), slot.rng.next_u64()));
         if search.simulations >= sims {
             let visits = search.root_visits();
             let total: f32 = visits.iter().sum::<f32>().max(1e-6);
@@ -309,21 +301,106 @@ mod tests {
 
     #[test]
     fn selfplay_runs_games_and_records_samples() {
-        run_games(0, [false, false]);
+        run_games(0, 0, [false, false]);
     }
 
     #[test]
     fn selfplay_with_maple_runs_games_and_records_samples() {
-        let sp = run_games(5, [false, false]);
+        let sp = run_games(5, 0, [false, false]);
         let [s0, s1] = sp.stats();
         assert!(s0.leaf_worlds > s0.sims, "model 0 aggregates worlds: {s0:?}");
         assert!(s1.sims > 0 && s1.leaf_worlds <= s1.sims, "model 1 is plain IS-MCTS: {s1:?}");
-        run_games(3, [true, false]);
+        run_games(3, 0, [true, false]);
     }
 
-    /// Model 0 (MAPLE with `maple` worlds) against model 1 (plain), Burn vs
-    /// Rally, with a uniform-prior, zero-value stand-in for the network.
-    fn run_games(maple: u32, perfect_obs: [bool; 2]) -> SelfPlay {
+    #[test]
+    fn selfplay_with_pimc_runs_games_and_records_samples() {
+        let sp = run_games(0, 3, [false, false]);
+        let [s0, _] = sp.stats();
+        assert!(s0.sims > 0 && s0.leaf_worlds <= s0.sims, "PIMC evaluates one world per simulation: {s0:?}");
+    }
+
+    #[test]
+    fn each_model_plays_both_decks_of_a_pairing() {
+        let cfg = SelfPlayConfig {
+            model_sims: [8, 8],
+            leaves_per_step: 4,
+            temp_decisions: 0,
+            search: Config::default(),
+            pairings: vec![("Burn".into(), "Rally".into())],
+            seat_models: [HEURISTIC, RANDOM],
+            record: false,
+            max_games: Some(4),
+            heuristic_sims: 8,
+            maple_worlds: [0, 0],
+            maple_select: [MapleSelect::RefWorld; 2],
+            maple_resample: [false; 2],
+            perfect_obs: [false, false],
+            pimc_worlds: [0, 0],
+        };
+        let mut sp = SelfPlay::new(4, cfg, 3);
+        assert!(sp.gather().is_empty());
+        let results = sp.take_results();
+        assert_eq!(results.len(), 4);
+        let mut plays = std::collections::HashMap::new();
+        for r in &results {
+            for seat in 0..2 {
+                *plays.entry((r.models[seat], r.decks[seat].clone())).or_insert(0) += 1;
+            }
+        }
+        for m in [HEURISTIC, RANDOM] {
+            for d in ["Burn", "Rally"] {
+                assert_eq!(plays.get(&(m, d.to_string())), Some(&2), "model {m} with {d}: {plays:?}");
+            }
+        }
+    }
+
+    fn two_model_config(seat_models: [u8; 2]) -> SelfPlayConfig {
+        SelfPlayConfig {
+            model_sims: [8, 8],
+            leaves_per_step: 4,
+            temp_decisions: 0,
+            search: Config::default(),
+            pairings: vec![("Burn".into(), "Rally".into()), ("Elves".into(), "Faeries".into())],
+            seat_models,
+            record: false,
+            max_games: None,
+            heuristic_sims: 8,
+            maple_worlds: [5, 5],
+            maple_select: [MapleSelect::Union, MapleSelect::RefWorld],
+            maple_resample: [true, false],
+            perfect_obs: [false, true],
+            pimc_worlds: [0, 0],
+        }
+    }
+
+    #[test]
+    fn paired_games_swap_models_over_one_deal() {
+        let cfg = two_model_config([0, 1]);
+        for j in 0..4u64 {
+            let (d0, m0, s0) = game_setup(&cfg, 7, 2 * j);
+            let (d1, m1, s1) = game_setup(&cfg, 7, 2 * j + 1);
+            assert_eq!(d0, d1);
+            assert_eq!(s0, s1);
+            assert_eq!(m0, [0, 1]);
+            assert_eq!(m1, [1, 0]);
+        }
+        let selfplay = two_model_config([0, 0]);
+        let seeds: std::collections::HashSet<u64> = (0..8).map(|id| game_setup(&selfplay, 7, id).2).collect();
+        assert_eq!(seeds.len(), 8);
+    }
+
+    #[test]
+    fn each_model_searches_with_its_own_settings() {
+        let cfg = two_model_config([0, 1]);
+        let (a, b) = (search_config(&cfg, 0), search_config(&cfg, 1));
+        assert_eq!((a.maple_select, a.maple_resample, a.perfect_obs), (MapleSelect::Union, true, false));
+        assert_eq!((b.maple_select, b.maple_resample, b.perfect_obs), (MapleSelect::RefWorld, false, true));
+        assert_eq!(a.root_noise, 0.0, "no exploration noise outside training");
+    }
+
+    /// Model 0 with MAPLE or PIMC against plain model 1, with a stand-in network.
+    fn run_games(maple: u32, pimc: u32, perfect_obs: [bool; 2]) -> SelfPlay {
         let cfg = SelfPlayConfig {
             model_sims: [16, 12],
             leaves_per_step: 4,
@@ -335,7 +412,10 @@ mod tests {
             max_games: Some(4),
             heuristic_sims: 16,
             maple_worlds: [maple, 0],
+            maple_select: [MapleSelect::RefWorld; 2],
+            maple_resample: [false; 2],
             perfect_obs,
+            pimc_worlds: [pimc, 0],
         };
         let mut sp = SelfPlay::new(4, cfg, 1);
         let mut steps = 0;
@@ -344,7 +424,6 @@ mod tests {
             if leaves.is_empty() {
                 break;
             }
-            // Uniform priors, zero value: stands in for the network.
             let evals = leaves.iter().map(|l| Eval { priors: vec![1.0; l.actions.len()], value: 0.0 }).collect();
             sp.feed(evals);
             steps += 1;

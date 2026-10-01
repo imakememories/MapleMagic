@@ -1,10 +1,7 @@
-//! Play two agents against each other on a deck pairing, in parallel.
-//!
 //! usage: arena <agentA> <agentB> <deckA> <deckB> <games> [threads]
-//! agents: random | h<sims> (IS-MCTS, heuristic leaf value) | r<sims> (IS-MCTS, rollout value)
-//! MAPLE suffix: m<k> = k worlds (e.g. h200m5), then u = paper-literal union
-//! selection (h200m5u). Rollout agents turn dedupe off (rollouts read hidden
-//! state). Seats alternate: in odd games A plays deckB. Results are from A's side.
+//! agents: random | h<sims> (heuristic value) | r<sims> (rollout value), then
+//! m<k> for MAPLE with k worlds (u for union selection) or p<k> for PIMC.
+//! Games come in pairs on one deal, with the agents swapping decks.
 use mmz::game::{Game, Outcome};
 use mmz::ismcts::{Config, HeuristicEval, MapleSelect, RolloutEval, Search, SearchStats};
 use mmz::mtg_kernel::ids::PlayerId;
@@ -38,6 +35,11 @@ fn parse(s: &str) -> Agent {
     if let Some(r) = rest.strip_prefix('u') {
         cfg.maple_select = MapleSelect::Union;
         rest = r;
+    }
+    if let Some(r) = rest.strip_prefix('p') {
+        let k = digits(r);
+        cfg.pimc_worlds = k.parse().unwrap_or_else(|_| panic!("bad PIMC world count in {s}"));
+        rest = &r[k.len()..];
     }
     assert!(rest.is_empty(), "unknown agent {s}");
     match kind {
@@ -73,12 +75,14 @@ fn describe(name: &str, s: &SearchStats) -> String {
     }
     let sims = s.sims as f64;
     format!(
-        "{name}: {:.2} leaf worlds/sim, {:.2} evals/sim, dropped {:.2} illegal + {:.2} diverged per sim, {:.3} terminal worlds/sim",
+        "{name}: {:.2} leaf worlds/sim, {:.2} evals/sim, dropped {:.2} illegal + {:.2} diverged per sim, {:.3} terminal worlds/sim, {:.4} sims with no world, {:.4} stale priors/sim",
         s.leaf_worlds as f64 / sims,
         s.unique_leaves as f64 / sims,
         s.dropped_illegal as f64 / sims,
         s.dropped_diverged as f64 / sims,
         s.terminal_worlds as f64 / sims,
+        s.no_world_sims as f64 / sims,
+        s.stale_priors as f64 / sims,
     )
 }
 
@@ -101,11 +105,8 @@ fn main() {
                     if i >= games {
                         break;
                     }
-                    // Game i: A sits in seat P0 with deckA on even i, seat P1 with deckB... keep
-                    // decks fixed per seat and swap which agent sits where.
                     let a_seat = if i % 2 == 0 { PlayerId::P0 } else { PlayerId::P1 };
-                    let (d0, d1) = if i % 2 == 0 { (&deck_a, &deck_b) } else { (&deck_b, &deck_a) };
-                    let mut g = Game::new(d0, d1, 1000 + i / 2).unwrap();
+                    let mut g = Game::new(&deck_a, &deck_b, 1000 + i / 2).unwrap();
                     let mut rng = SplitMix64::seed(i * 7919 + 13);
                     while !g.is_over() {
                         let (agent, side) = if g.to_act() == a_seat { (&agent_a, 0) } else { (&agent_b, 1) };

@@ -1,8 +1,5 @@
-//! Python bindings: `mymagezero._core`.
-//!
-//! Arrays cross as numpy: observations `uint16 [B, N, TOKEN_FIELDS]` with a
-//! length per row, choices `uint16 [B, A, ACTION_FIELDS]` with a length per
-//! row. Rows are zero-padded to the longest in the batch.
+//! Python bindings, `mymagezero._core`. Observations and choices cross as
+//! zero-padded uint16 numpy arrays with a length per row.
 
 use mmz::features::{action_vocab, token_vocab, ACTION_FIELDS, MAX_TOKENS, TOKEN_FIELDS};
 use mmz::game::{deck_names, Outcome};
@@ -15,6 +12,27 @@ use pyo3::types::PyDict;
 
 type Tok = [u16; TOKEN_FIELDS];
 type Act = [u16; ACTION_FIELDS];
+
+fn per_model<'py, T, F>(value: Option<&Bound<'py, PyAny>>, default: T, parse: F) -> PyResult<[T; 2]>
+where
+    T: Copy,
+    F: Fn(&Bound<'py, PyAny>) -> PyResult<T>,
+{
+    let Some(v) = value else { return Ok([default; 2]) };
+    if let Ok((a, b)) = v.extract::<(Bound<'py, PyAny>, Bound<'py, PyAny>)>() {
+        return Ok([parse(&a)?, parse(&b)?]);
+    }
+    let one = parse(v)?;
+    Ok([one; 2])
+}
+
+fn parse_select(v: &Bound<'_, PyAny>) -> PyResult<MapleSelect> {
+    match v.extract::<String>()?.as_str() {
+        "ref" => Ok(MapleSelect::RefWorld),
+        "union" => Ok(MapleSelect::Union),
+        s => Err(PyValueError::new_err(format!("maple_select must be \"ref\" or \"union\", not {s:?}"))),
+    }
+}
 
 /// Pad variable-length rows into a flat buffer; returns (flat, lengths, width).
 fn pad<const F: usize>(rows: &[&Vec<[u16; F]>], min_width: usize) -> (Vec<u16>, Vec<i32>, usize) {
@@ -43,12 +61,11 @@ struct SelfPlay {
 
 #[pymethods]
 impl SelfPlay {
-    /// parallel: games in flight. seat_models: model id per seat (0/1 for
-    /// networks, "heuristic" or "random" for built-in agents). sims is model
-    /// 0's budget and opp_sims model 1's (default: sims). maple_worlds and
-    /// perfect_obs are per model id; maple_select is "ref" or "union".
+    /// seat_models: 0/1 for networks, or "heuristic" / "random". sims is model 0's
+    /// budget, opp_sims model 1's. Search settings are pairs, one per model id;
+    /// maple_select and maple_resample may also be one value for both.
     #[new]
-    #[pyo3(signature = (parallel, pairings, sims=200, leaves_per_step=4, temp_decisions=30, c_puct=1.0, root_noise=0.25, dirichlet_alpha=0.3, fpu_reduction=0.2, seat_models=None, record=true, max_games=None, heuristic_sims=200, seed=0, opp_sims=None, maple_worlds=(0, 0), maple_select="ref", maple_resample=false, maple_dedupe=true, perfect_obs=(false, false)))]
+    #[pyo3(signature = (parallel, pairings, sims=200, leaves_per_step=4, temp_decisions=30, c_puct=1.0, root_noise=0.25, dirichlet_alpha=0.3, fpu_reduction=0.2, seat_models=None, record=true, max_games=None, heuristic_sims=200, seed=0, opp_sims=None, maple_worlds=(0, 0), maple_select=None, maple_resample=None, maple_dedupe=true, perfect_obs=(false, false), pimc_worlds=(0, 0)))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         parallel: usize,
@@ -67,16 +84,17 @@ impl SelfPlay {
         seed: u64,
         opp_sims: Option<u32>,
         maple_worlds: (u32, u32),
-        maple_select: &str,
-        maple_resample: bool,
+        maple_select: Option<Bound<'_, PyAny>>,
+        maple_resample: Option<Bound<'_, PyAny>>,
         maple_dedupe: bool,
         perfect_obs: (bool, bool),
+        pimc_worlds: (u32, u32),
     ) -> PyResult<Self> {
-        let maple_select = match maple_select {
-            "ref" => MapleSelect::RefWorld,
-            "union" => MapleSelect::Union,
-            s => return Err(PyValueError::new_err(format!("maple_select must be \"ref\" or \"union\", not {s:?}"))),
-        };
+        if (maple_worlds.0 > 0 && pimc_worlds.0 > 0) || (maple_worlds.1 > 0 && pimc_worlds.1 > 0) {
+            return Err(PyValueError::new_err("a model can't use both maple_worlds and pimc_worlds"));
+        }
+        let maple_select = per_model(maple_select.as_ref(), MapleSelect::RefWorld, parse_select)?;
+        let maple_resample = per_model(maple_resample.as_ref(), false, |v| v.extract::<bool>().map_err(Into::into))?;
         let names = deck_names();
         for (a, b) in &pairings {
             for d in [a, b] {
@@ -108,13 +126,14 @@ impl SelfPlay {
                 dirichlet_alpha,
                 fpu_reduction,
                 virtual_loss: 1.0,
-                maple_select,
-                maple_resample,
                 maple_dedupe,
                 ..Config::default()
             },
             maple_worlds: [maple_worlds.0, maple_worlds.1],
+            maple_select,
+            maple_resample,
             perfect_obs: [perfect_obs.0, perfect_obs.1],
+            pimc_worlds: [pimc_worlds.0, pimc_worlds.1],
             pairings,
             seat_models: match &seat_models {
                 Some((a, b)) => [model_id(a)?, model_id(b)?],
@@ -163,8 +182,6 @@ impl SelfPlay {
         let evals: Vec<Eval> = (0..self.last_batch)
             .map(|i| Eval { priors: p.row(i).to_vec(), value: v[i] })
             .collect();
-        // Rows are padded: Search::feed zips priors with the leaf's real
-        // choices, so extra columns are dropped there.
         let inner = &mut self.inner;
         py.detach(|| inner.feed(evals));
         self.last_batch = 0;
@@ -243,6 +260,8 @@ impl SelfPlay {
             d.set_item("dropped_illegal", s.dropped_illegal)?;
             d.set_item("dropped_diverged", s.dropped_diverged)?;
             d.set_item("terminal_worlds", s.terminal_worlds)?;
+            d.set_item("no_world_sims", s.no_world_sims)?;
+            d.set_item("stale_priors", s.stale_priors)?;
             out.push(d);
         }
         Ok(out)
