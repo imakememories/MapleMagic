@@ -136,8 +136,8 @@ fn main() {
     let score = (w as f64 + 0.5 * d as f64) / n;
     let se = (score * (1.0 - score) / n).sqrt();
     println!(
-        "{} ({}) vs {} ({}): W{w} L{l} D{d}  score {:.3} ± {:.3}  [{:.1}s, {:.0} decisions/game]",
-        a[1], deck_a, a[2], deck_b, score, 1.96 * se, t0.elapsed().as_secs_f64(), dec as f64 / n
+        "{} vs {} on {} / {}: W{w} L{l} D{d}  score {:.3} ± {:.3}  [{:.1}s, {:.0} decisions/game]",
+        a[1], a[2], deck_a, deck_b, score, 1.96 * se, t0.elapsed().as_secs_f64(), dec as f64 / n
     );
     println!("  {}", describe(&a[1], &stats[0]));
     println!("  {}", describe(&a[2], &stats[1]));
