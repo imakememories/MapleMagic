@@ -16,45 +16,6 @@ The engine is trimmed from [mtg-kernel](https://github.com/jackmaiorino/mtg-kern
 - `python/mymagezero/`: the network, the training loop and the CLI.
 - `configs/`: training and benchmark settings.
 
-## Build
-
-Requirements: Rust with the GNU toolchain, MinGW-w64 GCC at
-`C:/Users/manni/tools/mingw64` (see `.cargo/config.toml`), and Python with
-PyTorch (here the `rocm_env` conda environment, on an RX 7900 XTX).
-
-```sh
-export PATH="$HOME/.cargo/bin:/c/Users/manni/tools/mingw64/bin:$PATH"
-PY=/c/Users/manni/miniconda3/envs/rocm_env/python.exe
-PATH="$(dirname $PY):$PATH" cargo test --release --workspace --no-fail-fast
-$PY -m maturin build --release -i $PY -o target/wheels
-$PY -m pip install --force-reinstall --no-deps target/wheels/mymagezero-*.whl
-```
-
-## Use
-
-```sh
-$PY -m mymagezero.cli train configs/smoke.yaml --fresh    # a few minutes
-$PY -m mymagezero.cli train configs/mid.yaml              # resumes from runs/<name>/latest.pt
-$PY -m mymagezero.cli eval runs/mid_a/latest.pt --vs heuristic --config configs/bench.yaml
-$PY -m mymagezero.cli eval runs/mid_a/latest.pt --vs runs/mid_b/latest.pt --sims 160 --opp-sims 68
-```
-
-- Training resumes with its replay buffer and optimizer state, and logs each
-  generation's held-out losses: the network's loss on new self-play games
-  before it trains on them.
-- `eval` searches each side the way its checkpoint was trained; flags such as
-  `--maple-worlds` / `--opp-maple-worlds` override either side. `--out`
-  saves every game's decks and result.
-- Network evaluations are split into passes sized to the machine (printed as
-  `eval plan:`). On Windows the GPU allocator's cache counts against system
-  commit, and an unbounded cache froze the PC, so it gets a quarter of the
-  smaller of free GPU memory and free commit. `max_eval_batch` fixes the pass
-  size.
-- `cargo run --release -p mmz --example arena -- h200 h200p5 Burn Rally 400`
-  plays two agents without a network: `h<sims>` is IS-MCTS with a hand-written
-  evaluation, with `m<k>` for MAPLE over k worlds (`u` for union selection) or
-  `p<k>` for AlphaZe\*\* over k worlds.
-
 ## The decks
 
 Every match and every training run plays all nine decks against each other.
@@ -253,23 +214,6 @@ rate in all non-mirror games:
   ended at 0.05–0.08 on win/loss targets, too low for honest prediction from
   early in a game. These runs didn't log the held-out losses that would show
   it; training now does.
-
-## Reproduce
-
-```sh
-for c in mid mid_b mid_bu mid_c mid_d; do $PY -m mymagezero.cli train configs/$c.yaml --fresh; done
-# One match: each side's simulations per move, as in the table above.
-$PY -m mymagezero.cli eval runs/mid_a/latest.pt --vs runs/mid_b/latest.pt --sims 160 --opp-sims 68 \
-    --games 270 --config configs/bench.yaml --out runs/bench/ismcts-maple.json
-$PY -m mymagezero.cli eval runs/mid_b/latest.pt --vs heuristic --sims 68 \
-    --games 270 --config configs/bench.yaml --out runs/bench/maple-heuristic.json
-# Without a network, at about 200 evaluations per move:
-cargo run --release -p mmz --example arena -- h75m5 h200 Burn Rally 100
-```
-
-The benchmark was run at commit `8488808`. One training or benchmark job at a
-time: a MAPLE-r or AlphaZe\*\* training run takes 4–6 hours on an RX 7900 XTX
-with a 32-thread CPU, and IS-MCTS about 2.
 
 ## Engine fixes over upstream mtg-kernel
 
