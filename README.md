@@ -125,7 +125,7 @@ buffer. Only the search differs.
 | MAPLE-r | `configs/mid_b.yaml` | 64 | 152 | 4.3 h |
 | MAPLE-r union | `configs/mid_bu.yaml` | 64 | 139 | 3.6 h |
 | MAPLE-r seen hand | `configs/mid_c.yaml` | 64 | 233 | 4.6 h |
-| AlphaZe\*\* | `configs/mid_d.yaml` | 160 (5 × 32) | 162 | 5.8 h |
+| AlphaZe\*\* | `configs/mid_d.yaml` | 160 (5 × 32) | 158 | 5.1 h |
 
 ## Benchmark
 
@@ -154,11 +154,11 @@ some of the luck it allows for.
 
 | Model | Network evaluations per move | Score against the heuristic agent | Score against the other four models | Rating |
 |---|---|---|---|---|
-| IS-MCTS | 158 | 0.322 ± 0.056 | **0.531 ± 0.030** | −127 [−152, −103] |
-| MAPLE-r | 162 | 0.322 ± 0.056 | 0.494 ± 0.030 | −144 [−172, −122] |
-| MAPLE-r union | 153 | 0.300 ± 0.055 | 0.495 ± 0.030 | −146 [−172, −120] |
-| MAPLE-r seen hand | 162 | 0.296 ± 0.054 | 0.493 ± 0.030 | −148 [−174, −124] |
-| AlphaZe\*\* | 158 | 0.281 ± 0.054 | 0.486 ± 0.030 | −153 [−179, −128] |
+| IS-MCTS | 158 | 0.322 ± 0.056 | **0.537 ± 0.030** | −115 [−140, −93] |
+| MAPLE-r | 162 | 0.322 ± 0.056 | 0.489 ± 0.030 | −138 [−167, −116] |
+| MAPLE-r union | 153 | 0.300 ± 0.055 | 0.501 ± 0.030 | −135 [−163, −111] |
+| MAPLE-r seen hand | 162 | 0.296 ± 0.054 | 0.508 ± 0.030 | −132 [−158, −110] |
+| AlphaZe\*\* | 158 | 0.344 ± 0.057 | 0.465 ± 0.030 | −147 [−174, −122] |
 
 The rating is a Bradley–Terry fit over all 4,050 games on the Elo scale,
 with the heuristic agent at 0 and a 95% bootstrap interval.
@@ -167,28 +167,31 @@ Head to head, score of the row's model against the column's:
 
 | | IS-MCTS | MAPLE-r | MAPLE-r union | MAPLE-r seen hand | AlphaZe\*\* | Heuristic |
 |---|---|---|---|---|---|---|
-| IS-MCTS | — | 0.526 | 0.507 | 0.533 | 0.559 | 0.322 |
-| MAPLE-r | 0.474 | — | 0.496 | 0.496 | 0.511 | 0.322 |
-| MAPLE-r union | 0.493 | 0.504 | — | 0.489 | 0.496 | 0.300 |
-| MAPLE-r seen hand | 0.467 | 0.504 | 0.511 | — | 0.489 | 0.296 |
-| AlphaZe\*\* | 0.441 | 0.489 | 0.504 | 0.511 | — | 0.281 |
-| Heuristic | 0.678 | 0.678 | 0.700 | 0.704 | 0.719 | — |
+| IS-MCTS | — | 0.526 | 0.507 | 0.533 | 0.581 | 0.322 |
+| MAPLE-r | 0.474 | — | 0.496 | 0.496 | 0.489 | 0.322 |
+| MAPLE-r union | 0.493 | 0.504 | — | 0.489 | 0.519 | 0.300 |
+| MAPLE-r seen hand | 0.467 | 0.504 | 0.511 | — | 0.552 | 0.296 |
+| AlphaZe\*\* | 0.419 | 0.511 | 0.481 | 0.448 | — | 0.344 |
+| Heuristic | 0.678 | 0.678 | 0.700 | 0.704 | 0.656 | — |
 
 Each cell is 270 games, ±0.060 at most.
 
 **What the results say:**
 - **IS-MCTS is the strongest model, by a small margin.** It is the only one
-  that scores above even against the others (0.531 ± 0.030, just outside
-  noise). Its biggest margin is over AlphaZe\*\*, 0.559 ± 0.059, at the edge
-  of significance. No other match separates any two models.
-- **MAPLE-r is no better than AlphaZe\*\*.** They tie at 0.511 ± 0.060. In
-  the paper, MAPLE-r was ahead of AlphaZe\*\* on Phantom Go and behind on Dark
-  Hex; only the learned world sampler, which isn't implemented here, won on
-  both.
+  that scores above even against the others (0.537 ± 0.030). Its biggest
+  margin is over AlphaZe\*\*, 0.581 ± 0.059, the one significant head-to-head
+  result. No other match separates any two models.
+- **MAPLE-r is no better than AlphaZe\*\*.** They tie: MAPLE-r scores
+  0.489 ± 0.060. In the paper, MAPLE-r was ahead of AlphaZe\*\* on Phantom Go
+  and behind on Dark Hex; only the learned world sampler, which isn't
+  implemented here, won on both.
 - **The MAPLE-r variants make no difference.** The union rule ties the default
   (0.496), and showing the network the guessed hand doesn't help either
   (0.496 against MAPLE-r).
-- **The heuristic agent beats every model:** they score 0.28–0.32 against
+- **AlphaZe\*\* does best against the heuristic agent and worst against the
+  networks:** 0.344 against the heuristic agent, but 0.465 ± 0.030 against
+  the other models. Its heuristic score is within noise of the others'.
+- **The heuristic agent beats every model:** they score 0.30–0.34 against
   it. Twenty generations of 256 self-play games weren't enough for any
   network to beat a hand-written evaluation searching 200 simulations.
 - A likely reason IS-MCTS leads: it deals a fresh guess at the hidden cards
@@ -220,15 +223,15 @@ rate in all non-mirror games:
 
 | Deck | All games | IS-MCTS | MAPLE-r | MAPLE-r union | MAPLE-r seen hand | AlphaZe\*\* | Heuristic |
 |---|---|---|---|---|---|---|---|
-| Rally | 0.714 | 0.65 | 0.59 | 0.76 | 0.45 | 0.62 | 0.95 |
-| Terror | 0.704 | 0.60 | 0.69 | 0.53 | 0.62 | 0.69 | 0.85 |
-| Faeries | 0.604 | 0.59 | 0.47 | 0.52 | 0.52 | 0.53 | 0.87 |
-| Elves | 0.529 | 0.55 | 0.52 | 0.51 | 0.51 | 0.36 | 0.69 |
-| Burn | 0.501 | 0.49 | 0.54 | 0.59 | 0.47 | 0.31 | 0.61 |
-| Affinity | 0.463 | 0.51 | 0.46 | 0.42 | 0.47 | 0.39 | 0.57 |
-| Wildfire | 0.403 | 0.40 | 0.43 | 0.23 | 0.39 | 0.45 | 0.64 |
-| CawGates | 0.308 | 0.33 | 0.23 | 0.39 | 0.29 | 0.24 | 0.59 |
-| Spy | 0.274 | 0.29 | 0.20 | 0.15 | 0.37 | 0.43 | 0.47 |
+| Rally | 0.725 | 0.67 | 0.63 | 0.74 | 0.50 | 0.59 | 0.95 |
+| Terror | 0.724 | 0.61 | 0.70 | 0.55 | 0.63 | 0.69 | 0.88 |
+| Faeries | 0.606 | 0.60 | 0.51 | 0.52 | 0.53 | 0.47 | 0.88 |
+| Elves | 0.562 | 0.56 | 0.52 | 0.50 | 0.52 | 0.51 | 0.69 |
+| Burn | 0.500 | 0.49 | 0.49 | 0.58 | 0.46 | 0.41 | 0.57 |
+| Affinity | 0.469 | 0.49 | 0.41 | 0.44 | 0.49 | 0.48 | 0.54 |
+| Wildfire | 0.411 | 0.39 | 0.43 | 0.25 | 0.43 | 0.45 | 0.63 |
+| CawGates | 0.294 | 0.35 | 0.19 | 0.39 | 0.28 | 0.25 | 0.56 |
+| Spy | 0.208 | 0.28 | 0.21 | 0.17 | 0.35 | 0.13 | 0.45 |
 
 - The deck matters more than the model. Rally and Terror win about 70% of
   their games, Spy and CawGates under a third.
@@ -243,16 +246,15 @@ rate in all non-mirror games:
   evaluations per move, the others with 139–233. The benchmark equalizes
   compute only at play time.
 - **Bugs fixed after training.** IS-MCTS's training games used a search that
-  left some choices with too high a prior. Every model also trained while two
-  copies of a card that differed in damage or combat counted as one choice.
-  The benchmark uses the fixed code.
-- **AlphaZe\*\*'s training was paused twice** and lost its replay buffer each
-  time, so two of its generations trained on about 70,000 positions instead
-  of 200,000. Training now saves the buffer.
-- **The value heads may have memorized their games.** Training value loss
-  ended at 0.05–0.08 on win/loss targets, too low for honest prediction from
-  early in a game. These runs didn't log the held-out losses that would show
-  it; training now does.
+  left some choices with too high a prior. The four models other than
+  AlphaZe\*\* also trained while two copies of a card that differed in damage
+  or combat counted as one choice. AlphaZe\*\* was trained after both fixes,
+  and the benchmark uses the fixed code.
+- **The value heads memorized their games.** Training value loss ended at
+  0.05–0.08 on win/loss targets, too low for honest prediction from early in
+  a game. AlphaZe\*\*, the only run that logged held-out losses, ended at a
+  held-out value loss of 0.85 against a training loss of 0.05; predicting a
+  draw everywhere scores 1.0.
 
 ## Reproduce
 
@@ -267,7 +269,8 @@ $PY -m mymagezero.cli eval runs/mid_b/latest.pt --vs heuristic --sims 68 \
 cargo run --release -p mmz --example arena -- h75m5 h200 Burn Rally 100
 ```
 
-The benchmark was run at commit `8488808`. One training or benchmark job at a
+The benchmark was run at commit `8488808`; AlphaZe\*\*'s training and its
+five matches ran later, on code with the same search. One training or benchmark job at a
 time: a MAPLE-r or AlphaZe\*\* training run takes 4–6 hours on an RX 7900 XTX
 with a 32-thread CPU, and IS-MCTS about 2.
 

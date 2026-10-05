@@ -318,6 +318,8 @@ def run(cfg: Config, resume: bool = True):
         held_pl, held_vl = heldout_losses(net, replay, held, device, cfg) if len(held) else (0.0, 0.0)
 
         # --- train
+        if device.type == "cuda":
+            torch.cuda.empty_cache()  # self-play's cache, before training allocates its own
         steps = max(1, int(new[0] * cfg.reuse / cfg.batch_size))
         net.train()
         t0 = time.time()
