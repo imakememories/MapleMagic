@@ -76,6 +76,10 @@ pub enum TriggerCondition {
     ControlledCreatureAttacks { keyword: crate::card_def::Keywords },
     /// 503.1a: at the beginning of each upkeep, or only its controller's.
     BeginningOfUpkeep { controller_only: bool },
+    /// "At the beginning of your upkeep, if you control `count` or more
+    /// artifacts": the intervening "if" (603.4) is checked here, as the
+    /// upkeep begins; the effect checks it again on resolution.
+    BeginningOfYourUpkeepIfControlsArtifacts { count: u8 },
     /// "Whenever one or more creatures you control [that entered this turn]
     /// attack": once per declaration.
     OneOrMoreControlledCreaturesAttack { entered_this_turn: bool },
@@ -326,6 +330,19 @@ fn threaten_target_effect() -> EffectOp {
 
 const THREATEN_ETB_TRIGGERS: [TriggeredAbilityDef; 1] =
     [trigger(TriggerCondition::Etb, threaten_target_effect)];
+
+fn lokis_scepter_etb_effect() -> EffectOp {
+    EffectOp::Sequence(vec![
+        threaten_target_effect(),
+        EffectOp::AddSubtypeUntilEndOfTurn {
+            object: ObjectRef::Target(0),
+            subtype: Subtype::Villain,
+        },
+    ])
+}
+
+const LOKIS_SCEPTER_TRIGGERS: [TriggeredAbilityDef; 1] =
+    [trigger(TriggerCondition::Etb, lokis_scepter_etb_effect)];
 fn target_cant_block_effect() -> EffectOp {
     EffectOp::CantBlockThisTurn {
         object: ObjectRef::Target(0),
@@ -354,9 +371,7 @@ const KNUCKLES_TRIGGERS: [TriggeredAbilityDef; 2] = [
         create_treasure_effect,
     ),
     trigger(
-        TriggerCondition::BeginningOfUpkeep {
-            controller_only: true,
-        },
+        TriggerCondition::BeginningOfYourUpkeepIfControlsArtifacts { count: 30 },
         knuckles_upkeep_effect,
     ),
 ];
@@ -1130,7 +1145,8 @@ pub fn triggers_for(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Ognis, the Dragon's Lash" => &OGNIS_TRIGGERS,
         "Captain Lannery Storm" => &CAPTAIN_LANNERY_STORM_TRIGGERS,
         "Smaug the Magnificent" => &SMAUG_TRIGGERS,
-        "Zealous Conscripts" | "Molten Primordial" | "Loki's Scepter" => &THREATEN_ETB_TRIGGERS,
+        "Zealous Conscripts" | "Molten Primordial" => &THREATEN_ETB_TRIGGERS,
+        "Loki's Scepter" => &LOKIS_SCEPTER_TRIGGERS,
         "Spider-Man, Web-Spinner" => &SPIDER_MAN_WEB_SPINNER_TRIGGERS,
         "Whirlwind, Killer Cyclone" => &WHIRLWIND_TRIGGERS,
         "Knuckles the Echidna" => &KNUCKLES_TRIGGERS,
@@ -1160,7 +1176,7 @@ pub fn trigger_target_spec(card_def: u16) -> TargetSpec {
         }
         "Vitu-Ghazi Inspector" => TargetSpec::Creature,
         "Zealous Conscripts" => TargetSpec::AnyPermanent,
-        "Molten Primordial" => TargetSpec::OpponentControlledCreature,
+        "Molten Primordial" => TargetSpec::UpToOneOpponentControlledCreature,
         "Loki's Scepter" => TargetSpec::Creature,
         "Spider-Man, Web-Spinner" => TargetSpec::Creature,
         "Whirlwind, Killer Cyclone" => TargetSpec::OpponentControlledCreature,
@@ -2057,6 +2073,13 @@ fn trigger_matches(
             TriggerCondition::BeginningOfUpkeep { controller_only },
             CommittedEvent::UpkeepBegan { player },
         ) => !controller_only || *player == controller,
+        (
+            TriggerCondition::BeginningOfYourUpkeepIfControlsArtifacts { count },
+            CommittedEvent::UpkeepBegan { player },
+        ) => {
+            *player == controller
+                && crate::effect::controlled_artifact_count(state, controller) >= usize::from(count)
+        }
         (
             TriggerCondition::OneOrMoreControlledCreaturesAttack { entered_this_turn },
             CommittedEvent::DeclaredAttacker {

@@ -4315,7 +4315,7 @@ fn hand_written_spell(name: &str) -> Option<(&'static str, &'static str)> {
             "crate::commander_cards::delayed_blast_fireball",
         ),
         "Mass Mutiny" => (
-            "TargetSpec::OpponentControlledCreature",
+            "TargetSpec::UpToOneOpponentControlledCreature",
             "crate::commander_cards::threaten_target",
         ),
         "Insurrection" => ("TargetSpec::None", "crate::commander_cards::insurrection"),

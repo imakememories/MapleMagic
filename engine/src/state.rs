@@ -790,6 +790,7 @@ pub fn stack_target_contract_is_structurally_valid(
                 | TargetSpec::EnchantmentPermanent
                 | TargetSpec::ControlledCreature
                 | TargetSpec::OpponentControlledCreature
+                | TargetSpec::UpToOneOpponentControlledCreature
                 | TargetSpec::UpToOneTappedCreature
                 | TargetSpec::NoncreatureArtifactPermanent
                 | TargetSpec::Land

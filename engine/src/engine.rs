@@ -389,6 +389,13 @@ pub enum UntilEndOfTurnEffect {
         object_id: ObjectId,
         object_zone_change_count: u32,
     },
+    /// One battlefield incarnation has `subtype` in addition to its other
+    /// types this turn.
+    AddSubtype {
+        object_id: ObjectId,
+        object_zone_change_count: u32,
+        subtype: card_def::Subtype,
+    },
     /// Control of one battlefield incarnation changed until end of turn;
     /// cleanup returns it to `previous_controller`.
     ControlChange {
@@ -396,6 +403,32 @@ pub enum UntilEndOfTurnEffect {
         object_zone_change_count: u32,
         previous_controller: PlayerId,
     },
+}
+
+/// `id` becomes `subtype` in addition to its other types until end of turn.
+pub(crate) fn add_subtype_until_end_of_turn(state: &mut GameState, id: ObjectId, subtype: card_def::Subtype) {
+    let object = state.objects.get(id);
+    if object.zone == Zone::Battlefield {
+        let object_zone_change_count = object.zone_change_count;
+        state.engine.until_end_of_turn.push(UntilEndOfTurnEffect::AddSubtype {
+            object_id: id,
+            object_zone_change_count,
+            subtype,
+        });
+    }
+}
+
+/// Subtypes effects give `id` until end of turn.
+fn subtypes_added_this_turn(state: &GameState, id: ObjectId) -> impl Iterator<Item = card_def::Subtype> + '_ {
+    let generation = state.objects.get(id).zone_change_count;
+    state.engine.until_end_of_turn.iter().filter_map(move |e| match *e {
+        UntilEndOfTurnEffect::AddSubtype { object_id, object_zone_change_count, subtype }
+            if object_id == id && object_zone_change_count == generation =>
+        {
+            Some(subtype)
+        }
+        _ => None,
+    })
 }
 
 /// Whether an effect says `id` can't block this turn.
@@ -1392,6 +1425,7 @@ fn target_count(spec: TargetSpec) -> u8 {
         | TargetSpec::CreatureCardInOwnGraveyard
         | TargetSpec::TargetOpponent
         | TargetSpec::OpponentControlledCreature
+        | TargetSpec::UpToOneOpponentControlledCreature
         | TargetSpec::SpellManaValueAtMostControlledSubtypes { .. }
         | TargetSpec::UpToOneTappedCreature
         | TargetSpec::NoncreatureArtifactPermanent
@@ -1413,7 +1447,8 @@ fn target_min_count(spec: TargetSpec) -> u8 {
         | TargetSpec::UpToTwoCreatures
         | TargetSpec::UpToTwoPlayers
         | TargetSpec::UpToTwoCardsInGraveyards
-        | TargetSpec::UpToOneTappedCreature => 0,
+        | TargetSpec::UpToOneTappedCreature
+        | TargetSpec::UpToOneOpponentControlledCreature => 0,
         _ => target_count(spec),
     }
 }
@@ -2590,7 +2625,8 @@ fn legal_targets_for_controller_from_source(
             })
             .map(Target::Object)
             .collect(),
-        TargetSpec::OpponentControlledCreature => state.players[controller.opponent().index()]
+        TargetSpec::OpponentControlledCreature
+        | TargetSpec::UpToOneOpponentControlledCreature => state.players[controller.opponent().index()]
             .battlefield
             .iter()
             .copied()
@@ -10318,7 +10354,7 @@ pub fn has_effective_keyword(state: &GameState, id: ObjectId, kw: Keywords) -> b
                 UntilEndOfTurnEffect::SyntheticMarker(_) => false,
                 UntilEndOfTurnEffect::DamageCannotBePrevented { .. } => false,
                 UntilEndOfTurnEffect::ControlChange { .. } => false,
-                UntilEndOfTurnEffect::CantBlock { .. } => false,
+                UntilEndOfTurnEffect::CantBlock { .. } | UntilEndOfTurnEffect::AddSubtype { .. } => false,
             };
             if grants {
                 return true;
@@ -10369,6 +10405,7 @@ pub fn effective_subtype_ids(state: &GameState, id: ObjectId) -> Vec<u16> {
         attached_equipment_profiles(state, id)
             .filter_map(|(_, equipment)| equipment.add_subtype.map(|subtype| subtype.stable_id())),
     );
+    subtype_ids.extend(subtypes_added_this_turn(state, id).map(card_def::Subtype::stable_id));
     subtype_ids.sort_unstable();
     subtype_ids.dedup();
     subtype_ids
@@ -10388,6 +10425,7 @@ pub fn has_effective_subtype(state: &GameState, id: ObjectId, subtype: card_def:
     }
     attached_equipment_profiles(state, id)
         .any(|(_, equipment)| equipment.add_subtype == Some(subtype))
+        || subtypes_added_this_turn(state, id).any(|added| added == subtype)
 }
 
 fn participates_in_wave(state: &GameState, id: ObjectId, first_strike_wave: bool) -> bool {
@@ -10921,6 +10959,14 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
                 < usize::from(target_count(pending_trigger.target_spec))
         {
             validate_pending_trigger(state, pending_trigger)?;
+            // "Up to" targets (115.6): stop choosing and put it on the stack.
+            if matches!(&action, Action::FinishEffectSelection)
+                && pending_trigger.targets.len()
+                    >= usize::from(target_min_count(pending_trigger.target_spec))
+            {
+                let pending = state.engine.pending_triggers.remove(0);
+                return push_trigger_onto_stack(state, pending);
+            }
             if !matches!(&action, Action::ChooseTarget(_)) {
                 return Err(
                     "only ChooseTarget may answer a pending triggered ability target".to_string(),

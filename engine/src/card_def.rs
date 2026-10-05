@@ -550,6 +550,9 @@ pub enum TargetSpec {
     /// announcing player. Appended for Masked Vandal and Troublemaker Ouphe
     /// without changing any existing target identity.
     OpponentArtifactOrEnchantmentPermanent,
+    /// Zero or one creature an opponent controls (115.6): Mass Mutiny and
+    /// Molten Primordial, "for each opponent ... up to one target creature".
+    UpToOneOpponentControlledCreature,
 }
 
 impl TargetSpec {
@@ -594,6 +597,7 @@ impl TargetSpec {
             TargetSpec::NoncreatureArtifactPermanent => 33,
             TargetSpec::Land => 34,
             TargetSpec::OpponentArtifactOrEnchantmentPermanent => 35,
+            TargetSpec::UpToOneOpponentControlledCreature => 36,
         }
     }
 }
@@ -1528,6 +1532,7 @@ mod tests {
             (TargetSpec::NoncreatureArtifactPermanent, 33),
             (TargetSpec::Land, 34),
             (TargetSpec::OpponentArtifactOrEnchantmentPermanent, 35),
+            (TargetSpec::UpToOneOpponentControlledCreature, 36),
         ];
         for (target_spec, ordinal) in stable_ordinals {
             assert_eq!(target_spec.stable_id(), ordinal);

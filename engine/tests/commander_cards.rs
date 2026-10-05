@@ -65,8 +65,9 @@ fn lands(state: &mut GameState, player: PlayerId, n: usize) {
     }
 }
 
-/// Casts `card` from player 0's hand with `target` for every target choice and
-/// `mode` for a modal spell, then resolves the stack.
+/// Casts `card` from player 0's hand with `target` for every target choice (no
+/// target where "up to" allows none) and `mode` for a modal spell, then
+/// resolves the stack.
 fn cast(state: &mut GameState, card: &str, target: Option<Target>, mode: u8) -> ObjectId {
     let spell = put_in(state, P0, card, Zone::Hand);
     advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
@@ -74,11 +75,16 @@ fn cast(state: &mut GameState, card: &str, target: Option<Target>, mode: u8) -> 
     loop {
         let d = engine::advance_until_decision(state);
         let a = match &d {
-            Decision::ChooseTargets { legal_targets, .. } | Decision::ChooseEffectTargets { legal_targets, .. } => {
-                let t = target.expect("a target");
-                assert!(legal_targets.contains(&t), "{t:?} not in {legal_targets:?}");
-                Action::ChooseTarget(t)
-            }
+            Decision::ChooseTargets { legal_targets, can_finish, .. }
+            | Decision::ChooseEffectTargets { legal_targets, can_finish, .. } => match target {
+                Some(t) => {
+                    assert!(legal_targets.contains(&t), "{t:?} not in {legal_targets:?}");
+                    Action::ChooseTarget(t)
+                }
+                // "Up to" targets: choose none.
+                None if *can_finish => Action::FinishEffectSelection,
+                None => panic!("a target is required"),
+            },
             Decision::ChooseSpellMode { .. } => Action::ChooseSpellMode(mode),
             Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
             Decision::CastSpellOrPass { .. } => return spell,
@@ -461,4 +467,66 @@ fn delayed_blast_fireball_cast_from_any_exile_deals_five() {
     engine::step(&mut state, Action::CastSpell(top)).unwrap();
     resolve(&mut state);
     assert_eq!(fireball_marks(&state, theirs, mine), (None, 0, 35));
+}
+
+#[test]
+fn mass_mutiny_and_molten_primordial_may_take_nothing() {
+    // "Up to one target" allows zero targets (115.6), even when a creature could be taken.
+    for (card, mana) in [("Mass Mutiny", 5), ("Molten Primordial", 7)] {
+        let mut state = game();
+        lands(&mut state, P0, mana);
+        let theirs = put(&mut state, P1, "Guttersnipe");
+        cast(&mut state, card, None, 0);
+        assert_eq!(state.objects.get(theirs).controller, P1, "{card}");
+    }
+    // Mass Mutiny can be cast when the opponent controls no creatures (2012-06-01 ruling).
+    let mut state = game();
+    lands(&mut state, P0, 5);
+    let mutiny = cast(&mut state, "Mass Mutiny", None, 0);
+    assert_eq!(state.objects.get(mutiny).zone, Zone::Graveyard);
+}
+
+/// Advances to player 0's next upkeep, where it holds priority.
+fn to_my_next_upkeep(state: &mut GameState) {
+    let turn = state.turn;
+    advance(state, |s, d| {
+        s.turn != turn && s.active_player == P0 && s.step == Step::Upkeep && matches!(d, Decision::CastSpellOrPass { player: P0, .. })
+    });
+}
+
+#[test]
+fn knuckles_checks_thirty_artifacts_as_upkeep_begins_and_again_on_resolution() {
+    // 603.4: with 29 artifacts as the upkeep begins, the ability doesn't trigger at all.
+    let mut state = game();
+    put(&mut state, P0, "Knuckles the Echidna");
+    for _ in 0..29 {
+        put(&mut state, P0, "Treasure Token");
+    }
+    to_my_next_upkeep(&mut state);
+    assert!(state.stack.is_empty());
+
+    // With 30 it triggers; dropping to 29 before it resolves makes it do nothing.
+    let mut state = game();
+    put(&mut state, P0, "Knuckles the Echidna");
+    let treasures: Vec<_> = (0..30).map(|_| put(&mut state, P0, "Treasure Token")).collect();
+    to_my_next_upkeep(&mut state);
+    assert_eq!(state.stack.len(), 1);
+    engine::step(&mut state, Action::ActivateManaAbilityChoice(treasures[0], ManaColor::R)).unwrap();
+    let d = advance(&mut state, |s, d| matches!(d, Decision::GameOver { .. }) || s.step == Step::Draw);
+    assert!(!matches!(d, Decision::GameOver { .. }), "{d:?}");
+}
+
+#[test]
+fn lokis_scepter_makes_the_stolen_creature_a_villain_until_end_of_turn() {
+    use mtg_kernel::card_def::Subtype;
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let theirs = put(&mut state, P1, "Guttersnipe");
+    cast(&mut state, "Loki's Scepter", Some(Target::Object(theirs)), 0);
+    assert!(engine::has_effective_subtype(&state, theirs, Subtype::Villain));
+    assert!(engine::effective_subtype_ids(&state, theirs).contains(&Subtype::Villain.stable_id()));
+    assert!(engine::has_effective_subtype(&state, theirs, Subtype::Goblin), "in addition to its other types");
+    end_turn(&mut state);
+    assert!(!engine::has_effective_subtype(&state, theirs, Subtype::Villain));
+    assert!(engine::has_effective_subtype(&state, theirs, Subtype::Goblin));
 }

@@ -858,6 +858,12 @@ pub enum EffectOp {
     },
     /// Puts every card this source exiled face down into its owner's hand.
     ReturnExiledWithToHand,
+    /// The object becomes `subtype` in addition to its other types until end
+    /// of turn (205.1b, layer 4).
+    AddSubtypeUntilEndOfTurn {
+        object: ObjectRef,
+        subtype: Subtype,
+    },
     /// Damage to each opponent and each creature they control, or
     /// `exile_amount` when this spell was cast from exile.
     DamageOpponentsAndTheirCreatures {
@@ -1630,6 +1636,18 @@ impl std::hash::Hash for ExecCtx {
             std::hash::Hash::hash(&kind, state);
         }
     }
+}
+
+/// Artifacts `player` controls.
+pub(crate) fn controlled_artifact_count(state: &GameState, player: PlayerId) -> usize {
+    state.players[player.index()]
+        .battlefield
+        .iter()
+        .filter(|&&id| {
+            let def = &crate::card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
+            def.has_type(crate::card_def::CardType::Artifact)
+        })
+        .count()
 }
 
 /// Lets `holder` play or cast the exiled `id` until `expiry`.
@@ -10200,8 +10218,15 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             }
         }
         EffectOp::Threaten { object } => {
+            // An "up to one" target may have been left unchosen (115.6).
+            if !matches!(*object, ObjectRef::Target(i) if usize::from(i) >= ctx.targets.len()) {
+                let object = ctx.resolve_object(*object);
+                crate::engine::threaten(state, object, ctx.controller);
+            }
+        }
+        EffectOp::AddSubtypeUntilEndOfTurn { object, subtype } => {
             let object = ctx.resolve_object(*object);
-            crate::engine::threaten(state, object, ctx.controller);
+            crate::engine::add_subtype_until_end_of_turn(state, object, *subtype);
         }
         EffectOp::CantBlockThisTurn { object } => {
             let object = ctx.resolve_object(*object);
@@ -11148,17 +11173,7 @@ fn eval_cond(cond: &EffectCond, ctx: &ExecCtx, state: &GameState) -> bool {
             _ => false,
         },
         EffectCond::And(a, b) => eval_cond(a, ctx, state) && eval_cond(b, ctx, state),
-        EffectCond::ControlsArtifactCount(n) => {
-            let count = state.players[ctx.controller.index()]
-                .battlefield
-                .iter()
-                .filter(|&&id| {
-                    let def = &crate::card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
-                    def.has_type(crate::card_def::CardType::Artifact)
-                })
-                .count();
-            count >= *n as usize
-        }
+        EffectCond::ControlsArtifactCount(n) => controlled_artifact_count(state, ctx.controller) >= *n as usize,
         EffectCond::ControlsOtherSubtypeCount {
             subtype,
             minimum_count,

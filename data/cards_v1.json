@@ -9193,10 +9193,7 @@
       ],
       "oracle": "Double strike, trample, haste\nWhenever one or more creatures you control deal combat damage to a player, create a Treasure token.\nTreasure Hunter \u2014 At the beginning of your upkeep, if you control thirty or more artifacts, you win the game.",
       "layout": "normal",
-      "java_file": "Mage.Sets/src/mage/cards/k/KnucklesTheEchidna.java",
-      "approximations": [
-        "the upkeep trigger always goes on the stack; thirty artifacts is checked on resolution only"
-      ]
+      "java_file": "Mage.Sets/src/mage/cards/k/KnucklesTheEchidna.java"
     },
     {
       "name": "Kogla and Yidaro",
@@ -9631,10 +9628,7 @@
       "keywords": [],
       "oracle": "When Loki's Scepter enters, gain control of target creature until end of turn. Untap that creature. Until end of turn, it becomes a Villain in addition to its other types and gains haste.\n{T}: Add one mana of any color.",
       "layout": "normal",
-      "java_file": "Mage.Sets/src/mage/cards/l/LokisScepter.java",
-      "approximations": [
-        "the stolen creature does not become a Villain"
-      ]
+      "java_file": "Mage.Sets/src/mage/cards/l/LokisScepter.java"
     },
     {
       "name": "Lumbering Falls",
@@ -9849,10 +9843,7 @@
       "keywords": [],
       "oracle": "For each opponent, gain control of up to one target creature that player controls until end of turn. Untap those creatures. They gain haste until end of turn.",
       "layout": "normal",
-      "java_file": "Mage.Sets/src/mage/cards/m/MassMutiny.java",
-      "approximations": [
-        "'up to one' target: takes a creature whenever one can be targeted"
-      ]
+      "java_file": "Mage.Sets/src/mage/cards/m/MassMutiny.java"
     },
     {
       "name": "Mesmeric Orb",
@@ -9967,10 +9958,7 @@
       ],
       "oracle": "Haste\nWhen this creature enters, for each opponent, gain control of up to one target creature that player controls until end of turn. Untap those creatures. They gain haste until end of turn.",
       "layout": "normal",
-      "java_file": "Mage.Sets/src/mage/cards/m/MoltenPrimordial.java",
-      "approximations": [
-        "'up to one' target: takes a creature whenever one can be targeted"
-      ]
+      "java_file": "Mage.Sets/src/mage/cards/m/MoltenPrimordial.java"
     },
     {
       "name": "Mossfire Valley",
