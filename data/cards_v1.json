@@ -5957,7 +5957,7 @@
     },
     {
       "name": "Cavern-Hoard Dragon",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{7}{R}{R}",
       "mana_value": 9,
       "colors": [
@@ -8035,7 +8035,7 @@
     },
     {
       "name": "Goldspan Dragon",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{3}{R}{R}",
       "mana_value": 5,
       "colors": [
@@ -8684,7 +8684,7 @@
     },
     {
       "name": "Hylda's Crown of Winter",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{3}",
       "mana_value": 3,
       "colors": [],
@@ -8712,7 +8712,7 @@
     },
     {
       "name": "Idol of Oblivion",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}",
       "mana_value": 2,
       "colors": [],
@@ -11078,7 +11078,7 @@
     },
     {
       "name": "Ruby Medallion",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}",
       "mana_value": 2,
       "colors": [],
@@ -11228,7 +11228,7 @@
     },
     {
       "name": "Screaming Nemesis",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}{R}",
       "mana_value": 3,
       "colors": [
@@ -11458,7 +11458,7 @@
     },
     {
       "name": "Shivan Devastator",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{X}{R}",
       "mana_value": 1,
       "colors": [
@@ -13379,6 +13379,32 @@
       "oracle": "Haste\nWhen this creature enters, gain control of target permanent until end of turn. Untap that permanent. It gains haste until end of turn.",
       "layout": "normal",
       "java_file": "Mage.Sets/src/mage/cards/z/ZealousConscripts.java"
+    },
+    {
+      "name": "Eldrazi Token",
+      "engine_capability": "full",
+      "mana_cost": "",
+      "mana_value": 0,
+      "colors": [],
+      "types": [
+        "Creature"
+      ],
+      "subtypes": [
+        "Eldrazi"
+      ],
+      "supertypes": [],
+      "power": 10,
+      "toughness": 10,
+      "is_land": false,
+      "produces_mana": [],
+      "decks": [],
+      "is_token": true,
+      "sideboard_only": false,
+      "complexity": "commander",
+      "mechanics": [
+        "token_creation"
+      ],
+      "java_file": "Mage/src/main/java/mage/game/permanent/token/EldraziToken.java"
     }
   ],
   "unresolved": []

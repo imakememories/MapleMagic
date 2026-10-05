@@ -52,6 +52,14 @@ fn no_life_lost(value: &[u32; 2]) -> bool {
     *value == [0, 0]
 }
 
+fn no_tokens_created(value: &[u16; 2]) -> bool {
+    *value == [0, 0]
+}
+
+fn nobody(value: &[bool; 2]) -> bool {
+    *value == [false, false]
+}
+
 fn i16_is_zero(value: &i16) -> bool {
     *value == 0
 }
@@ -773,6 +781,7 @@ pub fn stack_target_contract_is_structurally_valid(
         (
             TargetSpec::AnyPlayer
                 | TargetSpec::AnyTarget
+                | TargetSpec::AnyTargetOtherThanSource
                 | TargetSpec::PlayerThenTheirCreature
                 | TargetSpec::TargetOpponent,
             0,
@@ -790,6 +799,7 @@ pub fn stack_target_contract_is_structurally_valid(
             },
         ) | (
             TargetSpec::AnyTarget
+                | TargetSpec::AnyTargetOtherThanSource
                 | TargetSpec::AnyPermanent
                 | TargetSpec::BluePermanent
                 | TargetSpec::RedPermanent
@@ -1250,6 +1260,12 @@ pub struct GameState {
     /// each turn begins. Left out of serialization and hashing while zero.
     #[serde(default, skip_serializing_if = "no_life_lost")]
     pub life_lost_this_turn: [u32; 2],
+    /// Tokens each player has created this turn, reset as each turn begins.
+    #[serde(default, skip_serializing_if = "no_tokens_created")]
+    pub tokens_created_this_turn: [u16; 2],
+    /// Players who can't gain life for the rest of the game (Screaming Nemesis).
+    #[serde(default, skip_serializing_if = "nobody")]
+    pub cant_gain_life: [bool; 2],
     /// Priority/stack/turn-structure bookkeeping and the propose-commit
     /// event log, all owned by the `engine`/`event`/`trigger` modules. See
     /// `engine::EngineState`.
@@ -1293,6 +1309,12 @@ impl Hash for GameState {
         }
         if !no_life_lost(&self.life_lost_this_turn) {
             self.life_lost_this_turn.hash(state);
+        }
+        if !no_tokens_created(&self.tokens_created_this_turn) {
+            self.tokens_created_this_turn.hash(state);
+        }
+        if !nobody(&self.cant_gain_life) {
+            self.cant_gain_life.hash(state);
         }
     }
 }
@@ -1428,6 +1450,8 @@ impl GameState {
             commander: None,
             face_down: Vec::new(),
             life_lost_this_turn: [0; 2],
+            tokens_created_this_turn: [0; 2],
+            cant_gain_life: [false; 2],
             engine: crate::engine::EngineState::default(),
         }
     }

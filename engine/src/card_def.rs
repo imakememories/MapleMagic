@@ -553,6 +553,8 @@ pub enum TargetSpec {
     /// Zero or one creature an opponent controls (115.6): Mass Mutiny and
     /// Molten Primordial, "for each opponent ... up to one target creature".
     UpToOneOpponentControlledCreature,
+    /// A player or creature other than the source ("any other target").
+    AnyTargetOtherThanSource,
 }
 
 impl TargetSpec {
@@ -598,6 +600,7 @@ impl TargetSpec {
             TargetSpec::Land => 34,
             TargetSpec::OpponentArtifactOrEnchantmentPermanent => 35,
             TargetSpec::UpToOneOpponentControlledCreature => 36,
+            TargetSpec::AnyTargetOtherThanSource => 37,
         }
     }
 }
@@ -722,6 +725,12 @@ pub enum CostComponent {
     /// Pay life equal to the number of colors in the payer's commander's
     /// color identity (War Room); not payable without a commander.
     PayLifePerCommanderColor,
+    /// "Activate only if you created a token this turn" (Idol of Oblivion);
+    /// pays nothing.
+    CreatedTokenThisTurn,
+    /// A mana cost that costs `less` generic less during its payer's turn
+    /// (Hylda's Crown of Winter).
+    ManaLessDuringYourTurn { cost: Cost, less: u8 },
     /// Sacrifice `n` controlled lands. Exact lands are staged one at a time
     /// through `engine::Decision::ChooseCostTargets`; the public
     /// `PendingCast::sacrifice_chosen` compatibility field also carries the
@@ -963,6 +972,9 @@ pub enum DynamicCountDef {
     ControllerGraveyardAnyType(&'static [CardType]),
     /// Count cards the caster has drawn during the current turn.
     ControllerDrawsThisTurn,
+    /// The greatest number of artifacts an opponent controls (Cavern-Hoard
+    /// Dragon). Appended.
+    GreatestOpponentArtifacts,
     /// One iff the controller has both a creature with the named subtype
     /// and a creature without it. Of One Mind uses Human.
     ControllerHasCreatureWithAndWithoutSubtype(Subtype),
@@ -1492,7 +1504,7 @@ mod tests {
         // Hero Token remains id 159 and Clue Token remains id 160. Skeleton
         // Token is appended as id 161 without renumbering earlier ids. The
         // Commander decks' cards follow from id 162.
-        assert_eq!(CARD_DEFS.len(), 439);
+        assert_eq!(CARD_DEFS.len(), 440);
     }
 
     #[test]
@@ -1541,6 +1553,7 @@ mod tests {
             (TargetSpec::Land, 34),
             (TargetSpec::OpponentArtifactOrEnchantmentPermanent, 35),
             (TargetSpec::UpToOneOpponentControlledCreature, 36),
+            (TargetSpec::AnyTargetOtherThanSource, 37),
         ];
         for (target_spec, ordinal) in stable_ordinals {
             assert_eq!(target_spec.stable_id(), ordinal);
@@ -1560,7 +1573,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0x4e3d_aa2f_773b_4d9b);
+        assert_eq!(KERNEL_CARDDB_HASH, 0x82de_9e3a_eaa9_d5dc);
     }
 
     #[test]

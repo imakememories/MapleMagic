@@ -688,6 +688,11 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
                 amount: l.amount,
             }
         }
+        ProposedEvent::LifeGain(g) if state.cant_gain_life[g.player.index()] => {
+            // The gain doesn't happen at all.
+            let _ = g;
+            return;
+        }
         ProposedEvent::LifeGain(g) => {
             state.players[g.player.index()].life += g.amount;
             CommittedEvent::LifeGain {
@@ -723,6 +728,8 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
             }
         }
         ProposedEvent::CreateToken(t) => {
+            state.tokens_created_this_turn[t.controller.index()] =
+                state.tokens_created_this_turn[t.controller.index()].saturating_add(1);
             let token_def = &crate::card_def::CARD_DEFS[t.token_def as usize];
             let name = token_def.object_name.to_string();
             let object = state.objects.push(crate::state::GameObject {

@@ -3,6 +3,10 @@
 
 use crate::effect::{EffectOp, ObjectRef, ThreatenFilter};
 
+pub fn shivan_devastator() -> Option<EffectOp> {
+    Some(EffectOp::PutSourceOntoBattlefieldWithXPlusOneCounters)
+}
+
 pub fn delayed_blast_fireball() -> Option<EffectOp> {
     Some(EffectOp::DamageOpponentsAndTheirCreatures {
         amount: 2,

@@ -1412,6 +1412,7 @@ fn target_count(spec: TargetSpec) -> u8 {
     match spec {
         TargetSpec::None => 0,
         TargetSpec::AnyTarget
+        | TargetSpec::AnyTargetOtherThanSource
         | TargetSpec::AnyPlayer
         | TargetSpec::AnySpellOnStack
         | TargetSpec::InstantSpellOnStack
@@ -2510,11 +2511,14 @@ fn legal_targets_for_controller_from_source(
             .filter(|target| !targets_chosen.contains(target))
             .collect(),
         TargetSpec::TargetOpponent => vec![Target::Player(controller.opponent())],
-        TargetSpec::AnyTarget => {
+        TargetSpec::AnyTarget | TargetSpec::AnyTargetOtherThanSource => {
             let mut out = vec![Target::Player(PlayerId::P0), Target::Player(PlayerId::P1)];
             for p in [PlayerId::P0, PlayerId::P1] {
                 for &id in &state.players[p.index()].battlefield {
-                    if object_has_type(state, id, CardType::Creature) {
+                    let is_source = source.is_some_and(|source| source.object == id);
+                    if object_has_type(state, id, CardType::Creature)
+                        && !(spec == TargetSpec::AnyTargetOtherThanSource && is_source)
+                    {
                         out.push(Target::Object(id));
                     }
                 }
@@ -2928,7 +2932,7 @@ fn payable_activation_legal_targets_for(
     activation_legal_targets_for(source, ability, targets_chosen, state)
         .into_iter()
         .filter(|target| {
-            let Some(cost) = activation_mana_cost(ability.cost) else {
+            let Some(cost) = activation_mana_cost_for(ability.cost, controller, state) else {
                 return true;
             };
             if cost.x_count == 0 {
@@ -3226,9 +3230,23 @@ fn unblocked_attacker_return_candidates(
         .collect()
 }
 
-fn activation_mana_cost(components: &[CostComponent]) -> Option<&Cost> {
+fn activation_mana_cost(components: &[CostComponent]) -> Option<Cost> {
     components.iter().find_map(|component| match component {
-        CostComponent::Mana(cost) => Some(cost),
+        CostComponent::Mana(cost) | CostComponent::ManaLessDuringYourTurn { cost, .. } => Some(*cost),
+        _ => None,
+    })
+}
+
+/// [`activation_mana_cost`] as `player` pays it now, after a cost that is
+/// cheaper during its payer's turn.
+fn activation_mana_cost_for(components: &[CostComponent], player: PlayerId, state: &GameState) -> Option<Cost> {
+    components.iter().find_map(|component| match component {
+        CostComponent::Mana(cost) => Some(*cost),
+        CostComponent::ManaLessDuringYourTurn { cost, less } => Some(if state.active_player == player {
+            Cost { generic: cost.generic.saturating_sub(*less), ..*cost }
+        } else {
+            *cost
+        }),
         _ => None,
     })
 }
@@ -3245,8 +3263,8 @@ fn payable_activation_cost_object_candidates(
     activation_cost_object_candidates(player, source, subtype, state, &[])
         .into_iter()
         .filter(|candidate| {
-            activation_mana_cost(components).is_none_or(|cost| {
-                mana::can_pay_excluding_sources(cost, 0, player, state, &[source, *candidate])
+            activation_mana_cost_for(components, player, state).is_none_or(|cost| {
+                mana::can_pay_excluding_sources(&cost, 0, player, state, &[source, *candidate])
                     .is_some()
             })
         })
@@ -3321,12 +3339,13 @@ fn component_payment_shape_supported(components: &[CostComponent]) -> bool {
 
     for component in components {
         match component {
-            CostComponent::Mana(cost) => {
+            CostComponent::Mana(cost) | CostComponent::ManaLessDuringYourTurn { cost, .. } => {
                 if mana.is_some() || saw_source_changing_component {
                     return false;
                 }
                 mana = Some(cost);
             }
+            CostComponent::CreatedTokenThisTurn => {}
             CostComponent::Tap => {
                 tap_count += 1;
                 saw_source_changing_component = true;
@@ -3470,7 +3489,8 @@ fn can_pay_activation_components_with_x(
     if has_unblocked_attacker_return_cost(components) {
         return !unblocked_attacker_return_candidates(player, state, &[]).is_empty();
     }
-    if let Some(cost) = activation_mana_cost(components) {
+    if let Some(cost) = activation_mana_cost_for(components, player, state) {
+        let cost = &cost;
         let plan = if components
             .iter()
             .any(|component| matches!(component, CostComponent::Tap))
@@ -3628,6 +3648,9 @@ fn can_pay_components(
                 !unblocked_attacker_return_candidates(player, state, &[]).is_empty()
             }
             CostComponent::Mana(cost) => mana::can_pay(cost, 0, player, state).is_some(),
+            CostComponent::ManaLessDuringYourTurn { .. } => activation_mana_cost_for(std::slice::from_ref(c), player, state)
+                .is_some_and(|cost| mana::can_pay(&cost, 0, player, state).is_some()),
+            CostComponent::CreatedTokenThisTurn => state.tokens_created_this_turn[player.index()] > 0,
             CostComponent::PayLife(amount) => {
                 state.players[player.index()].life >= i32::from(*amount)
             }
@@ -3858,7 +3881,8 @@ fn pay_cost_components_with_x(
     // Derive the sole mana plan before applying any state-changing component.
     // This keeps a restored or forward-generated unaffordable shape from
     // partially paying life/discard-adjacent components before failing.
-    let mana_cost = activation_mana_cost(components);
+    let mana_cost = activation_mana_cost_for(components, player, state);
+    let mana_cost = mana_cost.as_ref();
     let mut reserved = Vec::new();
     if components
         .iter()
@@ -3926,7 +3950,8 @@ fn pay_cost_components_with_x(
                     ProposedEvent::zone_change(object_cost_chosen[0], Zone::Hand),
                 );
             }
-            CostComponent::Mana(_) => pay_plan(
+            CostComponent::CreatedTokenThisTurn => {}
+            CostComponent::Mana(_) | CostComponent::ManaLessDuringYourTurn { .. } => pay_plan(
                 state,
                 player,
                 mana_plan
@@ -4520,12 +4545,42 @@ fn checked_graveyard_exile_candidates(
 /// A pending cast's normal cost, including the commander tax when it is
 /// being cast from the command zone.
 fn pending_normal_cast_cost(def: &card_def::CardDef, pending: &PendingCast, state: &GameState) -> Cost {
+    crate::statics::reduce_spell_cost(
+        taxed_normal_cast_cost(def, pending, state),
+        crate::statics::spell_cost_reduction(state, pending.controller, def),
+    )
+}
+
+fn taxed_normal_cast_cost(def: &card_def::CardDef, pending: &PendingCast, state: &GameState) -> Cost {
     crate::commander::with_tax(
         effective_normal_cast_cost(def, pending.controller, state),
         state,
         pending.spell,
         pending.origin_zone,
     )
+}
+
+/// How much less X costs for a normal cast: a reduction its generic mana
+/// couldn't absorb.
+fn pending_x_discount(def: &card_def::CardDef, pending: &PendingCast, state: &GameState) -> u8 {
+    let normal_form = match pending.mode_chosen {
+        Some(1) => supported_bestow(def).is_none() && supported_omen(def).is_none(),
+        Some(_) => true,
+        None => false,
+    };
+    if !normal_form {
+        return 0;
+    }
+    crate::statics::x_discount(
+        taxed_normal_cast_cost(def, pending, state),
+        crate::statics::spell_cost_reduction(state, pending.controller, def),
+    )
+}
+
+/// A spell's foretell cost after reductions from permanents.
+fn reduced_foretell_cost(def: &card_def::CardDef, player: PlayerId, state: &GameState) -> Option<Cost> {
+    let r = crate::statics::spell_cost_reduction(state, player, def);
+    def.foretell_cost.map(|cost| crate::statics::reduce_spell_cost(cost, r))
 }
 
 fn effective_normal_cast_cost(
@@ -4563,6 +4618,17 @@ fn effective_normal_cast_cost(
                 .any(|card_type| types.contains(card_type))
         })
         .count() as u32,
+        card_def::DynamicCountDef::GreatestOpponentArtifacts => [player.opponent()]
+            .iter()
+            .map(|opponent| {
+                state.players[opponent.index()]
+                    .battlefield
+                    .iter()
+                    .filter(|&&object| card_def::CARD_DEFS[state.objects.get(object).card_def as usize].has_type(CardType::Artifact))
+                    .count() as u32
+            })
+            .max()
+            .unwrap_or(0),
         card_def::DynamicCountDef::ControllerDrawsThisTurn => {
             state.players[player.index()].draws_this_turn
         }
@@ -4814,6 +4880,18 @@ fn maximum_payable_x(cost: &Cost, player: PlayerId, state: &GameState) -> Option
         .find(|&x| mana::can_pay(cost, x, player, state).is_some())
 }
 
+/// [`maximum_payable_x`] for a pending spell, where a cost reduction left over
+/// after its generic mana comes off X once X is known (601.2f).
+fn maximum_payable_x_after_reductions(
+    cost: &Cost,
+    def: &card_def::CardDef,
+    pending: &PendingCast,
+    state: &GameState,
+) -> Option<u8> {
+    let maximum = maximum_payable_x(cost, pending.controller, state)?;
+    Some(maximum.saturating_add(pending_x_discount(def, pending, state)))
+}
+
 /// Returns the one graveyard cast method this definition can expose through
 /// the current object-id-only `Action::CastSpell` surface. A future card with
 /// both Flashback and Escape is deliberately omitted until the action schema
@@ -4882,11 +4960,14 @@ fn is_castable_now(
                 && can_pay_components(escape.cost, player, id, state)
         }),
         CastMethodV4::Normal => {
-            let normal_cost = crate::commander::with_tax(
-                effective_normal_cast_cost(def, player, state),
-                state,
-                id,
-                state.objects.get(id).zone,
+            let normal_cost = crate::statics::reduce_spell_cost(
+                crate::commander::with_tax(
+                    effective_normal_cast_cost(def, player, state),
+                    state,
+                    id,
+                    state.objects.get(id).zone,
+                ),
+                crate::statics::spell_cost_reduction(state, player, def),
             );
             let normal_ok =
                 main_timing_ok && mana::can_pay(&normal_cost, 0, player, state).is_some();
@@ -4928,8 +5009,7 @@ fn is_castable_now(
         CastMethodV4::Foretold => {
             crate::face_down::foretold_before_this_turn(state, id).is_some()
                 && state.objects.get(id).owner == player
-                && def
-                    .foretell_cost
+                && reduced_foretell_cost(def, player, state)
                     .is_some_and(|cost| mana::can_pay(&cost, 0, player, state).is_some())
         }
         CastMethodV4::Alternative
@@ -5377,6 +5457,9 @@ fn activate_mana_ability_for(
             .transpose()?;
 
         let amount = match rich.amount {
+            _ if crate::statics::treasure_mana_amount(state, source).is_some() => {
+                crate::statics::treasure_mana_amount(state, source).unwrap()
+            }
             ManaAbilityAmountDef::Fixed(amount) => amount,
             ManaAbilityAmountDef::ControlledCreaturesWithKeyword(keyword) => state.players
                 [player.index()]
@@ -6027,7 +6110,8 @@ fn remaining_cast_payment_is_payable(
                         .is_some()
                 })
             } else {
-                mana::can_pay(&normal, x_value, pending.controller, state).is_some()
+                let x = x_value.saturating_sub(pending_x_discount(def, pending, state));
+                mana::can_pay(&normal, x, pending.controller, state).is_some()
             }
         }
         CastMethodV4::Alternative => def.alt_cost.is_some_and(|components| {
@@ -6043,8 +6127,7 @@ fn remaining_cast_payment_is_payable(
             .madness_cost
             .is_some_and(|cost| mana::can_pay(&cost, 0, pending.controller, state).is_some()),
         CastMethodV4::Plotted => true,
-        CastMethodV4::Foretold => def
-            .foretell_cost
+        CastMethodV4::Foretold => reduced_foretell_cost(def, pending.controller, state)
             .is_some_and(|cost| mana::can_pay(&cost, x_value, pending.controller, state).is_some()),
         CastMethodV4::Omen => supported_omen(def).is_some_and(|omen| {
             mana::can_pay(&omen.cost, x_value, pending.controller, state).is_some()
@@ -7018,7 +7101,8 @@ pub(crate) fn validate_pending_cast(
         } else if cost.x_count != 1 {
             return Err("pending cast has an unsupported number of X symbols".to_string());
         } else if let Some(x_value) = pending.x_value {
-            if mana::can_pay(&cost, x_value, pending.controller, state).is_none() {
+            let x = x_value.saturating_sub(pending_x_discount(def, pending, state));
+            if mana::can_pay(&cost, x, pending.controller, state).is_none() {
                 return Err("pending cast chose an unaffordable X value".to_string());
             }
             if active_spec.is_none_or(|spec| !pending_cast_targeting_is_complete(pending, spec))
@@ -7860,7 +7944,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
             ));
             return None;
         };
-        let Some(maximum) = maximum_payable_x(&cost, pending.controller, state) else {
+        let Some(maximum) = maximum_payable_x_after_reductions(&cost, def, &pending, state) else {
             let cast_method = finalized_cast_method(&pending, staged_method, def);
             let pending = state.engine.pending_cast.take().unwrap();
             abort_cast(state, pending, cast_method);
@@ -9906,6 +9990,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             state.players[0].draws_this_turn = 0;
             state.players[1].draws_this_turn = 0;
             state.life_lost_this_turn = [0; 2];
+            state.tokens_created_this_turn = [0; 2];
             state.players[0].spells_cast_this_turn = 0;
             state.players[1].spells_cast_this_turn = 0;
             for (_, object) in state.objects.iter_mut() {
@@ -12866,7 +12951,7 @@ fn apply_pending_cast_effect_option(
         PendingCastActionStage::ChooseXValue => {
             let cost = pending_cast_selected_mana_cost(def, &pending, state)
                 .ok_or("pending X choice lost its selected spell form")?;
-            let maximum = maximum_payable_x(&cost, pending.controller, state)
+            let maximum = maximum_payable_x_after_reductions(&cost, def, &pending, state)
                 .ok_or("pending X choice has no payable value")?;
             let x_value = u8::try_from(option_index)
                 .map_err(|_| "chosen X exceeds the supported u8 range".to_string())?;
@@ -13221,8 +13306,7 @@ fn finalize_owned_cast(
     match cast_method {
         CastMethodV4::Plotted => {}
         CastMethodV4::Foretold => {
-            let cost = def
-                .foretell_cost
+            let cost = reduced_foretell_cost(def, pending.controller, state)
                 .expect("validated foretold cast has a definition-owned cost");
             let Some(plan) = mana::can_pay(&cost, 0, pending.controller, state) else {
                 abort_cast(state, pending, cast_method);
@@ -13286,7 +13370,8 @@ fn finalize_owned_cast(
                     state,
                 )
             } else {
-                mana::can_pay(&normal_cost, x_value, pending.controller, state)
+                let x = x_value.saturating_sub(pending_x_discount(def, &pending, state));
+                mana::can_pay(&normal_cost, x, pending.controller, state)
             };
             let Some(plan) = plan else {
                 abort_cast(state, pending, cast_method);

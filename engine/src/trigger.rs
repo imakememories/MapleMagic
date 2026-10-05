@@ -91,6 +91,11 @@ pub enum TriggerCondition {
     CardsExiledFromYourLibraryOrGraveyard,
     /// "Whenever a permanent you control enters tapped".
     ControlledPermanentEntersTapped,
+    /// "Whenever this ... becomes the target of a spell".
+    BecomesTargetOfSpell,
+    /// "Whenever this creature is dealt damage": once per batch, for the
+    /// batch's total (damage from several sources at once triggers once).
+    IsDealtDamage,
     /// "Whenever one or more creatures you control [that entered this turn]
     /// attack": once per declaration.
     OneOrMoreControlledCreaturesAttack { entered_this_turn: bool },
@@ -107,6 +112,7 @@ impl TriggerCondition {
             TriggerCondition::OneOrMoreControlledCreaturesAttack { .. }
                 | TriggerCondition::OneOrMoreControlledCreaturesDealCombatDamageToPlayer
                 | TriggerCondition::CardsExiledFromYourLibraryOrGraveyard
+                | TriggerCondition::IsDealtDamage
         )
     }
 }
@@ -462,6 +468,21 @@ const LAELIA_TRIGGERS: [TriggeredAbilityDef; 2] = [
 ];
 const AMULET_OF_VIGOR_TRIGGERS: [TriggeredAbilityDef; 1] =
     [trigger(TriggerCondition::ControlledPermanentEntersTapped, untap_entering_permanent_effect)];
+
+/// Cavern-Hoard Dragon's and Screaming Nemesis's effects before they are
+/// bound to the damage that triggered them.
+fn bound_at_trigger_effect() -> EffectOp {
+    EffectOp::Sequence(Vec::new())
+}
+
+const GOLDSPAN_DRAGON_TRIGGERS: [TriggeredAbilityDef; 2] = [
+    trigger(TriggerCondition::Attacks, create_treasure_effect),
+    trigger(TriggerCondition::BecomesTargetOfSpell, create_treasure_effect),
+];
+const CAVERN_HOARD_DRAGON_TRIGGERS: [TriggeredAbilityDef; 1] =
+    [trigger(TriggerCondition::DealsCombatDamageToPlayer, bound_at_trigger_effect)];
+const SCREAMING_NEMESIS_TRIGGERS: [TriggeredAbilityDef; 1] =
+    [trigger(TriggerCondition::IsDealtDamage, bound_at_trigger_effect)];
 
 const OGNIS_TRIGGERS: [TriggeredAbilityDef; 1] = [trigger(
     TriggerCondition::ControlledCreatureAttacks {
@@ -1204,6 +1225,9 @@ pub fn triggers_for(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Hobgoblin, Mantled Marauder" => &HOBGOBLIN_TRIGGERS,
         "Laelia, the Blade Reforged" => &LAELIA_TRIGGERS,
         "Amulet of Vigor" => &AMULET_OF_VIGOR_TRIGGERS,
+        "Goldspan Dragon" => &GOLDSPAN_DRAGON_TRIGGERS,
+        "Cavern-Hoard Dragon" => &CAVERN_HOARD_DRAGON_TRIGGERS,
+        "Screaming Nemesis" => &SCREAMING_NEMESIS_TRIGGERS,
         "Connecting the Dots" => &CONNECTING_THE_DOTS_TRIGGERS,
         _ => &[],
     }
@@ -1233,6 +1257,7 @@ pub fn trigger_target_spec(card_def: u16) -> TargetSpec {
         "Loki's Scepter" => TargetSpec::Creature,
         "Spider-Man, Web-Spinner" => TargetSpec::Creature,
         "Whirlwind, Killer Cyclone" => TargetSpec::OpponentControlledCreature,
+        "Screaming Nemesis" => TargetSpec::AnyTargetOtherThanSource,
         _ => TargetSpec::None,
     }
 }
@@ -1280,6 +1305,12 @@ pub fn trigger_effect_matches(card_def: u16, effect: &EffectOp) -> bool {
         return true;
     }
     if card.name == "Amulet of Vigor" && matches!(effect, EffectOp::UntapBoundObject { .. }) {
+        return true;
+    }
+    if card.name == "Cavern-Hoard Dragon" && matches!(effect, EffectOp::CreateTreasurePerArtifactOf { .. }) {
+        return true;
+    }
+    if card.name == "Screaming Nemesis" && matches!(effect, EffectOp::DamageTargetAndStopLifeGain { .. }) {
         return true;
     }
     if card.name == "Avenging Hunter" && matches!(effect, EffectOp::ResolveInitiativeTrigger { .. })
@@ -1766,6 +1797,19 @@ fn triggers_from_events(
                         moon_circuit_hacker_combat_effect_for_entered_this_turn(
                             obj.v4.entered_battlefield_turn == Some(state.turn),
                         )
+                    } else if let (TriggerCondition::DealsCombatDamageToPlayer, CommittedEvent::CombatDamageToPlayer { player, .. }, "Cavern-Hoard Dragon") =
+                        (def.condition, ev, card.name)
+                    {
+                        EffectOp::CreateTreasurePerArtifactOf { player: *player }
+                    } else if def.condition == TriggerCondition::IsDealtDamage {
+                        let amount = events
+                            .iter()
+                            .map(|e| match e {
+                                CommittedEvent::Damage { target: Target::Object(damaged), amount, .. } if *damaged == id => (*amount).max(0),
+                                _ => 0,
+                            })
+                            .sum();
+                        EffectOp::DamageTargetAndStopLifeGain { amount }
                     } else if let (TriggerCondition::ControlledPermanentEntersTapped, CommittedEvent::EnteredTapped { object }) =
                         (def.condition, ev)
                     {
@@ -2223,6 +2267,27 @@ fn trigger_matches(
         (TriggerCondition::ControlledPermanentEntersTapped, CommittedEvent::EnteredTapped { object }) => {
             state.objects.get(*object).controller == controller
         }
+        (
+            TriggerCondition::BecomesTargetOfSpell,
+            CommittedEvent::Targeted {
+                target,
+                targeting_stack_item,
+                ..
+            },
+        ) => {
+            *target == source
+                && state.stack.iter().any(|item| {
+                    item.v4.stack_item_id == *targeting_stack_item && item.kind == crate::state::StackItemKind::Spell
+                })
+        }
+        (
+            TriggerCondition::IsDealtDamage,
+            CommittedEvent::Damage {
+                target: Target::Object(damaged),
+                amount,
+                ..
+            },
+        ) => *damaged == source && *amount > 0,
         (
             TriggerCondition::DrawNth(n),
             CommittedEvent::Draw {

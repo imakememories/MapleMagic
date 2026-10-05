@@ -67,8 +67,8 @@ fn lands(state: &mut GameState, player: PlayerId, n: usize) {
 }
 
 /// Casts `card` from player 0's hand with `target` for every target choice (no
-/// target where "up to" allows none) and `mode` for a modal spell, then
-/// resolves the stack.
+/// target where "up to" allows none) and `mode` for a modal spell or as X,
+/// then resolves the stack.
 fn cast(state: &mut GameState, card: &str, target: Option<Target>, mode: u8) -> ObjectId {
     let spell = put_in(state, P0, card, Zone::Hand);
     advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
@@ -91,6 +91,7 @@ fn cast(state: &mut GameState, card: &str, target: Option<Target>, mode: u8) -> 
                 None => panic!("a target is required"),
             },
             Decision::ChooseSpellMode { .. } => Action::ChooseSpellMode(mode),
+            Decision::ChooseEffectOption { .. } => Action::ChooseEffectOption(u16::from(mode)),
             Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
             Decision::CastSpellOrPass { .. } => return spell,
             other => panic!("unhandled decision {other:?}"),
@@ -719,4 +720,164 @@ fn goblin_war_drums_gives_only_your_creatures_menace() {
     engine::step(&mut state, Action::DeclareAttackers(vec![mine])).unwrap();
     advance(&mut state, |_, d| matches!(d, Decision::DeclareBlockers { .. }));
     assert!(engine::step(&mut state.clone(), Action::DeclareBlockers(vec![(theirs, mine)])).is_err(), "one blocker can't block it");
+}
+
+fn offered_ability(state: &mut GameState, source: ObjectId, index: u8) -> bool {
+    matches!(engine::advance_until_decision(state), Decision::CastSpellOrPass { activatable_abilities, .. } if activatable_abilities.contains(&(source, index)))
+}
+
+#[test]
+fn shivan_devastator_enters_with_x_counters() {
+    let mut state = game();
+    lands(&mut state, P0, 4);
+    let dragon = cast(&mut state, "Shivan Devastator", None, 3);
+    assert_eq!(state.objects.get(dragon).zone, Zone::Battlefield);
+    assert_eq!(state.objects.get(dragon).counters.plus1_plus1, 3);
+}
+
+#[test]
+fn ruby_medallion_takes_one_generic_off_red_spells_x_included() {
+    let mut state = game();
+    put(&mut state, P0, "Ruby Medallion");
+    lands(&mut state, P0, 2);
+    let guttersnipe = cast(&mut state, "Guttersnipe", None, 0);
+    assert_eq!(state.objects.get(guttersnipe).zone, Zone::Battlefield, "{{2}}{{R}} with two lands");
+
+    let mut state = game();
+    put(&mut state, P0, "Ruby Medallion");
+    let ring = put_in(&mut state, P0, "Sol Ring", Zone::Hand);
+    match advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. })) {
+        Decision::CastSpellOrPass { castable_spells, .. } => assert!(!castable_spells.contains(&ring), "colorless isn't reduced"),
+        other => panic!("{other:?}"),
+    }
+
+    // {X}{R} with X = 3 and three lands: the {1} left over comes off X.
+    let mut state = game();
+    put(&mut state, P0, "Ruby Medallion");
+    lands(&mut state, P0, 3);
+    let dragon = cast(&mut state, "Shivan Devastator", None, 3);
+    assert_eq!(state.objects.get(dragon).counters.plus1_plus1, 3);
+}
+
+#[test]
+fn goldspan_dragon_makes_treasures_that_each_make_two_mana() {
+    let mut state = game();
+    let dragon = put(&mut state, P0, "Goldspan Dragon");
+    attack_with(&mut state, vec![dragon]);
+    assert_eq!(named(&state, P0, "Treasure Token").len(), 1);
+
+    let mut state = game();
+    let dragon = put(&mut state, P0, "Goldspan Dragon");
+    lands(&mut state, P0, 6);
+    cast(&mut state, "Lightning Bolt", Some(Target::Object(dragon)), 0);
+    assert_eq!(named(&state, P0, "Treasure Token").len(), 1, "a spell targeted it");
+    cast(&mut state, "Zealous Conscripts", Some(Target::Object(dragon)), 0);
+    assert_eq!(named(&state, P0, "Treasure Token").len(), 1, "an ability isn't a spell");
+    let treasure = named(&state, P0, "Treasure Token")[0];
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::ActivateManaAbilityChoice(treasure, ManaColor::R)).unwrap();
+    assert_eq!(state.players[0].mana_pool[ManaColor::R.pool_index()], 2);
+}
+
+#[test]
+fn cavern_hoard_dragon_costs_less_per_opposing_artifact_and_cashes_them_in() {
+    let mut state = game();
+    for _ in 0..3 {
+        put(&mut state, P1, "Treasure Token");
+    }
+    lands(&mut state, P0, 5);
+    let dragon = put_in(&mut state, P0, "Cavern-Hoard Dragon", Zone::Hand);
+    match advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. })) {
+        Decision::CastSpellOrPass { castable_spells, .. } => assert!(!castable_spells.contains(&dragon), "five lands"),
+        other => panic!("{other:?}"),
+    }
+    put(&mut state, P0, "Mountain");
+    state.players[0].hand.retain(|&o| o != dragon);
+    let dragon = cast(&mut state, "Cavern-Hoard Dragon", None, 0);
+    assert_eq!(state.objects.get(dragon).zone, Zone::Battlefield, "{{7}}{{R}}{{R}} less three");
+    attack_with(&mut state, vec![dragon]);
+    assert_eq!(named(&state, P0, "Treasure Token").len(), 3);
+}
+
+#[test]
+fn screaming_nemesis_redirects_damage_dealt_at_once_and_stops_life_gain() {
+    use mtg_kernel::event::{propose_and_commit, propose_and_commit_batch, ProposedEvent};
+    let mut state = game();
+    let nemesis = put(&mut state, P0, "Screaming Nemesis");
+    let source = put(&mut state, P1, "Guttersnipe");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    propose_and_commit_batch(
+        &mut state,
+        vec![
+            ProposedEvent::damage(source, Target::Object(nemesis), 2),
+            ProposedEvent::damage(source, Target::Object(nemesis), 1),
+        ],
+    );
+    let mut triggers = 0;
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseTargets { legal_targets, .. } => {
+                triggers += 1;
+                assert!(!legal_targets.contains(&Target::Object(nemesis)), "any other target");
+                Action::ChooseTarget(Target::Player(P1))
+            }
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(triggers, 1);
+    assert_eq!(state.players[1].life, 37);
+    propose_and_commit(&mut state, ProposedEvent::life_gain(P1, 5));
+    assert_eq!(state.players[1].life, 37, "can't gain life");
+    propose_and_commit(&mut state, ProposedEvent::life_gain(P0, 5));
+    assert_eq!(state.players[0].life, 45);
+}
+
+#[test]
+fn idol_of_oblivion_draws_after_you_create_a_token_and_makes_an_eldrazi() {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    let idol = put(&mut state, P0, "Idol of Oblivion");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert!(!offered_ability(&mut state, idol, 0));
+    propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P1));
+    assert!(!offered_ability(&mut state, idol, 0), "the opponent's token doesn't count");
+    propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P0));
+    assert!(offered_ability(&mut state, idol, 0));
+    let hand = state.players[0].hand.len();
+    activate(&mut state, idol, 0, None);
+    assert_eq!(state.players[0].hand.len(), hand + 1);
+
+    let mut state = game();
+    let idol = put(&mut state, P0, "Idol of Oblivion");
+    lands(&mut state, P0, 8);
+    activate(&mut state, idol, 1, None);
+    let eldrazi = named(&state, P0, "Eldrazi Token");
+    assert_eq!(eldrazi.len(), 1);
+    assert_eq!(effective_power(&state, eldrazi[0]), 10);
+}
+
+#[test]
+fn hyldas_crown_taps_free_on_your_turn_and_draws_per_tapped_opposing_creature() {
+    let mut state = game();
+    let crown = put(&mut state, P0, "Hylda's Crown of Winter");
+    let theirs = put(&mut state, P1, "Guttersnipe");
+    put(&mut state, P1, "Myr Enforcer");
+    activate(&mut state, crown, 0, Some(Target::Object(theirs)));
+    assert!(state.objects.get(theirs).tapped, "no mana needed on your turn");
+    lands(&mut state, P0, 3);
+    let hand = state.players[0].hand.len();
+    activate(&mut state, crown, 1, None);
+    assert_eq!(state.players[0].hand.len(), hand + 1, "one tapped opposing creature");
+
+    let mut state = game();
+    end_turn(&mut state);
+    let crown = put(&mut state, P0, "Hylda's Crown of Winter");
+    put(&mut state, P1, "Guttersnipe");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { player: P0, .. }));
+    assert!(!offered_ability(&mut state, crown, 0), "{{1}} on the opponent's turn");
+    put(&mut state, P0, "Mountain");
+    assert!(offered_ability(&mut state, crown, 0));
 }

@@ -2734,6 +2734,8 @@ enum AbilityCostRecipe {
     DiscardSelf,
     DiscardHand,
     PayLifePerCommanderColor,
+    CreatedTokenThisTurn,
+    ManaLessDuringYourTurn { generic: u8, less: u8 },
     SacrificeSelf,
     ReturnControlledLandWithSubtype(&'static str),
     ExileSelf,
@@ -2795,6 +2797,8 @@ enum AbilityEffectRecipe {
     },
     ReturnExiledWithToHand,
     ExileAllGraveyards,
+    TapTarget,
+    DrawPerOpponentTappedCreature,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3420,6 +3424,53 @@ fn escape_for(name: &str) -> String {
 /// then resolve the reusable typed library search.
 fn activated_ability_recipes_for(name: &str) -> &'static [ActivatedAbilityRecipe] {
     match name {
+        "Idol of Oblivion" => &[
+            ActivatedAbilityRecipe {
+                cost: &[AbilityCostRecipe::Tap, AbilityCostRecipe::CreatedTokenThisTurn],
+                effect: AbilityEffectRecipe::DrawCards(1),
+                activation_zone: "Battlefield",
+                sorcery_speed_only: false,
+                target_spec: "None",
+                activation_target_filter: "TargetSpecOnly",
+                max_activations_per_turn: None,
+            },
+            ActivatedAbilityRecipe {
+                cost: &[
+                    AbilityCostRecipe::ManaCost("{8}"),
+                    AbilityCostRecipe::Tap,
+                    AbilityCostRecipe::SacrificeSelf,
+                ],
+                effect: AbilityEffectRecipe::CreateToken("Eldrazi Token"),
+                activation_zone: "Battlefield",
+                sorcery_speed_only: false,
+                target_spec: "None",
+                activation_target_filter: "TargetSpecOnly",
+                max_activations_per_turn: None,
+            },
+        ],
+        "Hylda's Crown of Winter" => &[
+            ActivatedAbilityRecipe {
+                cost: &[
+                    AbilityCostRecipe::ManaLessDuringYourTurn { generic: 1, less: 1 },
+                    AbilityCostRecipe::Tap,
+                ],
+                effect: AbilityEffectRecipe::TapTarget,
+                activation_zone: "Battlefield",
+                sorcery_speed_only: false,
+                target_spec: "Creature",
+                activation_target_filter: "TargetSpecOnly",
+                max_activations_per_turn: None,
+            },
+            ActivatedAbilityRecipe {
+                cost: &[AbilityCostRecipe::ManaCost("{3}"), AbilityCostRecipe::SacrificeSelf],
+                effect: AbilityEffectRecipe::DrawPerOpponentTappedCreature,
+                activation_zone: "Battlefield",
+                sorcery_speed_only: false,
+                target_spec: "None",
+                activation_target_filter: "TargetSpecOnly",
+                max_activations_per_turn: None,
+            },
+        ],
         "Strip Mine" => &[ActivatedAbilityRecipe {
             cost: &[AbilityCostRecipe::Tap, AbilityCostRecipe::SacrificeSelf],
             effect: AbilityEffectRecipe::DestroyTarget,
@@ -3993,6 +4044,10 @@ fn ability_cost_src(cost: AbilityCostRecipe) -> String {
         AbilityCostRecipe::DiscardSelf => "CostComponent::DiscardSelf".to_string(),
         AbilityCostRecipe::DiscardHand => "CostComponent::DiscardHand".to_string(),
         AbilityCostRecipe::PayLifePerCommanderColor => "CostComponent::PayLifePerCommanderColor".to_string(),
+        AbilityCostRecipe::CreatedTokenThisTurn => "CostComponent::CreatedTokenThisTurn".to_string(),
+        AbilityCostRecipe::ManaLessDuringYourTurn { generic, less } => format!(
+            "CostComponent::ManaLessDuringYourTurn {{ cost: Cost {{ pips: &[], generic: {generic}, x_count: 0 }}, less: {less} }}"
+        ),
         AbilityCostRecipe::SacrificeSelf => "CostComponent::SacrificeSelf".to_string(),
         AbilityCostRecipe::ReturnControlledLandWithSubtype(subtype) => format!(
             "CostComponent::ReturnControlledPermanentToOwnersHand(PermanentFilterDef::LandWithSubtype(Subtype::{subtype}))"
@@ -4032,6 +4087,8 @@ fn ability_cost_token(cost: AbilityCostRecipe) -> String {
         AbilityCostRecipe::DiscardSelf => "discard_self".to_string(),
         AbilityCostRecipe::DiscardHand => "discard_hand".to_string(),
         AbilityCostRecipe::PayLifePerCommanderColor => "pay_life_per_commander_color".to_string(),
+        AbilityCostRecipe::CreatedTokenThisTurn => "created_token_this_turn".to_string(),
+        AbilityCostRecipe::ManaLessDuringYourTurn { generic, less } => format!("mana_less_during_your_turn:{generic}:{less}"),
         AbilityCostRecipe::SacrificeSelf => "sacrifice_self".to_string(),
         AbilityCostRecipe::ReturnControlledLandWithSubtype(subtype) => {
             format!("return_controlled_land_with_subtype:{subtype}")
@@ -4079,6 +4136,8 @@ fn ability_effect_token(effect: AbilityEffectRecipe) -> String {
         AbilityEffectRecipe::ExploreTarget => "explore_target".to_string(),
         AbilityEffectRecipe::ReturnExiledWithToHand => "return_exiled_with_to_hand".to_string(),
         AbilityEffectRecipe::ExileAllGraveyards => "exile_all_graveyards".to_string(),
+        AbilityEffectRecipe::TapTarget => "tap_target".to_string(),
+        AbilityEffectRecipe::DrawPerOpponentTappedCreature => "draw_per_opponent_tapped_creature".to_string(),
         AbilityEffectRecipe::DealDamageAnyTarget(amount) => {
             format!("deal_damage_any_target:{amount}")
         }
@@ -4188,6 +4247,7 @@ fn ability_effect_fn_name(effect: AbilityEffectRecipe) -> String {
         AbilityEffectRecipe::CreateToken("Treasure Token") => {
             "ability_effect_create_treasure_token".to_string()
         }
+        AbilityEffectRecipe::CreateToken("Eldrazi Token") => "ability_effect_create_eldrazi_token".to_string(),
         AbilityEffectRecipe::CreateToken("Sacred Cat Embalmed Token") => {
             "ability_effect_create_sacred_cat_embalmed_token".to_string()
         }
@@ -4205,6 +4265,8 @@ fn ability_effect_fn_name(effect: AbilityEffectRecipe) -> String {
             "ability_effect_return_exiled_with_to_hand".to_string()
         }
         AbilityEffectRecipe::ExileAllGraveyards => "ability_effect_exile_all_graveyards".to_string(),
+        AbilityEffectRecipe::TapTarget => "ability_effect_tap_target".to_string(),
+        AbilityEffectRecipe::DrawPerOpponentTappedCreature => "ability_effect_draw_per_opponent_tapped_creature".to_string(),
         AbilityEffectRecipe::DealDamageAnyTarget(amount) => {
             format!("ability_effect_deal_damage_any_target_{amount}")
         }
@@ -4384,6 +4446,7 @@ fn hand_written_spell(name: &str) -> Option<(&'static str, &'static str)> {
             "TargetSpec::None",
             "crate::commander_cards::delayed_blast_fireball",
         ),
+        "Shivan Devastator" => ("TargetSpec::None", "crate::commander_cards::shivan_devastator"),
         "Mass Mutiny" => (
             "TargetSpec::UpToOneOpponentControlledCreature",
             "crate::commander_cards::threaten_target",
@@ -4482,6 +4545,9 @@ fn cost_src(mana_cost: &str) -> String {
 
 fn generic_cost_reduction_for(name: &str) -> &'static str {
     match name {
+        "Cavern-Hoard Dragon" => {
+            "Some(GenericCostReductionDef { generic_per_count: 1, count: DynamicCountDef::GreatestOpponentArtifacts })"
+        }
         "Myr Enforcer" | "Thoughtcast" | "Refurbished Familiar" => {
             "Some(GenericCostReductionDef { generic_per_count: 1, count: DynamicCountDef::ControllerBattlefieldAnyType(&[CardType::Artifact]) })"
         }
@@ -4925,6 +4991,12 @@ fn codegen(cards: &[CardJson]) -> String {
             }
             AbilityEffectRecipe::ExileAllGraveyards => {
                 writeln!(out, "    EffectOp::ExileAllGraveyards").unwrap();
+            }
+            AbilityEffectRecipe::TapTarget => {
+                writeln!(out, "    EffectOp::TapObject {{ object: ObjectRef::Target(0) }}").unwrap();
+            }
+            AbilityEffectRecipe::DrawPerOpponentTappedCreature => {
+                writeln!(out, "    EffectOp::DrawPerOpponentTappedCreature").unwrap();
             }
             AbilityEffectRecipe::ExploreTarget => {
                 writeln!(

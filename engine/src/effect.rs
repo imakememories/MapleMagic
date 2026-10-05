@@ -865,6 +865,19 @@ pub enum EffectOp {
     UntapBoundObject {
         object: EffectObjectBinding,
     },
+    /// The controller creates a Treasure for each artifact `player` controls
+    /// as this resolves (Cavern-Hoard Dragon; bound to the damaged player).
+    CreateTreasurePerArtifactOf {
+        player: PlayerId,
+    },
+    /// The source deals `amount` damage to target 0; a player dealt damage
+    /// this way can't gain life for the rest of the game (Screaming Nemesis).
+    DamageTargetAndStopLifeGain {
+        amount: i32,
+    },
+    /// The controller draws a card for each tapped creature its opponents
+    /// control as this resolves (Hylda's Crown of Winter).
+    DrawPerOpponentTappedCreature,
     /// The object becomes `subtype` in addition to its other types until end
     /// of turn (205.1b, layer 4).
     AddSubtypeUntilEndOfTurn {
@@ -10294,6 +10307,41 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                     .map(|id| event::ProposedEvent::damage(ctx.source, Target::Object(id), amount)),
             );
             event::propose_and_commit_batch(state, events);
+        }
+        EffectOp::CreateTreasurePerArtifactOf { player } => {
+            let artifacts = state.players[player.index()]
+                .battlefield
+                .iter()
+                .filter(|&&id| crate::engine::object_has_type(state, id, CardType::Artifact))
+                .count();
+            let treasure = crate::card_def::card_id_by_name("Treasure Token").expect("Treasure Token in CARD_DEFS");
+            for _ in 0..artifacts {
+                event::propose_and_commit(state, event::ProposedEvent::create_token(treasure, ctx.controller));
+            }
+        }
+        EffectOp::DamageTargetAndStopLifeGain { amount } => {
+            let target = ctx.resolve_target(TargetRef::Target(0));
+            let before = match target {
+                Target::Player(p) => state.players[p.index()].life,
+                Target::Object(_) => 0,
+            };
+            event::propose_and_commit(state, event::ProposedEvent::damage(ctx.source, target, *amount));
+            if let Target::Player(p) = target {
+                if state.players[p.index()].life < before {
+                    state.cant_gain_life[p.index()] = true;
+                }
+            }
+        }
+        EffectOp::DrawPerOpponentTappedCreature => {
+            let opponent = ctx.controller.opponent();
+            let tapped = state.players[opponent.index()]
+                .battlefield
+                .iter()
+                .filter(|&&id| state.objects.get(id).tapped && crate::engine::object_has_type(state, id, CardType::Creature))
+                .count();
+            for _ in 0..tapped {
+                event::propose_and_commit(state, event::ProposedEvent::draw(ctx.controller));
+            }
         }
         EffectOp::UntapBoundObject { object } => {
             let live = state.objects.get(object.object);
