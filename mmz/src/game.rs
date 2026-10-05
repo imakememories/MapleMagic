@@ -2,6 +2,7 @@
 //! never object ids, so they match across determinizations. Forced decisions
 //! are applied automatically.
 
+use crate::commander::{self, CommanderDeck};
 use mtg_kernel::card_def::{CardType, ManaAbilityCostDef, CARD_DEFS};
 use mtg_kernel::engine::{
     self, available_mana_ability_choices, effective_power, effective_toughness, mana_ability_cost_targets, Action,
@@ -127,8 +128,10 @@ pub struct Game {
     pub abort_reason: Option<String>,
 }
 
+/// Runtime decks, then every Commander deck whose cards the engine can all play.
 pub fn deck_names() -> Vec<&'static str> {
-    RUNTIME_DECKS.iter().map(|d| d.id).collect()
+    let commander = commander::list_names().into_iter().filter(|n| CommanderDeck::named(n).is_ok());
+    RUNTIME_DECKS.iter().map(|d| d.id).chain(commander).collect()
 }
 
 pub fn obj_sig(state: &GameState, id: ObjectId, viewer: PlayerId) -> u32 {
@@ -203,21 +206,48 @@ fn shuffled(ids: &[u16], rng: &mut SplitMix64) -> Vec<u16> {
 }
 
 impl Game {
-    /// New game between two runtime decks (see [`deck_names`]).
+    /// New game between two runtime decks or two Commander decks (see [`deck_names`]).
     pub fn new(deck0: &str, deck1: &str, seed: u64) -> Result<Game, String> {
+        if commander::list_names().iter().any(|n| n.eq_ignore_ascii_case(deck0)) {
+            let deck = |n: &str| {
+                CommanderDeck::named(n).map_err(|missing| format!("{n} has cards the engine can't play yet: {}", missing.join(", ")))
+            };
+            return Ok(Game::new_commander(&deck(deck0)?, &deck(deck1)?, seed));
+        }
         let d0 = runtime_deck_by_id(deck0).ok_or_else(|| format!("unknown deck {deck0}"))?;
         let d1 = runtime_deck_by_id(deck1).ok_or_else(|| format!("unknown deck {deck1}"))?;
         let mut rng = SplitMix64::seed(seed);
         let lib0 = shuffled(d0.card_ids, &mut rng);
         let lib1 = shuffled(d1.card_ids, &mut rng);
         let first = if rng.next_u64() & 1 == 0 { PlayerId::P0 } else { PlayerId::P1 };
-        let mut state = GameState::new_from_libraries_with_starting_player_v1(
+        let state = GameState::new_from_libraries_with_starting_player_v1(
             &lib0,
             &lib1,
             |id| CARD_DEFS[id as usize].name.to_string(),
             rng.next_u64(),
             first,
         );
+        Ok(Game::start(state))
+    }
+
+    /// A two-player Commander game: 40 life, commanders in the command zone.
+    pub fn new_commander(d0: &CommanderDeck, d1: &CommanderDeck, seed: u64) -> Game {
+        let mut rng = SplitMix64::seed(seed);
+        let lib0 = shuffled(&d0.cards, &mut rng);
+        let lib1 = shuffled(&d1.cards, &mut rng);
+        let first = if rng.next_u64() & 1 == 0 { PlayerId::P0 } else { PlayerId::P1 };
+        let state = GameState::new_commander_game_v1(
+            &lib0,
+            &lib1,
+            [d0.commander, d1.commander],
+            |id| CARD_DEFS[id as usize].name.to_string(),
+            rng.next_u64(),
+            first,
+        );
+        Game::start(state)
+    }
+
+    fn start(mut state: GameState) -> Game {
         for _ in 0..7 {
             event::propose_and_commit(&mut state, ProposedEvent::draw(PlayerId::P0));
             event::propose_and_commit(&mut state, ProposedEvent::draw(PlayerId::P1));
@@ -232,7 +262,7 @@ impl Game {
             abort_reason: None,
         };
         g.settle();
-        Ok(g)
+        g
     }
 
     pub fn outcome(&self) -> Option<Outcome> {
@@ -412,7 +442,7 @@ impl Game {
                 }
                 _ => {}
             }
-            let shown = format!("{decision:?}");
+            let shown = decision_name(&decision);
             self.build_choices(decision);
             if self.outcome.is_some() {
                 return;
@@ -422,7 +452,7 @@ impl Game {
             }
             match self.choices.len() {
                 0 => {
-                    self.abort(format!("decision with no choices: {}", &shown[..shown.len().min(300)]));
+                    self.abort(format!("decision with no choices: {shown}"));
                     return;
                 }
                 1 => {
@@ -716,6 +746,27 @@ impl Game {
     }
 }
 
+/// A decision's kind, for diagnostics (formatting the whole decision on every
+/// step cost a tenth of the search's time).
+fn decision_name(d: &Decision) -> &'static str {
+    match d {
+        Decision::CastSpellOrPass { .. } => "CastSpellOrPass",
+        Decision::ChooseTargets { .. } => "ChooseTargets",
+        Decision::ChooseCostTargets { .. } => "ChooseCostTargets",
+        Decision::ChooseCastMode { .. } => "ChooseCastMode",
+        Decision::ChooseKicker { .. } => "ChooseKicker",
+        Decision::ChooseSpellMode { .. } => "ChooseSpellMode",
+        Decision::ChooseEffectOption { .. } => "ChooseEffectOption",
+        Decision::ChooseEffectTargets { .. } => "ChooseEffectTargets",
+        Decision::ChooseOptionalCost { .. } => "ChooseOptionalCost",
+        Decision::Discard { .. } => "Discard",
+        Decision::DeclareAttackers { .. } => "DeclareAttackers",
+        Decision::DeclareBlockers { .. } => "DeclareBlockers",
+        Decision::OrderTriggers { .. } => "OrderTriggers",
+        _ => "other decision",
+    }
+}
+
 pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerId, keep_library: bool) -> Vec<ObjectId> {
     let ps = &state.players[owner.index()];
     let zcc = |id: ObjectId| state.objects.get(id).zone_change_count;
@@ -790,11 +841,30 @@ fn autopay_goals(
     castable_now: &[ObjectId],
     activatable_now: &[(ObjectId, u8)],
 ) -> Vec<(Action, Vec<(ObjectId, ManaColor)>)> {
+    // Tapping a source the engine's payment solver already counts makes nothing new castable.
+    if !has_uncounted_free_source(st, mana_abilities) {
+        return Vec::new();
+    }
+    autopay_search(st, player, mana_abilities, castable_now, activatable_now)
+}
+
+fn has_uncounted_free_source(st: &GameState, mana_abilities: &[ObjectId]) -> bool {
+    mana_abilities.iter().any(|&id| is_free_source(st, id) && !CARD_DEFS[def_of(st, id) as usize].is_automatic_payment_mana_source())
+}
+
+fn autopay_search(
+    st: &GameState,
+    player: PlayerId,
+    mana_abilities: &[ObjectId],
+    castable_now: &[ObjectId],
+    activatable_now: &[(ObjectId, u8)],
+) -> Vec<(Action, Vec<(ObjectId, ManaColor)>)> {
     let ps = &st.players[player.index()];
     // Anything that could possibly become castable/activatable with more mana?
     let maybe_more = ps.hand.iter().any(|&id| !castable_now.contains(&id) && !CARD_DEFS[def_of(st, id) as usize].is_land)
         || !ps.graveyard.is_empty()
         || st.exile.iter().any(|&id| st.objects.get(id).owner == player)
+        || st.command.iter().any(|&id| st.objects.get(id).owner == player)
         || ps.battlefield.iter().any(|&id| {
             let n = CARD_DEFS[def_of(st, id) as usize].activated_abilities.len();
             (0..n).any(|i| !activatable_now.contains(&(id, i as u8)))
@@ -1080,5 +1150,92 @@ mod tests {
             }
         }
         assert!(casts > 100, "only {casts} cast choices seen");
+    }
+
+    #[test]
+    fn autopay_skip_loses_nothing() {
+        let decks = deck_names();
+        let mut rng = SplitMix64::seed(17);
+        let (mut skipped, mut searched) = (0, 0);
+        for (i, a) in decks.iter().enumerate() {
+            for b in &decks {
+                let mut g = Game::new(a, b, i as u64).unwrap();
+                while !g.is_over() {
+                    if let Decision::CastSpellOrPass { player, castable_spells, mana_abilities, activatable_abilities, .. } =
+                        engine::advance_until_decision(&mut g.state.clone())
+                    {
+                        let st = &g.state;
+                        if has_uncounted_free_source(st, &mana_abilities) {
+                            searched += 1;
+                        } else {
+                            skipped += 1;
+                            let goals = autopay_search(st, player, &mana_abilities, &castable_spells, &activatable_abilities);
+                            assert!(goals.is_empty(), "{a} vs {b}: skipping lost {:?}", goals.iter().map(|g| &g.0).collect::<Vec<_>>());
+                        }
+                    }
+                    let n = g.choices().len();
+                    g.apply((rng.next_u64() % n as u64) as usize);
+                }
+            }
+        }
+        assert!(skipped > 1000, "only {skipped} skipped decisions checked ({searched} searched)");
+    }
+
+    /// A runtime deck padded to 99 cards with Mountains, led by `commander`.
+    fn padded(commander: &str, base: &str) -> CommanderDeck {
+        let mut cards = runtime_deck_by_id(base).unwrap().card_ids.to_vec();
+        cards.resize(99, mtg_kernel::card_def::card_id_by_name("Mountain").unwrap());
+        CommanderDeck { name: base.into(), commander: mtg_kernel::card_def::card_id_by_name(commander).unwrap(), cards }
+    }
+
+    #[test]
+    fn commander_games_play_to_the_end_with_taxed_recasts() {
+        let (a, b) = (padded("Masked Meower", "Rally"), padded("Goblin Tomb Raider", "Burn"));
+        let mut rng = SplitMix64::seed(11);
+        let (mut wins, mut recasts, mut from_command_zone) = (0, 0, 0);
+        for seed in 0..30 {
+            let mut g = Game::new_commander(&a, &b, seed);
+            assert!(g.state.players.iter().all(|p| p.life == 40));
+            assert_eq!(g.state.players[0].library.len() + g.state.players[0].hand.len(), 99);
+            while !g.is_over() {
+                from_command_zone += g.choices().iter().filter(|c| c.feat.kind == Kind::Cast && c.feat.tgt == zone_code(Zone::Command) as u32).count();
+                let n = g.choices().len();
+                g.apply((rng.next_u64() % n as u64) as usize);
+            }
+            assert_ne!(g.outcome(), Some(Outcome::Aborted), "seed {seed}: {:?}", g.abort_reason);
+            wins += matches!(g.outcome(), Some(Outcome::Win(_))) as u32;
+            recasts += g.state.commander.as_ref().unwrap().casts.iter().filter(|&&c| c >= 2).count();
+        }
+        assert!(from_command_zone > 30, "commanders offered from the command zone only {from_command_zone} times");
+        assert!(recasts > 0, "no commander was ever recast with tax");
+        assert!(wins > 0);
+    }
+
+    #[test]
+    fn commander_is_offered_by_tapping_lands() {
+        // All lands in hand: nothing else would make the autopay search look for spells.
+        let lands = |c: &str| CommanderDeck { cards: vec![], ..padded(c, "Burn") };
+        let (mut a, mut b) = (lands("Goblin Tomb Raider"), lands("Masked Meower"));
+        a.cards.resize(99, mtg_kernel::card_def::card_id_by_name("Mountain").unwrap());
+        b.cards = a.cards.clone();
+        let mut rng = SplitMix64::seed(2);
+        for seed in 0..20 {
+            let mut g = Game::new_commander(&a, &b, seed);
+            while !g.is_over() {
+                let me = g.to_act();
+                let st = &g.state;
+                let cmd = st.commander.as_ref().unwrap().commanders[me.index()];
+                let lands = st.players[me.index()].battlefield.iter().filter(|&&id| CARD_DEFS[def_of(st, id) as usize].is_land && !st.objects.get(id).tapped).count();
+                let main = matches!(st.step, mtg_kernel::state::Step::Main1 | mtg_kernel::state::Step::Main2);
+                if st.objects.get(cmd).zone == Zone::Command && main && st.active_player == me && st.stack.is_empty() && lands >= 1 + 2 * st.commander.as_ref().unwrap().casts[me.index()] as usize {
+                    let castable = g.choices().iter().any(|c| c.feat.kind == Kind::Cast && c.feat.src == def_of(st, cmd));
+                    assert!(castable, "seed {seed}: commander not offered with {lands} untapped lands");
+                    return;
+                }
+                let n = g.choices().len();
+                g.apply((rng.next_u64() % n as u64) as usize);
+            }
+        }
+        panic!("never reached a main phase with the commander castable");
     }
 }

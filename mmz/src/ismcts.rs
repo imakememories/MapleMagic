@@ -837,7 +837,15 @@ pub fn heuristic_value(g: &Game, pov: PlayerId) -> f32 {
     let st = &g.state;
     let side = |p: PlayerId| -> f32 {
         let ps = &st.players[p.index()];
-        let mut s = ps.life as f32 * 0.5 + ps.hand.len() as f32 * 1.0;
+        let mut life = ps.life as f32;
+        let mut s = ps.hand.len() as f32;
+        if let Some(c) = &st.commander {
+            // Commander damage is a second life total; a commander at home is like a card in hand.
+            let taken = c.damage[p.index()].iter().copied().max().unwrap_or(0);
+            life = life.min(2.0 * (mtg_kernel::state::COMMANDER_DAMAGE_TO_LOSE - taken) as f32);
+            s += (st.objects.get(c.commanders[p.index()]).zone == mtg_kernel::state::Zone::Command) as i32 as f32;
+        }
+        s += life * 0.5;
         for &id in &ps.battlefield {
             let def = &mtg_kernel::card_def::CARD_DEFS[st.objects.get(id).card_def as usize];
             if def.has_type(CardType::Creature) {

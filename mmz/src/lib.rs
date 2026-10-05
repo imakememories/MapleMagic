@@ -1,5 +1,6 @@
 pub use mtg_kernel;
 
+pub mod commander;
 pub mod game;
 pub mod history;
 pub mod ismcts;

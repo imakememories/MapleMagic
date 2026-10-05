@@ -117,6 +117,20 @@ pub fn observe_with(g: &Game, viewer: PlayerId, perfect: bool) -> Vec<[u16; TOKE
         out.push(global_token(i as u16, v));
     }
 
+    // Commanders: whether in the command zone, casts so far (the tax), damage dealt.
+    if let Some(c) = &st.commander {
+        for p in [me, opp] {
+            let o = st.objects.get(c.commanders[p.index()]);
+            let mut t = [0u16; TOKEN_FIELDS];
+            t[0] = o.card_def + 1;
+            t[1] = place_code(Zone::Command, p == me);
+            t[2] = (o.zone == Zone::Command) as u16;
+            t[5] = clamp(c.casts[p.index()] as i32, 0, 31);
+            t[7] = clamp(c.damage[p.opponent().index()][p.index()], 0, 31);
+            out.push(t);
+        }
+    }
+
     // Public zones and my hand.
     for &id in &pm.hand {
         out.push(object_token(st, id, me, Zone::Hand, true));
@@ -187,13 +201,22 @@ mod tests {
     use crate::game::Game;
     use mtg_kernel::state::SplitMix64;
 
+    /// A runtime deck padded to 99 cards with Mountains, led by `commander`.
+    fn commander_deck(commander: &str, base: &str) -> crate::commander::CommanderDeck {
+        use mtg_kernel::card_def::card_id_by_name;
+        let mut cards = mtg_kernel::runtime_decks::runtime_deck_by_id(base).unwrap().card_ids.to_vec();
+        cards.resize(99, card_id_by_name("Mountain").unwrap());
+        crate::commander::CommanderDeck { name: base.into(), commander: card_id_by_name(commander).unwrap(), cards }
+    }
+
     #[test]
     fn fields_stay_in_vocab_and_hidden_cards_do_not_leak() {
         let tv = token_vocab();
         let av = action_vocab();
         let mut rng = SplitMix64::seed(4);
-        for seed in 0..30 {
-            let mut g = Game::new("Faeries", "Spy", seed).unwrap();
+        let (ca, cb) = (commander_deck("Masked Meower", "Rally"), commander_deck("Goblin Tomb Raider", "Burn"));
+        for seed in 0..40 {
+            let mut g = if seed < 30 { Game::new("Faeries", "Spy", seed).unwrap() } else { Game::new_commander(&ca, &cb, seed) };
             while !g.is_over() {
                 let me = g.to_act();
                 let obs = observe(&g, me);
