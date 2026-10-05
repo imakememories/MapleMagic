@@ -95,13 +95,17 @@ pub enum Zone {
 /// effect validation may reject an underflow without first converting between
 /// unrelated integer shapes, while i16 leaves ample headroom for copied and
 /// doubled counter effects.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Counters {
     pub plus1_plus1: i16,
     pub minus1_minus1: i16,
     pub minus0_minus1: i16,
     pub stun: i16,
     pub lore: i16,
+    /// Charge counters (Dragonspark Reactor). Left out of serialization and
+    /// hashing while zero, so older states keep their bytes and hashes.
+    #[serde(default, skip_serializing_if = "i16_is_zero")]
+    pub charge: i16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -783,6 +787,7 @@ pub fn stack_target_contract_is_structurally_valid(
                 | TargetSpec::AnyTarget
                 | TargetSpec::AnyTargetOtherThanSource
                 | TargetSpec::PlayerThenTheirCreature
+                | TargetSpec::PlayerThenUpToOneCreature
                 | TargetSpec::TargetOpponent,
             0,
             StackTargetContractV4::Player(_),
@@ -791,7 +796,7 @@ pub fn stack_target_contract_is_structurally_valid(
             0 | 1,
             StackTargetContractV4::Player(_),
         ) | (
-            TargetSpec::PlayerThenTheirCreature,
+            TargetSpec::PlayerThenTheirCreature | TargetSpec::PlayerThenUpToOneCreature,
             1,
             StackTargetContractV4::Object {
                 zone: Zone::Battlefield,
@@ -1266,6 +1271,17 @@ pub struct GameState {
     /// Players who can't gain life for the rest of the game (Screaming Nemesis).
     #[serde(default, skip_serializing_if = "nobody")]
     pub cant_gain_life: [bool; 2],
+    /// Charge counters a permanent had as it left the battlefield (608.2h
+    /// last known information), cleared at cleanup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub last_known_charge: Vec<(ObjectLinkV4, i16)>,
+    /// Creatures that entered with riot and await their controller's choice
+    /// (702.136a).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_riot: Vec<ObjectLinkV4>,
+    /// Creatures that chose haste for riot; they keep it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub riot_haste: Vec<ObjectLinkV4>,
     /// Priority/stack/turn-structure bookkeeping and the propose-commit
     /// event log, all owned by the `engine`/`event`/`trigger` modules. See
     /// `engine::EngineState`.
@@ -1315,6 +1331,27 @@ impl Hash for GameState {
         }
         if !nobody(&self.cant_gain_life) {
             self.cant_gain_life.hash(state);
+        }
+        for list in [&self.last_known_charge.iter().map(|e| e.0).collect::<Vec<_>>(), &self.pending_riot, &self.riot_haste] {
+            if !list.is_empty() {
+                list.hash(state);
+            }
+        }
+        if !self.last_known_charge.is_empty() {
+            self.last_known_charge.iter().map(|e| e.1).collect::<Vec<_>>().hash(state);
+        }
+    }
+}
+
+impl Hash for Counters {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.plus1_plus1.hash(state);
+        self.minus1_minus1.hash(state);
+        self.minus0_minus1.hash(state);
+        self.stun.hash(state);
+        self.lore.hash(state);
+        if self.charge != 0 {
+            self.charge.hash(state);
         }
     }
 }
@@ -1452,6 +1489,9 @@ impl GameState {
             life_lost_this_turn: [0; 2],
             tokens_created_this_turn: [0; 2],
             cant_gain_life: [false; 2],
+            last_known_charge: Vec::new(),
+            pending_riot: Vec::new(),
+            riot_haste: Vec::new(),
             engine: crate::engine::EngineState::default(),
         }
     }

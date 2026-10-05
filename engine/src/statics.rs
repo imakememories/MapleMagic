@@ -86,3 +86,60 @@ pub fn treasure_mana_amount(state: &GameState, treasure: ObjectId) -> Option<u8>
         .any(|&id| CARD_DEFS[state.objects.get(id).card_def as usize].name == "Goldspan Dragon")
         .then_some(2)
 }
+
+fn named_on_battlefield(state: &GameState, player: Option<PlayerId>, name: &str) -> bool {
+    let players: &[PlayerId] = match player {
+        Some(p) => &[p][..],
+        None => &[PlayerId::P0, PlayerId::P1][..],
+    };
+    let players: Vec<PlayerId> = players.to_vec();
+    players.iter().any(|p| {
+        state.players[p.index()].battlefield.iter().any(|&id| CARD_DEFS[state.objects.get(id).card_def as usize].name == name)
+    })
+}
+
+/// Spider-Punk: "Spells and abilities can't be countered."
+pub fn nothing_can_be_countered(state: &GameState) -> bool {
+    named_on_battlefield(state, None, "Spider-Punk")
+}
+
+/// Spider-Punk: "Damage can't be prevented."
+pub fn damage_cant_be_prevented(state: &GameState) -> bool {
+    named_on_battlefield(state, None, "Spider-Punk")
+}
+
+/// Dolmen Gate: "Prevent all combat damage that would be dealt to attacking
+/// creatures you control."
+pub fn prevents_combat_damage_to(state: &GameState, target: crate::state::Target, combat: bool) -> bool {
+    let crate::state::Target::Object(id) = target else {
+        return false;
+    };
+    combat
+        && state.engine.combat.attackers.contains(&id)
+        && named_on_battlefield(state, Some(state.objects.get(id).controller), "Dolmen Gate")
+}
+
+/// Whether the creature `id` has riot (702.136): Spider-Punk itself, and
+/// other Spiders whose controller controls a Spider-Punk.
+pub fn has_riot(state: &GameState, id: ObjectId) -> bool {
+    let o = state.objects.get(id);
+    let def = &CARD_DEFS[o.card_def as usize];
+    if !def.has_type(CardType::Creature) {
+        return false;
+    }
+    def.name == "Spider-Punk"
+        || (def.subtypes.contains(&Subtype::Spider)
+            && state.players[o.controller.index()]
+                .battlefield
+                .iter()
+                .any(|&other| other != id && CARD_DEFS[state.objects.get(other).card_def as usize].name == "Spider-Punk"))
+}
+
+/// Whether `id` chose haste for riot.
+pub fn has_riot_haste(state: &GameState, id: ObjectId) -> bool {
+    if state.riot_haste.is_empty() {
+        return false;
+    }
+    let o = state.objects.get(id);
+    o.zone == Zone::Battlefield && state.riot_haste.iter().any(|l| l.object == id && l.zone_change_count == o.zone_change_count)
+}

@@ -93,6 +93,10 @@ pub enum TriggerCondition {
     ControlledPermanentEntersTapped,
     /// "Whenever this ... becomes the target of a spell".
     BecomesTargetOfSpell,
+    /// "Whenever this artifact or another artifact you control enters".
+    ThisOrAnotherControlledArtifactEnters,
+    /// "At the beginning of each opponent's upkeep".
+    BeginningOfOpponentsUpkeep,
     /// "Whenever this creature is dealt damage": once per batch, for the
     /// batch's total (damage from several sources at once triggers once).
     IsDealtDamage,
@@ -474,6 +478,26 @@ const AMULET_OF_VIGOR_TRIGGERS: [TriggeredAbilityDef; 1] =
 fn bound_at_trigger_effect() -> EffectOp {
     EffectOp::Sequence(Vec::new())
 }
+
+fn add_charge_counter_effect() -> EffectOp {
+    EffectOp::AddChargeCounterToSource
+}
+
+fn opponents_next_draw_exiles_effect() -> EffectOp {
+    EffectOp::OpponentsNextDrawExilesTop
+}
+
+const DRAGONSPARK_REACTOR_TRIGGERS: [TriggeredAbilityDef; 1] =
+    [trigger(TriggerCondition::ThisOrAnotherControlledArtifactEnters, add_charge_counter_effect)];
+const URABRASK_TRIGGERS: [TriggeredAbilityDef; 2] = [
+    trigger(
+        TriggerCondition::BeginningOfUpkeep {
+            controller_only: true,
+        },
+        impulse_this_turn_effect,
+    ),
+    trigger(TriggerCondition::BeginningOfOpponentsUpkeep, opponents_next_draw_exiles_effect),
+];
 
 const GOLDSPAN_DRAGON_TRIGGERS: [TriggeredAbilityDef; 2] = [
     trigger(TriggerCondition::Attacks, create_treasure_effect),
@@ -1226,6 +1250,8 @@ pub fn triggers_for(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Laelia, the Blade Reforged" => &LAELIA_TRIGGERS,
         "Amulet of Vigor" => &AMULET_OF_VIGOR_TRIGGERS,
         "Goldspan Dragon" => &GOLDSPAN_DRAGON_TRIGGERS,
+        "Dragonspark Reactor" => &DRAGONSPARK_REACTOR_TRIGGERS,
+        "Urabrask, Heretic Praetor" => &URABRASK_TRIGGERS,
         "Cavern-Hoard Dragon" => &CAVERN_HOARD_DRAGON_TRIGGERS,
         "Screaming Nemesis" => &SCREAMING_NEMESIS_TRIGGERS,
         "Connecting the Dots" => &CONNECTING_THE_DOTS_TRIGGERS,
@@ -2280,6 +2306,21 @@ fn trigger_matches(
                     item.v4.stack_item_id == *targeting_stack_item && item.kind == crate::state::StackItemKind::Spell
                 })
         }
+        (
+            TriggerCondition::ThisOrAnotherControlledArtifactEnters,
+            CommittedEvent::ZoneChange {
+                object,
+                to: Zone::Battlefield,
+                ..
+            }
+            | CommittedEvent::CreateToken { object, .. },
+        ) => {
+            let entered = state.objects.get(*object);
+            entered.zone == Zone::Battlefield
+                && entered.controller == controller
+                && crate::engine::object_has_type(state, *object, crate::card_def::CardType::Artifact)
+        }
+        (TriggerCondition::BeginningOfOpponentsUpkeep, CommittedEvent::UpkeepBegan { player }) => *player != controller,
         (
             TriggerCondition::IsDealtDamage,
             CommittedEvent::Damage {

@@ -6717,7 +6717,7 @@
     },
     {
       "name": "Dolmen Gate",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}",
       "mana_value": 2,
       "colors": [],
@@ -6743,7 +6743,7 @@
     },
     {
       "name": "Dragonspark Reactor",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{1}{R}",
       "mana_value": 2,
       "colors": [
@@ -11928,7 +11928,7 @@
     },
     {
       "name": "Spider-Punk",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{1}{R}",
       "mana_value": 2,
       "colors": [
@@ -12708,7 +12708,7 @@
     },
     {
       "name": "Urabrask, Heretic Praetor",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{3}{R}{R}",
       "mana_value": 5,
       "colors": [

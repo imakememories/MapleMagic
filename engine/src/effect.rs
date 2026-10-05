@@ -878,6 +878,15 @@ pub enum EffectOp {
     /// The controller draws a card for each tapped creature its opponents
     /// control as this resolves (Hylda's Crown of Winter).
     DrawPerOpponentTappedCreature,
+    /// Put a charge counter on the source if it is on the battlefield.
+    AddChargeCounterToSource,
+    /// The source deals damage equal to its charge counters (last known if
+    /// it left the battlefield) to target 0 and to target 1 if chosen
+    /// (Dragonspark Reactor).
+    DamageFromChargeCounters,
+    /// The opponent's next draw this turn exiles the top card of their
+    /// library instead, which they may play this turn (Urabrask).
+    OpponentsNextDrawExilesTop,
     /// The object becomes `subtype` in addition to its other types until end
     /// of turn (205.1b, layer 4).
     AddSubtypeUntilEndOfTurn {
@@ -1671,7 +1680,7 @@ pub(crate) fn controlled_artifact_count(state: &GameState, player: PlayerId) -> 
 }
 
 /// Lets `holder` play or cast the exiled `id` until `expiry`.
-fn grant_exile_play(
+pub(crate) fn grant_exile_play(
     state: &mut GameState,
     id: ObjectId,
     holder: PlayerId,
@@ -9791,6 +9800,13 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         }
         EffectOp::MoveObject { object, to_zone } => {
             let object = ctx.resolve_object(*object);
+            // Moving a spell from the stack to its graveyard counters it (701.6a).
+            if *to_zone == Zone::Graveyard
+                && state.objects.get(object).zone == Zone::Stack
+                && crate::statics::nothing_can_be_countered(state)
+            {
+                return;
+            }
             if *to_zone != Zone::Stack {
                 match crate::engine::apply_live_stack_spell_departure(state, object, *to_zone) {
                     Ok(true) => return,
@@ -10341,6 +10357,44 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 .count();
             for _ in 0..tapped {
                 event::propose_and_commit(state, event::ProposedEvent::draw(ctx.controller));
+            }
+        }
+        EffectOp::AddChargeCounterToSource => {
+            if state.objects.get(ctx.source).zone == Zone::Battlefield {
+                state.objects.get_mut(ctx.source).counters.charge += 1;
+            }
+        }
+        EffectOp::DamageFromChargeCounters => {
+            let live = state.objects.get(ctx.source);
+            let amount = match ctx.ability_source_contract {
+                Some(c) if live.zone != Zone::Battlefield || live.zone_change_count != c.zone_change_count => state
+                    .last_known_charge
+                    .iter()
+                    .find(|(link, _)| link.object == c.source && link.zone_change_count == c.zone_change_count)
+                    .map_or(0, |e| e.1),
+                _ => live.counters.charge,
+            };
+            for index in 0..ctx.targets.len() {
+                if !ctx.target_incarnation_matches(index, state) {
+                    continue;
+                }
+                let target = ctx.resolve_target(TargetRef::Target(index as u8));
+                event::propose_and_commit(state, event::ProposedEvent::damage(ctx.source, target, i32::from(amount)));
+            }
+        }
+        EffectOp::OpponentsNextDrawExilesTop => {
+            let player = ctx.controller.opponent();
+            if let Some(id) = state.engine.next_replacement_id.checked_add(1) {
+                state.engine.next_replacement_id = id;
+                state.engine.active_replacements.push(event::ActiveReplacement {
+                    id,
+                    source: ctx.source,
+                    kind: event::ReplacementEffectKind::NextDrawExilesTop {
+                        player,
+                        turn: state.turn,
+                        active_player: state.active_player,
+                    },
+                });
             }
         }
         EffectOp::UntapBoundObject { object } => {

@@ -2799,6 +2799,7 @@ enum AbilityEffectRecipe {
     ExileAllGraveyards,
     TapTarget,
     DrawPerOpponentTappedCreature,
+    DamageFromChargeCounters,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3424,6 +3425,15 @@ fn escape_for(name: &str) -> String {
 /// then resolve the reusable typed library search.
 fn activated_ability_recipes_for(name: &str) -> &'static [ActivatedAbilityRecipe] {
     match name {
+        "Dragonspark Reactor" => &[ActivatedAbilityRecipe {
+            cost: &[AbilityCostRecipe::ManaCost("{4}"), AbilityCostRecipe::SacrificeSelf],
+            effect: AbilityEffectRecipe::DamageFromChargeCounters,
+            activation_zone: "Battlefield",
+            sorcery_speed_only: false,
+            target_spec: "PlayerThenUpToOneCreature",
+            activation_target_filter: "TargetSpecOnly",
+            max_activations_per_turn: None,
+        }],
         "Idol of Oblivion" => &[
             ActivatedAbilityRecipe {
                 cost: &[AbilityCostRecipe::Tap, AbilityCostRecipe::CreatedTokenThisTurn],
@@ -4137,6 +4147,7 @@ fn ability_effect_token(effect: AbilityEffectRecipe) -> String {
         AbilityEffectRecipe::ReturnExiledWithToHand => "return_exiled_with_to_hand".to_string(),
         AbilityEffectRecipe::ExileAllGraveyards => "exile_all_graveyards".to_string(),
         AbilityEffectRecipe::TapTarget => "tap_target".to_string(),
+        AbilityEffectRecipe::DamageFromChargeCounters => "damage_from_charge_counters".to_string(),
         AbilityEffectRecipe::DrawPerOpponentTappedCreature => "draw_per_opponent_tapped_creature".to_string(),
         AbilityEffectRecipe::DealDamageAnyTarget(amount) => {
             format!("deal_damage_any_target:{amount}")
@@ -4266,6 +4277,7 @@ fn ability_effect_fn_name(effect: AbilityEffectRecipe) -> String {
         }
         AbilityEffectRecipe::ExileAllGraveyards => "ability_effect_exile_all_graveyards".to_string(),
         AbilityEffectRecipe::TapTarget => "ability_effect_tap_target".to_string(),
+        AbilityEffectRecipe::DamageFromChargeCounters => "ability_effect_damage_from_charge_counters".to_string(),
         AbilityEffectRecipe::DrawPerOpponentTappedCreature => "ability_effect_draw_per_opponent_tapped_creature".to_string(),
         AbilityEffectRecipe::DealDamageAnyTarget(amount) => {
             format!("ability_effect_deal_damage_any_target_{amount}")
@@ -4994,6 +5006,9 @@ fn codegen(cards: &[CardJson]) -> String {
             }
             AbilityEffectRecipe::TapTarget => {
                 writeln!(out, "    EffectOp::TapObject {{ object: ObjectRef::Target(0) }}").unwrap();
+            }
+            AbilityEffectRecipe::DamageFromChargeCounters => {
+                writeln!(out, "    EffectOp::DamageFromChargeCounters").unwrap();
             }
             AbilityEffectRecipe::DrawPerOpponentTappedCreature => {
                 writeln!(out, "    EffectOp::DrawPerOpponentTappedCreature").unwrap();

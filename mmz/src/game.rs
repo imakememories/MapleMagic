@@ -742,6 +742,10 @@ impl Game {
                 self.actor = player;
                 yes_no(&mut out, def_of(st, source), 4, Action::ChooseEffectBoolean);
             }
+            Decision::ChooseRiot { player, creature } => {
+                self.actor = player;
+                yes_no(&mut out, def_of(st, creature), 12, Action::ChooseRiot);
+            }
             Decision::ChooseCommanderZone { player, commander } => {
                 self.actor = player;
                 let zone = zone_code(st.objects.get(commander).zone) as u16;

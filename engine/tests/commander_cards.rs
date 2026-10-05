@@ -881,3 +881,149 @@ fn hyldas_crown_taps_free_on_your_turn_and_draws_per_tapped_opposing_creature() 
     put(&mut state, P0, "Mountain");
     assert!(offered_ability(&mut state, crown, 0));
 }
+
+#[test]
+fn dragonspark_reactor_counts_artifacts_and_burns_a_player_and_up_to_one_creature() {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let reactor = cast(&mut state, "Dragonspark Reactor", None, 0);
+    assert_eq!(state.objects.get(reactor).counters.charge, 1, "its own entering counts");
+    propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P0));
+    propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P1));
+    advance(&mut state, |s, _| s.stack.is_empty());
+    assert_eq!(state.objects.get(reactor).counters.charge, 2, "only artifacts you control");
+    let theirs = put(&mut state, P1, "Myr Enforcer");
+    lands(&mut state, P0, 4);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::ActivateAbility(reactor, 0)).unwrap();
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseEffectTargets { selected_count: 0, can_finish, .. } => {
+                assert!(!can_finish, "a player must be targeted");
+                Action::ChooseEffectTarget(Target::Player(P1))
+            }
+            Decision::ChooseEffectTargets { .. } => Action::ChooseEffectTarget(Target::Object(theirs)),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(state.players[1].life, 38);
+    assert_eq!(state.objects.get(theirs).damage, 2);
+}
+
+#[test]
+fn urabrask_impulses_for_you_and_turns_the_opponents_draw_into_an_exile() {
+    let mut state = game();
+    put(&mut state, P0, "Urabrask, Heretic Praetor");
+    let turn = state.turn;
+    // Player 1's upkeep: their draw this turn becomes an exile they may play.
+    advance(&mut state, |s, _| s.active_player == P1 && s.step == Step::Main1);
+    assert_eq!(state.players[1].hand.len(), 0, "no card drawn");
+    assert_eq!(state.players[1].library.len(), 9);
+    let exiled: Vec<_> = state.exile.iter().copied().filter(|&o| state.objects.get(o).owner == P1).collect();
+    assert_eq!(exiled.len(), 1);
+    assert!(state.engine.exile_play_permissions.iter().any(|p| p.object == exiled[0] && p.holder == P1));
+    // Player 0's upkeep: exile its top card to play this turn.
+    advance(&mut state, |s, _| s.active_player == P0 && s.turn != turn && s.step == Step::Main1);
+    let mine: Vec<_> = state.exile.iter().copied().filter(|&o| state.objects.get(o).owner == P0).collect();
+    assert_eq!(mine.len(), 1);
+    assert!(state.engine.exile_play_permissions.iter().any(|p| p.object == mine[0] && p.holder == P0));
+}
+
+/// Player 0 attacks with `attacker` and player 1 blocks with `blocker`;
+/// returns the attacker's damage and whether the blocker died.
+fn attack_into_block(state: &mut GameState, attacker: ObjectId, blocker: ObjectId) -> (u16, bool) {
+    advance(state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    engine::step(state, Action::DeclareAttackers(vec![attacker])).unwrap();
+    advance(state, |_, d| matches!(d, Decision::DeclareBlockers { .. }));
+    engine::step(state, Action::DeclareBlockers(vec![(blocker, attacker)])).unwrap();
+    advance(state, |s, _| s.step == Step::EndCombat);
+    (state.objects.get(attacker).damage, state.objects.get(blocker).zone == Zone::Graveyard)
+}
+
+#[test]
+fn dolmen_gate_prevents_combat_damage_to_your_attackers_unless_spider_punk_says_no() {
+    let mut state = game();
+    put(&mut state, P0, "Dolmen Gate");
+    let attacker = put(&mut state, P0, "Myr Enforcer");
+    let blocker = put(&mut state, P1, "Guttersnipe");
+    assert_eq!(attack_into_block(&mut state, attacker, blocker), (0, true), "only the attacker is protected");
+
+    let mut state = game();
+    put(&mut state, P0, "Dolmen Gate");
+    put(&mut state, P1, "Spider-Punk");
+    let attacker = put(&mut state, P0, "Myr Enforcer");
+    let blocker = put(&mut state, P1, "Guttersnipe");
+    assert_eq!(attack_into_block(&mut state, attacker, blocker), (2, true), "damage can't be prevented");
+}
+
+/// Casts `card` for player 0, answering riot with `haste`.
+fn cast_with_riot(state: &mut GameState, card: &str, haste: bool) -> ObjectId {
+    let spell = put_in(state, P0, card, Zone::Hand);
+    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(state, Action::CastSpell(spell)).unwrap();
+    loop {
+        let a = match engine::advance_until_decision(state) {
+            Decision::ChooseRiot { creature, .. } => {
+                assert_eq!(creature, spell);
+                Action::ChooseRiot(haste)
+            }
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => return spell,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(state, a).unwrap();
+    }
+}
+
+#[test]
+fn spider_punk_has_riot_and_gives_it_to_other_spiders() {
+    use mtg_kernel::card_def::Keywords;
+    let mut state = game();
+    lands(&mut state, P0, 6);
+    let punk = cast_with_riot(&mut state, "Spider-Punk", true);
+    assert!(engine::has_effective_keyword(&state, punk, Keywords::HASTE));
+    assert_eq!(state.objects.get(punk).counters.plus1_plus1, 0);
+    let spidey = cast_with_riot(&mut state, "Spider-Man, Web-Spinner", false);
+    assert_eq!(state.objects.get(spidey).counters.plus1_plus1, 1);
+    end_turn(&mut state);
+    assert!(engine::has_effective_keyword(&state, punk, Keywords::HASTE), "riot haste lasts");
+}
+
+#[test]
+fn with_spider_punk_out_counterspell_counters_nothing() {
+    let mut state = game();
+    put(&mut state, P0, "Spider-Punk");
+    lands(&mut state, P0, 1);
+    put(&mut state, P1, "Island");
+    put(&mut state, P1, "Island");
+    let counter = put_in(&mut state, P1, "Counterspell", Zone::Hand);
+    let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(bolt)).unwrap();
+    let mut countered = false;
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseTargets { legal_targets, .. } => {
+                if legal_targets.contains(&Target::Player(P1)) {
+                    Action::ChooseTarget(Target::Player(P1))
+                } else {
+                    Action::ChooseTarget(legal_targets[0])
+                }
+            }
+            Decision::CastSpellOrPass { player: P1, castable_spells, .. } if !countered && castable_spells.contains(&counter) => {
+                countered = true;
+                Action::CastSpell(counter)
+            }
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert!(countered);
+    assert_eq!(state.players[1].life, 37, "the Bolt resolved");
+}

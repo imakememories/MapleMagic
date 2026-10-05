@@ -50,6 +50,14 @@ pub enum ReplacementEffectKind {
         turn: u32,
         active_player: PlayerId,
     },
+    /// The next time `player` would draw a card this turn, they exile the
+    /// top card of their library instead and may play it this turn
+    /// (Urabrask, Heretic Praetor). Used once.
+    NextDrawExilesTop {
+        player: PlayerId,
+        turn: u32,
+        active_player: PlayerId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -67,6 +75,8 @@ pub struct DamageProposed {
     pub target: Target,
     pub amount: i32,
     pub touched_by: Vec<ReplacementId>,
+    /// Combat damage (510.2), for "prevent all combat damage" effects.
+    pub combat: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +166,16 @@ impl ProposedEvent {
             target,
             amount,
             touched_by: Vec::new(),
+            combat: false,
+        })
+    }
+    pub fn combat_damage(source: ObjectId, target: Target, amount: i32) -> ProposedEvent {
+        ProposedEvent::Damage(DamageProposed {
+            source,
+            target,
+            amount,
+            touched_by: Vec::new(),
+            combat: true,
         })
     }
     pub fn zone_change(object: ObjectId, to_zone: Zone) -> ProposedEvent {
@@ -444,32 +464,32 @@ pub enum CommittedEvent {
 /// active replacement that applies to `event` and hasn't already touched it
 /// (loop-prevention via `touched_by`), applies it, and marks it touched.
 /// Returns `None` if the event ends up fully prevented.
+/// "Damage can't be prevented" from a resolved effect this turn or from a
+/// permanent (Spider-Punk).
+fn prevention_disabled(state: &GameState) -> bool {
+    state
+        .engine
+        .until_end_of_turn
+        .iter()
+        .any(|effect| matches!(effect, crate::engine::UntilEndOfTurnEffect::DamageCannotBePrevented { .. }))
+        || crate::statics::damage_cant_be_prevented(state)
+}
+
 pub fn apply_replacements(
     state: &mut GameState,
     mut proposed: ProposedEvent,
 ) -> Option<ProposedEvent> {
-    let damage_cannot_be_prevented = matches!(&proposed, ProposedEvent::Damage(_))
-        && state.engine.until_end_of_turn.iter().any(|effect| {
-            matches!(
-                effect,
-                crate::engine::UntilEndOfTurnEffect::DamageCannotBePrevented { .. }
-            )
-        });
+    let damage_cannot_be_prevented = matches!(&proposed, ProposedEvent::Damage(_)) && prevention_disabled(state);
     if let ProposedEvent::Damage(damage) = &proposed {
         if !damage_cannot_be_prevented
-            && crate::engine::damage_is_prevented_by_protection(state, damage.source, damage.target)
+            && (crate::engine::damage_is_prevented_by_protection(state, damage.source, damage.target)
+                || crate::statics::prevents_combat_damage_to(state, damage.target, damage.combat))
         {
             return None;
         }
     }
     loop {
-        let damage_cannot_be_prevented = matches!(&proposed, ProposedEvent::Damage(_))
-            && state.engine.until_end_of_turn.iter().any(|effect| {
-                matches!(
-                    effect,
-                    crate::engine::UntilEndOfTurnEffect::DamageCannotBePrevented { .. }
-                )
-            });
+        let damage_cannot_be_prevented = matches!(&proposed, ProposedEvent::Damage(_)) && prevention_disabled(state);
         let hit = state
             .engine
             .active_replacements
@@ -522,6 +542,14 @@ fn replacement_applies(
                     & crate::card_def::mana_color_mask(*color)
                     != 0
         }
+        (
+            ReplacementEffectKind::NextDrawExilesTop {
+                player,
+                turn,
+                active_player,
+            },
+            ProposedEvent::Draw(d),
+        ) => d.player == *player && *turn == state.turn && *active_player == state.active_player,
         _ => false,
     }
 }
@@ -571,6 +599,17 @@ fn replacement_apply(
             ReplacementEffectKind::PreventDamageFromColorUntilEndOfTurn { .. },
             ProposedEvent::Damage(_),
         ) => None,
+        (ReplacementEffectKind::NextDrawExilesTop { player, .. }, ProposedEvent::Draw(_)) => {
+            let player = *player;
+            state.engine.active_replacements.retain(|r| r.id != repl.id);
+            if let Some(&top) = state.players[player.index()].library.first() {
+                commit(state, ProposedEvent::zone_change(top, Zone::Exile));
+                if state.objects.get(top).zone == Zone::Exile {
+                    crate::effect::grant_exile_play(state, top, player, crate::engine::PlayPermissionExpiry::EndOfTurn);
+                }
+            }
+            None
+        }
         (_, other) => Some(other),
     }
 }
@@ -791,6 +830,14 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
         CommittedEvent::ZoneChange { object, to: Zone::Battlefield, .. } if state.objects.get(*object).tapped => Some(*object),
         _ => None,
     };
+    let entered = match &committed {
+        CommittedEvent::ZoneChange { object, to: Zone::Battlefield, .. } | CommittedEvent::CreateToken { object, .. } => Some(*object),
+        _ => None,
+    };
+    if let Some(object) = entered.filter(|&o| crate::statics::has_riot(state, o)) {
+        let link = crate::state::ObjectLinkV4 { object, zone_change_count: state.objects.get(object).zone_change_count };
+        state.pending_riot.push(link);
+    }
     state.engine.event_log.push(committed.clone());
     state.engine.event_history.push(committed);
     if let Some(object) = entered_tapped {
@@ -1056,6 +1103,12 @@ fn commit_zone_change(
 
     // Who knew a face-down exiled card (406.3); read before it goes stale.
     let face_down_knowers = state.face_down(id).map(|f| f.known_to);
+    // Last known charge counters of a permanent leaving the battlefield.
+    if from_zone == Zone::Battlefield && state.objects.get(id).counters.charge != 0 {
+        let link = crate::state::ObjectLinkV4 { object: id, zone_change_count: state.objects.get(id).zone_change_count };
+        let charge = state.objects.get(id).counters.charge;
+        state.last_known_charge.push((link, charge));
+    }
     remove_from_zone(state, owner, id, from_zone);
     state.forget_hand_object(id);
     state.clear_object_relations(id);

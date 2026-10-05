@@ -555,6 +555,8 @@ pub enum TargetSpec {
     UpToOneOpponentControlledCreature,
     /// A player or creature other than the source ("any other target").
     AnyTargetOtherThanSource,
+    /// A player, then up to one creature (Dragonspark Reactor).
+    PlayerThenUpToOneCreature,
 }
 
 impl TargetSpec {
@@ -601,6 +603,7 @@ impl TargetSpec {
             TargetSpec::OpponentArtifactOrEnchantmentPermanent => 35,
             TargetSpec::UpToOneOpponentControlledCreature => 36,
             TargetSpec::AnyTargetOtherThanSource => 37,
+            TargetSpec::PlayerThenUpToOneCreature => 38,
         }
     }
 }
@@ -1554,6 +1557,7 @@ mod tests {
             (TargetSpec::OpponentArtifactOrEnchantmentPermanent, 35),
             (TargetSpec::UpToOneOpponentControlledCreature, 36),
             (TargetSpec::AnyTargetOtherThanSource, 37),
+            (TargetSpec::PlayerThenUpToOneCreature, 38),
         ];
         for (target_spec, ordinal) in stable_ordinals {
             assert_eq!(target_spec.stable_id(), ordinal);
@@ -1573,7 +1577,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0x82de_9e3a_eaa9_d5dc);
+        assert_eq!(KERNEL_CARDDB_HASH, 0x9929_d9d5_8bb6_a81a);
     }
 
     #[test]

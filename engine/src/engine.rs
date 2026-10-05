@@ -1280,6 +1280,12 @@ pub enum Decision {
         player: PlayerId,
         commander: ObjectId,
     },
+    /// Riot (702.136a): `creature` enters with a +1/+1 counter or haste
+    /// (`Action::ChooseRiot`).
+    ChooseRiot {
+        player: PlayerId,
+        creature: ObjectId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1362,6 +1368,9 @@ pub enum Action {
     /// Answers `Decision::ChooseCommanderZone`: true puts the commander into
     /// the command zone.
     ChooseCommanderZone(bool),
+    /// Answers `Decision::ChooseRiot`: true for haste, false for a +1/+1
+    /// counter.
+    ChooseRiot(bool),
 }
 
 const CHAIN_COPY_COST: Cost = Cost {
@@ -1443,6 +1452,7 @@ fn target_count(spec: TargetSpec) -> u8 {
         | TargetSpec::OpponentArtifactOrEnchantmentPermanent
         | TargetSpec::CreatureOtherThanSource => 1,
         TargetSpec::PlayerThenTheirCreature
+        | TargetSpec::PlayerThenUpToOneCreature
         | TargetSpec::UpToTwoCreatureCardsInOwnGraveyard
         | TargetSpec::UpToTwoCreatures
         | TargetSpec::ExactlyTwoArtifactPermanents
@@ -1459,6 +1469,7 @@ fn target_min_count(spec: TargetSpec) -> u8 {
         | TargetSpec::UpToTwoCardsInGraveyards
         | TargetSpec::UpToOneTappedCreature
         | TargetSpec::UpToOneOpponentControlledCreature => 0,
+        TargetSpec::PlayerThenUpToOneCreature => 1,
         _ => target_count(spec),
     }
 }
@@ -2524,6 +2535,16 @@ fn legal_targets_for_controller_from_source(
                 }
             }
             out
+        }
+        TargetSpec::PlayerThenUpToOneCreature => {
+            if targets_chosen.is_empty() {
+                vec![Target::Player(PlayerId::P0), Target::Player(PlayerId::P1)]
+            } else {
+                battlefield_objects(state)
+                    .filter(|&id| object_has_type(state, id, CardType::Creature))
+                    .map(Target::Object)
+                    .collect()
+            }
         }
         TargetSpec::PlayerThenTheirCreature => {
             if targets_chosen.is_empty() {
@@ -5885,6 +5906,14 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
         if let Some((player, commander)) = crate::commander::pending_zone_choice(state) {
             return Decision::ChooseCommanderZone { player, commander };
         }
+        // Riot (702.136a): the choice made as the creature entered.
+        state.pending_riot.retain(|l| {
+            let o = state.objects.get(l.object);
+            o.zone == Zone::Battlefield && o.zone_change_count == l.zone_change_count
+        });
+        if let Some(link) = state.pending_riot.first() {
+            return Decision::ChooseRiot { player: state.objects.get(link.object).controller, creature: link.object };
+        }
 
         if let Some(d) = drain_pending_triggers_or_decide(state) {
             return d;
@@ -8030,7 +8059,7 @@ fn drain_pending_activation_or_decide(state: &mut GameState) -> Option<Decision>
                     min_targets: u16::from(target_min_count(pending.target_spec)),
                     max_targets: u16::from(max_targets),
                     legal_targets,
-                    can_finish: true,
+                    can_finish: pending.targets_chosen.len() >= usize::from(target_min_count(pending.target_spec)),
                 });
             }
         } else {
@@ -9505,6 +9534,9 @@ pub(crate) fn counter_stack_item_by_id(
     if stack_item_id == StackItemId::default() {
         return Err("cannot counter an unstamped stack incarnation".to_string());
     }
+    if crate::statics::nothing_can_be_countered(state) {
+        return Ok(None);
+    }
     let positions = state
         .stack
         .iter()
@@ -10106,6 +10138,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
                 obj.damage = 0;
                 obj.v4.deathtouch_damage = false;
             }
+            state.last_known_charge.clear();
             let returns: Vec<(ObjectId, u32, PlayerId)> = state
                 .engine
                 .until_end_of_turn
@@ -10409,6 +10442,9 @@ pub fn has_effective_keyword(state: &GameState, id: ObjectId, kw: Keywords) -> b
     if crate::statics::grants_keyword(state, id, kw) {
         return true;
     }
+    if kw == Keywords::HASTE && crate::statics::has_riot_haste(state, id) {
+        return true;
+    }
     if attached_equipment_profiles(state, id)
         .into_iter()
         .any(|(equipment_id, equipment)| {
@@ -10633,7 +10669,7 @@ fn combat_damage_wave(state: &mut GameState, first_strike_wave: bool) {
             assign_attacker_damage_to_blockers(state, attacker, power, blockers, &mut events);
         } else {
             let defender = state.objects.get(attacker).controller.opponent();
-            events.push(ProposedEvent::damage(
+            events.push(ProposedEvent::combat_damage(
                 attacker,
                 Target::Player(defender),
                 power,
@@ -10649,7 +10685,7 @@ fn combat_damage_wave(state: &mut GameState, first_strike_wave: bool) {
             }
             let power = effective_power(state, blocker);
             if power > 0 {
-                events.push(ProposedEvent::damage(
+                events.push(ProposedEvent::combat_damage(
                     blocker,
                     Target::Object(*attacker),
                     power,
@@ -10793,7 +10829,7 @@ fn assign_attacker_damage_to_blockers(
     events: &mut Vec<ProposedEvent>,
 ) {
     if blockers.len() == 1 {
-        events.push(ProposedEvent::damage(
+        events.push(ProposedEvent::combat_damage(
             attacker,
             Target::Object(blockers[0]),
             power,
@@ -10819,7 +10855,7 @@ fn assign_attacker_damage_to_blockers(
             remaining.min(lethal_needed)
         };
         if assign > 0 {
-            events.push(ProposedEvent::damage(
+            events.push(ProposedEvent::combat_damage(
                 attacker,
                 Target::Object(blocker),
                 assign,
@@ -11295,6 +11331,16 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
                 return Err(format!("{id} is not a legal Plot action for {p:?}"));
             }
             plot_spell(state, p, id);
+            Ok(())
+        }
+        Action::ChooseRiot(haste) => {
+            let link = *state.pending_riot.first().ok_or("no riot choice is pending")?;
+            state.pending_riot.remove(0);
+            if haste {
+                state.riot_haste.push(link);
+            } else {
+                state.objects.get_mut(link.object).counters.plus1_plus1 += 1;
+            }
             Ok(())
         }
         Action::ChooseCommanderZone(to_command_zone) => {
