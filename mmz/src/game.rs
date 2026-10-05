@@ -268,19 +268,51 @@ impl Game {
     /// [`Self::determinize`], optionally keeping the observer's own library,
     /// which must stay put while the observer is searching it.
     pub fn determinize_with(&mut self, observer: PlayerId, seed: u64, keep_own_library: bool) {
+        self.deal(observer, seed, keep_own_library, None);
+    }
+
+    /// [`Self::determinize_with`], dealing the opponent's unknown hand from `hand`.
+    pub fn determinize_with_hand(&mut self, observer: PlayerId, seed: u64, keep_own_library: bool, hand: &[u16]) {
+        self.deal(observer, seed, keep_own_library, Some(hand));
+    }
+
+    /// The opponent's unknown hand cards and its other unseen cards, as card definitions.
+    pub fn hidden_pool(&self, observer: PlayerId) -> (Vec<u16>, Vec<u16>) {
+        let opp = observer.opponent();
+        let n = unseen_slots(&self.state, observer, opp, true).len();
+        let defs: Vec<u16> =
+            unseen_slots(&self.state, observer, opp, false).iter().map(|&id| self.state.objects.get(id).card_def).collect();
+        (defs[..n].to_vec(), defs[n..].to_vec())
+    }
+
+    fn deal(&mut self, observer: PlayerId, seed: u64, keep_own_library: bool, hand: Option<&[u16]>) {
         let mut rng = SplitMix64::seed(seed);
         for owner in [PlayerId::P0, PlayerId::P1] {
             let slots = unseen_slots(&self.state, observer, owner, keep_own_library && owner == observer);
             let mut defs: Vec<u16> = slots.iter().map(|&id| self.state.objects.get(id).card_def).collect();
             defs.sort_unstable();
+            let fixed = match hand {
+                Some(h) if owner != observer => {
+                    assert_eq!(h.len(), unseen_slots(&self.state, observer, owner, true).len(), "hand size");
+                    let mut h = h.to_vec();
+                    h.sort_unstable();
+                    for d in &h {
+                        let i = defs.iter().position(|x| x == d).expect("the hand is drawn from unseen cards");
+                        defs.remove(i);
+                    }
+                    h
+                }
+                _ => Vec::new(),
+            };
             for i in (1..defs.len()).rev() {
                 let j = (rng.next_u64() % (i as u64 + 1)) as usize;
                 defs.swap(i, j);
             }
-            for (id, def) in slots.into_iter().zip(defs) {
+            for (id, def) in slots.into_iter().zip(fixed.into_iter().chain(defs)) {
                 set_card(&mut self.state, id, def);
             }
         }
+        self.state.reseed_shuffles(rng.next_u64());
         if self.outcome.is_none() && matches!(self.pending, Pending::None) {
             self.settle();
         }
@@ -1007,6 +1039,32 @@ mod tests {
             }
         }
         assert!(split > 0, "no decision offered two copies of one card that differ");
+    }
+
+    #[test]
+    fn a_pinned_hand_is_dealt_exactly() {
+        let mut g = Game::new("Faeries", "Terror", 4).unwrap();
+        let mut rng = SplitMix64::seed(2);
+        for _ in 0..30 {
+            let n = g.choices().len();
+            g.apply((rng.next_u64() % n as u64) as usize);
+        }
+        let me = g.to_act();
+        let (hand, rest) = g.hidden_pool(me);
+        assert!(!hand.is_empty() && !rest.is_empty());
+        let mut pick: Vec<u16> = rest.iter().take(hand.len()).copied().collect();
+        pick.sort_unstable();
+        let mut d = g.clone();
+        d.determinize_with_hand(me, 7, false, &pick);
+        let (h2, r2) = d.hidden_pool(me);
+        let mut h2s = h2.clone();
+        h2s.sort_unstable();
+        assert_eq!(h2s, pick);
+        let mut before: Vec<u16> = hand.iter().chain(&rest).copied().collect();
+        let mut after: Vec<u16> = h2.iter().chain(&r2).copied().collect();
+        before.sort_unstable();
+        after.sort_unstable();
+        assert_eq!(before, after);
     }
 
     #[test]

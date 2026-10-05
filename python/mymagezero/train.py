@@ -56,6 +56,11 @@ class Config:
     perfect_obs: bool = False
     # PIMC (AlphaZe**) worlds, with `sims` split across them.
     pimc_worlds: int = 0
+    # Where each world's opponent hand comes from: uniform, oracle, retention or scored.
+    world_sampler: str = "uniform"
+    world_candidates: int = 50
+    world_pool: int = 16
+    world_temp: float = 0.0
     # Rows per forward pass; 0 sizes it for this machine (model.plan_eval).
     max_eval_batch: int = 0
     seed: int = 0
@@ -79,6 +84,7 @@ class Config:
             "maple_resample": self.maple_resample,
             "perfect_obs": self.perfect_obs,
             "pimc_worlds": self.pimc_worlds,
+            "world_sampler": self.world_sampler,
         }
 
 
@@ -97,7 +103,7 @@ class Replay:
         self.pos = 0
 
     def add(self, samples):
-        tok, tok_len, act, act_len, pi, z, _rv = samples
+        tok, tok_len, act, act_len, pi, z = samples[:6]
         k = len(tok_len)
         tw, aw = min(tok.shape[1], MAX_TOKENS), min(act.shape[1], MAX_ACTIONS)
         for i in range(k):
@@ -155,17 +161,23 @@ def check_softmax(p: np.ndarray):
         )
 
 
-def drive(sp: SelfPlay, nets: dict, device, on_samples=None, plan: EvalPlan | None = None) -> dict:
-    """Run a SelfPlay to completion, evaluating leaves with `nets[model_id]`."""
+def drive(sp: SelfPlay, nets: dict, device, on_samples=None, plan: EvalPlan | None = None,
+          scorers: dict | None = None) -> dict:
+    """Run a SelfPlay to completion, evaluating leaves with `nets[model_id]` and
+    candidate hands with `scorers[model_id]` (a function of a world batch)."""
     plan = plan or plan_eval(nets[0], device, MAX_TOKENS, MAX_ACTIONS)
     max_batch = plan.max_batch
     evals = {0: 0, 1: 0}
     t0 = time.time()
     while True:
         req = sp.gather()
+        if on_samples is not None:
+            s = sp.take_samples()
+            if s is not None:
+                on_samples(s)
         if req is None:
             break
-        tok, tl, act, al, model = req
+        tok, tl, act, al, model, worlds = req
         priors = np.zeros(act.shape[:2], np.float32)
         values = np.zeros(len(tl), np.float32)
         for m in np.unique(model):
@@ -182,11 +194,16 @@ def drive(sp: SelfPlay, nets: dict, device, on_samples=None, plan: EvalPlan | No
                 priors[rows, :aw] = p
                 values[rows] = v
             evals[int(m)] += len(idx)
-        sp.feed(priors, values)
-        if on_samples is not None:
-            s = sp.take_samples()
-            if s is not None:
-                on_samples(s)
+        scores = None
+        if worlds is not None:
+            wmodel = worlds[-1]
+            scores = np.zeros(worlds[4].shape[:2], np.float32)
+            for m in np.unique(wmodel):
+                if not scorers or int(m) not in scorers:
+                    raise ValueError(f"model {int(m)} asks for scored worlds but has no sampler")
+                rows = np.nonzero(wmodel == m)[0]
+                scores[rows] = scorers[int(m)](tuple(x[rows] for x in worlds[:-1]))
+        sp.feed(priors, values, scores)
     return {"evals": evals[0] + evals[1], "evals_a": evals[0], "evals_b": evals[1], "seconds": time.time() - t0}
 
 
@@ -216,7 +233,8 @@ def summarize_stats(s: dict) -> dict:
 
 
 def match(cfg: Config, net_a, opponent, games: int, device, seed: int,
-          search_a: dict | None = None, search_b: dict | None = None, opp_sims: int | None = None) -> dict:
+          search_a: dict | None = None, search_b: dict | None = None, opp_sims: int | None = None,
+          scorers: dict | None = None, retention=None) -> dict:
     """Score of net_a against `opponent` (a Net, "heuristic" or "random"), with
     search settings per side (default: cfg's)."""
     nets = {0: net_a}
@@ -235,9 +253,13 @@ def match(cfg: Config, net_a, opponent, games: int, device, seed: int,
         maple_select=(sa["maple_select"], sb["maple_select"]),
         maple_resample=(sa["maple_resample"], sb["maple_resample"]), perfect_obs=(sa["perfect_obs"], sb["perfect_obs"]),
         pimc_worlds=(sa.get("pimc_worlds", 0), sb.get("pimc_worlds", 0)),
+        world_sampler=(sa.get("world_sampler", "uniform"), sb.get("world_sampler", "uniform")),
+        world_candidates=cfg.world_candidates, world_pool=cfg.world_pool, world_temp=cfg.world_temp,
+        retention=retention, value_scale=(sa.get("value_scale", 1.0), sb.get("value_scale", 1.0)),
+        heuristic_values=(sa.get("heuristic_values", False), sb.get("heuristic_values", False)),
     )
     plan = plan_eval(net_a, device, MAX_TOKENS, MAX_ACTIONS, cfg.max_eval_batch)
-    stats = drive(sp, nets, device, plan=plan)
+    stats = drive(sp, nets, device, plan=plan, scorers=scorers)
     stats["plan"] = plan
     stats["search_stats"] = sp.search_stats()
     games = sp.take_results()
@@ -285,6 +307,10 @@ def run(cfg: Config, resume: bool = True):
     opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     if opt_state is not None:
         opt.load_state_dict(opt_state)
+        for p in net.parameters():
+            for k, v in opt.state.get(p, {}).items():
+                if torch.is_tensor(v) and v.dim() == 2 and v.shape[0] < p.shape[0]:
+                    opt.state[p][k] = torch.cat([v, v.new_zeros(p.shape[0] - v.shape[0], v.shape[1])])
     print(f"device {device}, params {sum(p.numel() for p in net.parameters()) / 1e6:.2f}M, "
           f"{len(cfg.pairing_list())} pairings")
     plan = plan_eval(net, device, MAX_TOKENS, MAX_ACTIONS, cfg.max_eval_batch)
@@ -307,6 +333,8 @@ def run(cfg: Config, resume: bool = True):
             seed=cfg.seed * 100_003 + gen, maple_worlds=(cfg.maple_worlds, cfg.maple_worlds),
             maple_select=cfg.maple_select, maple_resample=cfg.maple_resample,
             perfect_obs=(cfg.perfect_obs, cfg.perfect_obs), pimc_worlds=(cfg.pimc_worlds, cfg.pimc_worlds),
+            world_sampler=cfg.world_sampler, world_candidates=cfg.world_candidates, world_pool=cfg.world_pool,
+            world_temp=cfg.world_temp,
         )
         sp_stats = drive(sp, {0: net}, device, on_samples=add, plan=plan)
         search = summarize_stats(sp.search_stats()[0])

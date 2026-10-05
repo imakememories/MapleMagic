@@ -1,9 +1,10 @@
 //! usage: arena <agentA> <agentB> <deckA> <deckB> <games> [threads]
 //! agents: random | h<sims> (heuristic value) | r<sims> (rollout value), then
-//! m<k> for MAPLE with k worlds (u for union selection) or p<k> for PIMC.
+//! m<k> for MAPLE with k worlds (u for union selection) or p<k> for PIMC, and
+//! o to deal the opponent's true hand in every world (a cheating ceiling).
 //! Games come in pairs on one deal, with the agents swapping decks.
 use mmz::game::{Game, Outcome};
-use mmz::ismcts::{Config, HeuristicEval, MapleSelect, RolloutEval, Search, SearchStats};
+use mmz::ismcts::{Config, HeuristicEval, MapleSelect, RolloutEval, Search, SearchStats, WorldSampler};
 use mmz::mtg_kernel::ids::PlayerId;
 use mmz::mtg_kernel::state::SplitMix64;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,6 +41,10 @@ fn parse(s: &str) -> Agent {
         let k = digits(r);
         cfg.pimc_worlds = k.parse().unwrap_or_else(|_| panic!("bad PIMC world count in {s}"));
         rest = &r[k.len()..];
+    }
+    if let Some(r) = rest.strip_prefix('o') {
+        cfg.world_sampler = WorldSampler::Oracle;
+        rest = r;
     }
     assert!(rest.is_empty(), "unknown agent {s}");
     match kind {

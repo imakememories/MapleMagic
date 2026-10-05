@@ -1,6 +1,7 @@
 pub use mtg_kernel;
 
 pub mod game;
+pub mod history;
 pub mod ismcts;
 pub mod features;
 pub mod selfplay;

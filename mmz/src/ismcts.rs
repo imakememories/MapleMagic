@@ -4,9 +4,14 @@
 
 use crate::features::{choice_fields, observe_with};
 use crate::game::{Game, Outcome};
+use mtg_kernel::card_def::CARD_DEFS;
 use mtg_kernel::ids::PlayerId;
 use mtg_kernel::state::SplitMix64;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+/// Turn buckets of a retention table: turns 0..=10, then 11 and later.
+pub const RETENTION_BUCKETS: usize = 12;
 
 /// How MAPLE picks the acting player and legal keys when worlds disagree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -16,6 +21,19 @@ pub enum MapleSelect {
     RefWorld,
     /// The majority player acts, over the union of legal keys.
     Union,
+}
+
+/// Where the opponent's hidden hand in each world comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorldSampler {
+    #[default]
+    Uniform,
+    /// The true hand: a diagnostic that cheats.
+    Oracle,
+    /// Drawn from per-turn log-odds of a card still being in hand.
+    Retention,
+    /// Candidate hands scored by the caller, the lowest kept.
+    Scored,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +56,15 @@ pub struct Config {
     pub perfect_obs: bool,
     /// PIMC world count (0 = off): independent trees in fixed worlds.
     pub pimc_worlds: u32,
+    pub world_sampler: WorldSampler,
+    /// Uniform worlds drawn per move as candidates for scoring.
+    pub world_candidates: u32,
+    /// Hands an IS-MCTS search draws its worlds from.
+    pub world_pool: u32,
+    /// 0 keeps the best-scored hands; above 0, samples them at this temperature.
+    pub world_temp: f32,
+    /// Log-odds per (turn bucket, card definition).
+    pub retention: Option<Arc<Vec<f32>>>,
 }
 
 impl Default for Config {
@@ -54,6 +81,11 @@ impl Default for Config {
             maple_dedupe: true,
             perfect_obs: false,
             pimc_worlds: 0,
+            world_sampler: WorldSampler::Uniform,
+            world_candidates: 50,
+            world_pool: 16,
+            world_temp: 0.0,
+            retention: None,
         }
     }
 }
@@ -75,6 +107,8 @@ pub struct SearchStats {
     pub terminal_worlds: u64,
     pub no_world_sims: u64,
     pub stale_priors: u64,
+    pub world_requests: u64,
+    pub world_skips: u64,
 }
 
 impl std::ops::AddAssign for SearchStats {
@@ -87,6 +121,8 @@ impl std::ops::AddAssign for SearchStats {
         self.terminal_worlds += o.terminal_worlds;
         self.no_world_sims += o.no_world_sims;
         self.stale_priors += o.stale_priors;
+        self.world_requests += o.world_requests;
+        self.world_skips += o.world_skips;
     }
 }
 
@@ -152,6 +188,10 @@ pub struct Search {
     worlds: Vec<Game>,
     /// PIMC: the world the next simulation descends in.
     next_world: usize,
+    /// Opponent hands the worlds are dealt from (None: dealt at random).
+    hands: Option<Vec<Vec<u16>>>,
+    /// Scored sampling: distinct candidate hands and how often each was drawn.
+    candidates: Vec<(Vec<u16>, f32)>,
     pub simulations: u32,
     pub stats: SearchStats,
 }
@@ -203,21 +243,106 @@ impl Search {
             pending: Vec::new(),
             worlds: Vec::new(),
             next_world: 0,
+            hands: None,
+            candidates: Vec::new(),
             simulations: 0,
             stats: SearchStats::default(),
             cfg,
         };
         assert!(s.cfg.maple_worlds == 0 || s.cfg.pimc_worlds == 0, "MAPLE and PIMC are exclusive");
-        if s.cfg.maple_worlds > 0 && !s.cfg.maple_resample && !s.root.is_over() {
-            s.worlds = s.sample_worlds(s.cfg.maple_worlds);
-        }
-        if s.cfg.pimc_worlds > 0 && !s.root.is_over() {
-            s.worlds = s.sample_worlds(s.cfg.pimc_worlds);
-            for _ in 1..s.worlds.len() {
-                s.nodes.push(Node::new(observer));
+        assert!(!(s.cfg.maple_resample && s.cfg.world_sampler == WorldSampler::Scored), "scored worlds are fixed per move");
+        if !s.root.is_over() {
+            s.choose_hands();
+            if s.candidates.is_empty() {
+                s.fix_worlds();
             }
         }
         s
+    }
+
+    fn hands_wanted(&self) -> usize {
+        match (self.cfg.maple_worlds, self.cfg.pimc_worlds) {
+            (0, 0) => self.cfg.world_pool.max(1) as usize,
+            (k, 0) => k as usize,
+            (_, k) => k as usize,
+        }
+    }
+
+    fn choose_hands(&mut self) {
+        match self.cfg.world_sampler {
+            WorldSampler::Uniform | WorldSampler::Retention => {}
+            WorldSampler::Oracle => self.hands = Some(vec![self.root.hidden_pool(self.observer).0]),
+            WorldSampler::Scored => {
+                let mut cands: Vec<(Vec<u16>, f32)> = Vec::new();
+                for _ in 0..self.cfg.world_candidates {
+                    let Some(g) = self.determinize_root(None) else { continue };
+                    let mut h = g.hidden_pool(self.observer).0;
+                    h.sort_unstable();
+                    match cands.iter_mut().find(|c| c.0 == h) {
+                        Some(c) => c.1 += 1.0,
+                        None => cands.push((h, 1.0)),
+                    }
+                }
+                if cands.len() <= self.hands_wanted() {
+                    self.stats.world_skips += 1;
+                    self.hands = (!cands.is_empty()).then(|| cands.into_iter().map(|c| c.0).collect());
+                } else {
+                    self.stats.world_requests += 1;
+                    self.candidates = cands;
+                }
+            }
+        }
+    }
+
+    /// The fixed worlds of MAPLE (unless resampling) and PIMC.
+    fn fix_worlds(&mut self) {
+        if self.cfg.maple_worlds > 0 && !self.cfg.maple_resample {
+            self.worlds = self.sample_worlds(self.cfg.maple_worlds);
+        }
+        if self.cfg.pimc_worlds > 0 {
+            self.worlds = self.sample_worlds(self.cfg.pimc_worlds);
+            for _ in 1..self.worlds.len() {
+                self.nodes.push(Node::new(self.observer));
+            }
+        }
+    }
+
+    /// Candidate opponent hands to score, lower being more likely, before the search can run.
+    pub fn world_request(&self) -> Option<Vec<Vec<u16>>> {
+        (!self.candidates.is_empty()).then(|| self.candidates.iter().map(|c| c.0.clone()).collect())
+    }
+
+    pub fn set_world_scores(&mut self, scores: &[f32]) {
+        assert_eq!(scores.len(), self.candidates.len());
+        let t = self.cfg.world_temp;
+        let cands = std::mem::take(&mut self.candidates);
+        let mut keyed: Vec<(f32, usize)> = Vec::with_capacity(cands.len());
+        for (i, &d) in scores.iter().enumerate() {
+            let k = if t > 0.0 { d - t * (cands[i].1.ln() + gumbel(&mut self.rng)) } else { d };
+            keyed.push((k, i));
+        }
+        keyed.sort_by(|a, b| a.0.total_cmp(&b.0));
+        self.hands = Some(keyed.iter().take(self.hands_wanted()).map(|&(_, i)| cands[i].0.clone()).collect());
+        self.fix_worlds();
+    }
+
+    /// The opponent hand for world `i`, if not dealt at random.
+    fn world_hand(&mut self, i: usize) -> Option<Vec<u16>> {
+        if let Some(hs) = &self.hands {
+            return Some(hs[i % hs.len()].clone());
+        }
+        (self.cfg.world_sampler == WorldSampler::Retention).then(|| self.retention_hand())
+    }
+
+    fn retention_hand(&mut self) -> Vec<u16> {
+        let table = self.cfg.retention.clone().expect("a retention table");
+        let (hand, rest) = self.root.hidden_pool(self.observer);
+        let mut pool: Vec<u16> = hand.iter().chain(&rest).copied().collect();
+        pool.sort_unstable();
+        let row = (self.root.state.turn as usize).min(RETENTION_BUCKETS - 1) * CARD_DEFS.len();
+        let mut keyed: Vec<(f32, u16)> = pool.iter().map(|&d| (table[row + d as usize] + gumbel(&mut self.rng), d)).collect();
+        keyed.sort_by(|a, b| b.0.total_cmp(&a.0));
+        keyed.iter().take(hand.len()).map(|x| x.1).collect()
     }
 
     /// Up to `k` determinizations where the observer is to act.
@@ -227,7 +352,8 @@ impl Search {
         let mut tries = 0;
         while out.len() < k && tries < k as u32 * ROOT_TRIES {
             tries += 1;
-            if let Some(g) = self.determinize_root() {
+            let hand = self.world_hand(out.len());
+            if let Some(g) = self.determinize_root(hand.as_deref()) {
                 out.push(g);
             }
         }
@@ -236,6 +362,7 @@ impl Search {
 
     /// Leaves for up to `max_leaves` simulations; evaluate them and pass the results to [`Self::feed`] in order.
     pub fn gather(&mut self, max_leaves: usize) -> Vec<Game> {
+        assert!(self.candidates.is_empty(), "set_world_scores first");
         if self.cfg.maple_worlds > 0 {
             return self.gather_maple(max_leaves);
         }
@@ -302,16 +429,23 @@ impl Search {
 
     /// A determinization of the root where the observer is to act.
     fn root_world(&mut self) -> Option<Game> {
-        (0..ROOT_TRIES).find_map(|_| self.determinize_root())
+        (0..ROOT_TRIES).find_map(|_| {
+            let i = self.rng.next_u64() as usize;
+            let hand = self.world_hand(i);
+            self.determinize_root(hand.as_deref())
+        })
     }
 
     /// One determinization, retried keeping the observer's library if resampling it breaks the root.
-    fn determinize_root(&mut self) -> Option<Game> {
+    fn determinize_root(&mut self, hand: Option<&[u16]>) -> Option<Game> {
         let seed = self.rng.next_u64();
         let ok = |g: &Game| !g.is_over() && g.to_act() == self.observer;
         for keep_own_library in [false, true] {
             let mut g = self.root.clone();
-            g.determinize_with(self.observer, seed, keep_own_library);
+            match hand {
+                Some(h) => g.determinize_with_hand(self.observer, seed, keep_own_library, h),
+                None => g.determinize_with(self.observer, seed, keep_own_library),
+            }
             if ok(&g) {
                 return Some(g);
             }
@@ -665,6 +799,10 @@ fn uniform01(rng: &mut SplitMix64) -> f32 {
     ((rng.next_u64() >> 40) as f32 + 0.5) / (1u64 << 24) as f32
 }
 
+fn gumbel(rng: &mut SplitMix64) -> f32 {
+    -(-uniform01(rng).ln()).ln()
+}
+
 /// Marsaglia-Tsang gamma sampler (alpha < 1 via the boost trick).
 fn gamma_sample(rng: &mut SplitMix64, alpha: f32) -> f32 {
     if alpha < 1.0 {
@@ -908,14 +1046,14 @@ mod tests {
         assert!(stale > 0, "no search passed through a node awaiting evaluation");
     }
 
-    #[test]
-    fn search_ignores_where_hidden_cards_sit() {
+    /// Positions paired with a copy that swaps a hidden hand card with an unseen library card.
+    fn hidden_swaps(n: usize) -> Vec<(Game, Game)> {
         use crate::game::{set_card, unseen_slots};
         let mut rng = SplitMix64::seed(21);
-        let mut checked = 0;
+        let mut out = Vec::new();
         for seed in 0..20 {
             let mut g = Game::new("Faeries", "Terror", seed).unwrap();
-            while !g.is_over() && checked < 12 {
+            while !g.is_over() && out.len() < n {
                 let (me, st) = (g.to_act(), &g.state);
                 let hand = unseen_slots(st, me, me.opponent(), true);
                 let all = unseen_slots(st, me, me.opponent(), false);
@@ -926,20 +1064,202 @@ mod tests {
                     let (dh, dl) = (def(h), def(l));
                     set_card(&mut swapped.state, h, dl);
                     set_card(&mut swapped.state, l, dh);
-                    for cfg in [Config::default(), maple(5, MapleSelect::RefWorld), pimc(5)] {
-                        let mut a = Search::new(&g, cfg.clone(), 9);
-                        let mut b = Search::new(&swapped, cfg.clone(), 9);
-                        a.run(48, 8, &mut HeuristicEval);
-                        b.run(48, 8, &mut HeuristicEval);
-                        assert_eq!(a.root_visits(), b.root_visits(), "{cfg:?}");
-                    }
-                    checked += 1;
+                    out.push((g.clone(), swapped));
                 }
-                let n = g.choices().len();
-                g.apply((rng.next_u64() % n as u64) as usize);
+                let k = g.choices().len();
+                g.apply((rng.next_u64() % k as u64) as usize);
             }
         }
-        assert!(checked >= 12, "only {checked} positions with a hidden card to swap");
+        out
+    }
+
+    fn fake_score(hand: &[u16]) -> f32 {
+        hand.iter().map(|&d| (d as u32).wrapping_mul(2654435761) % 1000).sum::<u32>() as f32
+    }
+
+    fn score_worlds(s: &mut Search) {
+        if let Some(cands) = s.world_request() {
+            let d: Vec<f32> = cands.iter().map(|h| fake_score(h)).collect();
+            s.set_world_scores(&d);
+        }
+    }
+
+    fn test_retention() -> Arc<Vec<f32>> {
+        let n = RETENTION_BUCKETS * CARD_DEFS.len();
+        Arc::new((0..n).map(|i| ((i as u32).wrapping_mul(7919) % 13) as f32 * 0.3).collect())
+    }
+
+    #[test]
+    fn search_ignores_where_hidden_cards_sit() {
+        let scored = |c: Config| Config { world_sampler: WorldSampler::Scored, ..c };
+        let retention = |c: Config| Config { world_sampler: WorldSampler::Retention, retention: Some(test_retention()), ..c };
+        let pairs = hidden_swaps(12);
+        assert_eq!(pairs.len(), 12, "positions with a hidden card to swap");
+        for (g, swapped) in &pairs {
+            for cfg in [
+                Config::default(),
+                maple(5, MapleSelect::RefWorld),
+                pimc(5),
+                scored(Config::default()),
+                scored(maple(5, MapleSelect::RefWorld)),
+                retention(Config::default()),
+                retention(maple(5, MapleSelect::RefWorld)),
+            ] {
+                let mut a = Search::new(g, cfg.clone(), 9);
+                let mut b = Search::new(swapped, cfg.clone(), 9);
+                score_worlds(&mut a);
+                score_worlds(&mut b);
+                a.run(48, 8, &mut HeuristicEval);
+                b.run(48, 8, &mut HeuristicEval);
+                assert_eq!(a.root_visits(), b.root_visits(), "{cfg:?}");
+            }
+        }
+    }
+
+    /// Whether the player to act can see its own library (it is searching it).
+    fn sees_own_library(g: &Game) -> bool {
+        let me = g.to_act();
+        (0..4).any(|s| {
+            let mut w = g.clone();
+            w.determinize(me, s);
+            w.is_over() || w.to_act() != me
+        })
+    }
+
+    /// Positions paired with a copy that differs only in what the player to act
+    /// can't know: the order of its own unseen library, or every future shuffle.
+    fn unseen_twins(n: usize) -> Vec<(Game, Game, &'static str)> {
+        use crate::game::{set_card, unseen_slots};
+        let decks = [("Wildfire", "Spy"), ("Spy", "CawGates"), ("Faeries", "Wildfire"), ("Elves", "Spy")];
+        let mut rng = SplitMix64::seed(5);
+        let mut out = Vec::new();
+        for seed in 0..40u64 {
+            let (d0, d1) = decks[seed as usize % decks.len()];
+            let mut g = Game::new(d0, d1, seed).unwrap();
+            while !g.is_over() && out.len() < n {
+                let me = g.to_act();
+                let own = unseen_slots(&g.state, me, me, false);
+                let def = |id: mtg_kernel::ids::ObjectId| g.state.objects.get(id).card_def;
+                let swap = own.iter().find_map(|&a| own.iter().find(|&&b| def(b) != def(a)).map(|&b| (a, b)));
+                if let (Some((a, b)), false) = (swap, sees_own_library(&g)) {
+                    let mut t = g.clone();
+                    let (da, db) = (def(a), def(b));
+                    set_card(&mut t.state, a, db);
+                    set_card(&mut t.state, b, da);
+                    out.push((g.clone(), t, "own library"));
+                }
+                if rng.next_u64() % 3 == 0 {
+                    let mut t = g.clone();
+                    t.state.reseed_shuffles(rng.next_u64());
+                    out.push((g.clone(), t, "shuffles"));
+                }
+                let k = g.choices().len();
+                g.apply((rng.next_u64() % k as u64) as usize);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn search_ignores_own_library_order_and_future_shuffles() {
+        let scored = |c: Config| Config { world_sampler: WorldSampler::Scored, ..c };
+        let twins = unseen_twins(60);
+        assert_eq!(twins.len(), 60);
+        assert!(twins.iter().any(|t| t.2 == "own library") && twins.iter().any(|t| t.2 == "shuffles"));
+        for (g, twin, what) in &twins {
+            for cfg in [
+                Config::default(),
+                maple(5, MapleSelect::RefWorld),
+                maple(5, MapleSelect::Union),
+                Config { maple_resample: true, ..maple(3, MapleSelect::RefWorld) },
+                pimc(5),
+                scored(maple(5, MapleSelect::RefWorld)),
+            ] {
+                let mut a = Search::new(g, cfg.clone(), 9);
+                let mut b = Search::new(twin, cfg.clone(), 9);
+                score_worlds(&mut a);
+                score_worlds(&mut b);
+                a.run(48, 8, &mut HeuristicEval);
+                b.run(48, 8, &mut HeuristicEval);
+                assert_eq!(a.root_visits(), b.root_visits(), "{what}: {cfg:?}");
+                assert_eq!(a.root_value(), b.root_value(), "{what}: {cfg:?}");
+            }
+        }
+    }
+
+    fn sorted_hand(g: &Game, observer: PlayerId) -> Vec<u16> {
+        let mut h = g.hidden_pool(observer).0;
+        h.sort_unstable();
+        h
+    }
+
+    #[test]
+    fn oracle_worlds_hold_the_true_hand() {
+        let oracle = |c: Config| Config { world_sampler: WorldSampler::Oracle, ..c };
+        for (g, _) in hidden_swaps(6) {
+            let me = g.to_act();
+            let truth = sorted_hand(&g, me);
+            for cfg in [oracle(maple(5, MapleSelect::RefWorld)), oracle(pimc(5))] {
+                let s = Search::new(&g, cfg, 4);
+                assert!(!s.worlds.is_empty());
+                for w in &s.worlds {
+                    assert_eq!(sorted_hand(w, me), truth);
+                }
+            }
+            let mut s = Search::new(&g, oracle(Config::default()), 4);
+            for _ in 0..8 {
+                let w = s.root_world().expect("a world");
+                assert_eq!(sorted_hand(&w, me), truth);
+            }
+        }
+    }
+
+    #[test]
+    fn scored_worlds_keep_the_best_hands() {
+        let cfg = Config { world_sampler: WorldSampler::Scored, ..maple(5, MapleSelect::RefWorld) };
+        let (mut requests, mut skips) = (0, 0);
+        for (g, _) in hidden_swaps(12) {
+            let me = g.to_act();
+            let mut s = Search::new(&g, cfg.clone(), 6);
+            match s.world_request() {
+                Some(cands) => {
+                    requests += 1;
+                    assert!(cands.len() > 5);
+                    let mut scores: Vec<f32> = cands.iter().map(|h| fake_score(h)).collect();
+                    s.set_world_scores(&scores);
+                    scores.sort_by(f32::total_cmp);
+                    for w in &s.worlds {
+                        assert!(fake_score(&sorted_hand(w, me)) <= scores[4]);
+                    }
+                }
+                None => {
+                    skips += 1;
+                    assert_eq!(s.stats.world_skips, 1);
+                }
+            }
+            assert!(!s.worlds.is_empty());
+        }
+        assert!(requests > 0, "no position needed scores");
+        let _ = skips;
+    }
+
+    #[test]
+    fn retention_hands_favour_kept_cards() {
+        for (g, _) in hidden_swaps(6) {
+            let me = g.to_act();
+            let (hand, rest) = g.hidden_pool(me);
+            let favourite = *rest.iter().chain(&hand).max().unwrap();
+            let mut table = vec![-20.0f32; RETENTION_BUCKETS * CARD_DEFS.len()];
+            for b in 0..RETENTION_BUCKETS {
+                table[b * CARD_DEFS.len() + favourite as usize] = 20.0;
+            }
+            let cfg = Config { world_sampler: WorldSampler::Retention, retention: Some(Arc::new(table)), ..Config::default() };
+            let mut s = Search::new(&g, cfg, 2);
+            for _ in 0..8 {
+                let w = s.root_world().expect("a world");
+                assert!(sorted_hand(&w, me).contains(&favourite));
+            }
+        }
     }
 
     #[test]

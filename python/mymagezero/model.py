@@ -11,7 +11,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from . import ACTION_VOCAB, TOKEN_VOCAB
+from . import ACTION_VOCAB, HIST_VOCAB, NUM_CARDS, TOKEN_VOCAB
 
 
 class FieldEmbedding(nn.Module):
@@ -60,6 +60,86 @@ class Net(nn.Module):
         act_pad = torch.arange(A, device=act.device)[None, :] >= act_len[:, None]
         logits = logits.masked_fill(act_pad, float("-inf"))
         return logits, self.value(s).squeeze(-1)
+
+
+class Siamese(nn.Module):
+    """Embeds what a player knows (observation and history) and candidate opponent
+    hands; a hand close to the knowledge is a likely one."""
+
+    def __init__(self, d: int = 96, layers: int = 2, heads: int = 4, emb: int = 64):
+        super().__init__()
+        self.config = dict(d=d, layers=layers, heads=heads, emb=emb)
+        self.tok = FieldEmbedding(TOKEN_VOCAB, d)
+        self.hist = FieldEmbedding(HIST_VOCAB, d)
+        self.segment = nn.Embedding(2, d)
+        self.summary = nn.Parameter(torch.zeros(1, 1, d))
+        layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=0.0, batch_first=True, norm_first=True)
+        self.encoder = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
+        self.norm = nn.LayerNorm(d)
+        self.anchor_head = nn.Linear(d, emb)
+        self.card = nn.Embedding(NUM_CARDS + 1, d, padding_idx=0)
+        self.hand_head = nn.Sequential(nn.Linear(d, d), nn.GELU(), nn.Linear(d, emb))
+
+    def anchor(self, tok, tok_len, hist, hist_len):
+        B, N, H = tok.shape[0], tok.shape[1], hist.shape[1]
+        x = torch.cat([
+            self.summary.expand(B, 1, -1),
+            self.tok(tok) + self.segment.weight[0],
+            self.hist(hist) + self.segment.weight[1],
+        ], dim=1)
+        pad = torch.cat([
+            torch.zeros(B, 1, dtype=torch.bool, device=tok.device),
+            torch.arange(N, device=tok.device)[None, :] >= tok_len[:, None],
+            torch.arange(H, device=tok.device)[None, :] >= hist_len[:, None],
+        ], dim=1)
+        return self.anchor_head(self.norm(self.encoder(x, src_key_padding_mask=pad))[:, 0])
+
+    def hands(self, hands):
+        """hands [..., H]: card definition + 1, 0 for padding."""
+        return self.hand_head(self.card(hands).sum(-2))
+
+    @staticmethod
+    def distance(anchor, hands):
+        return (hands - anchor.unsqueeze(-2)).norm(dim=-1)
+
+
+def siamese_scorer(snet: Siamese, device, rows: int = 1024):
+    """Scores a world batch (tokens, token_len, hist, hist_len, hands, hand_len) for SelfPlay.feed."""
+    @torch.no_grad()
+    def score(worlds):
+        tok, tl, hist, hl, hands, _ = worlds
+        snet.eval()
+        out = np.zeros(hands.shape[:2], np.float32)
+        t = lambda x: torch.from_numpy(x.astype(np.int64)).to(device)
+        for at in range(0, len(tl), rows):
+            r = slice(at, at + rows)
+            a = snet.anchor(t(tok[r]), t(tl[r]), t(hist[r]), t(hl[r]))
+            out[r] = Siamese.distance(a, snet.hands(t(hands[r]))).float().cpu().numpy()
+        return out
+    return score
+
+
+def save_siamese(snet: Siamese, path: str, extra: dict | None = None):
+    torch.save({"config": snet.config, "state": snet.state_dict(), **(extra or {})}, path)
+
+
+def grow_tables(state: dict, model: nn.Module) -> dict:
+    """Card embeddings grow as cards are appended to the pool; a checkpoint keeps its rows."""
+    target = model.state_dict()
+    for k, v in state.items():
+        t = target.get(k)
+        if t is not None and v.dim() == 2 and t.dim() == 2 and v.shape[1] == t.shape[1] and v.shape[0] < t.shape[0]:
+            grown = t.clone()
+            grown[: v.shape[0]] = v
+            state[k] = grown
+    return state
+
+
+def load_siamese(path: str, device) -> Siamese:
+    ck = torch.load(path, map_location=device, weights_only=False)
+    snet = Siamese(**ck["config"]).to(device)
+    snet.load_state_dict(grow_tables(ck["state"], snet))
+    return snet
 
 
 def to_tensors(batch, device):
@@ -165,5 +245,5 @@ def load_meta(path: str) -> dict:
 def load(path: str, device) -> Net:
     ck = torch.load(path, map_location=device, weights_only=False)
     net = Net(**ck["config"]).to(device)
-    net.load_state_dict(ck["state"])
+    net.load_state_dict(grow_tables(ck["state"], net))
     return net
