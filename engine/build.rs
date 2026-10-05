@@ -2733,6 +2733,7 @@ enum AbilityCostRecipe {
     DiscardCards(u8),
     DiscardSelf,
     DiscardHand,
+    PayLifePerCommanderColor,
     SacrificeSelf,
     ReturnControlledLandWithSubtype(&'static str),
     ExileSelf,
@@ -2793,12 +2794,14 @@ enum AbilityEffectRecipe {
         filter: LibrarySearchFilterRecipe,
     },
     ReturnExiledWithToHand,
+    ExileAllGraveyards,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum PermanentFilterRecipe {
     Artifact,
     ArtifactOrCreature,
+    Desert,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2809,6 +2812,7 @@ enum CreatureEffectFilterRecipe {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LibrarySearchFilterRecipe {
     LandWithSubtype(&'static str),
+    Land,
     BasicLand,
     BasicLandWithAnySubtype([&'static str; 3]),
 }
@@ -2889,7 +2893,7 @@ fn special_for(name: &str) -> Special {
         "End the Festivities" => Special::EndTheFestivities,
         "Galvanic Blast" => Special::GalvanicBlast,
         "Rally at the Hornburg" => Special::RallyAtTheHornburg,
-        "Reckless Impulse" | "Wrenn's Resolve" => Special::RecklessImpulse,
+        "Reckless Impulse" | "Wrenn's Resolve" | "Light Up the Stage" => Special::RecklessImpulse,
         "Winding Way" => Special::WindingWay,
         "Lead the Stampede" => Special::LookTopSelectByTypeToHandBottomRest {
             look: 5,
@@ -3305,6 +3309,10 @@ fn alt_cost_for(name: &str) -> &'static str {
     match name {
         "Fireblast" => "Some(&[CostComponent::SacrificeLands(2)])",
         "Land Grant" => "Some(&[CostComponent::RevealHandIfNoCardsWithType(CardType::Land)])",
+        // Spectacle {R} (702.137a).
+        "Light Up the Stage" => {
+            "Some(&[CostComponent::Mana(Cost { pips: &[Pip::Colored(ManaColor::R)], generic: 0, x_count: 0 }), CostComponent::OpponentLostLifeThisTurn])"
+        }
         _ => "None",
     }
 }
@@ -3412,6 +3420,59 @@ fn escape_for(name: &str) -> String {
 /// then resolve the reusable typed library search.
 fn activated_ability_recipes_for(name: &str) -> &'static [ActivatedAbilityRecipe] {
     match name {
+        "Strip Mine" => &[ActivatedAbilityRecipe {
+            cost: &[AbilityCostRecipe::Tap, AbilityCostRecipe::SacrificeSelf],
+            effect: AbilityEffectRecipe::DestroyTarget,
+            activation_zone: "Battlefield",
+            sorcery_speed_only: false,
+            target_spec: "Land",
+            activation_target_filter: "TargetSpecOnly",
+            max_activations_per_turn: None,
+        }],
+        "Urza's Cave" => &[ActivatedAbilityRecipe {
+            cost: &[
+                AbilityCostRecipe::ManaCost("{3}"),
+                AbilityCostRecipe::Tap,
+                AbilityCostRecipe::SacrificeSelf,
+            ],
+            effect: AbilityEffectRecipe::SearchLibraryToBattlefieldTapped {
+                filter: LibrarySearchFilterRecipe::Land,
+            },
+            activation_zone: "Battlefield",
+            sorcery_speed_only: false,
+            target_spec: "None",
+            activation_target_filter: "TargetSpecOnly",
+            max_activations_per_turn: None,
+        }],
+        "Scavenger Grounds" => &[ActivatedAbilityRecipe {
+            cost: &[
+                AbilityCostRecipe::ManaCost("{2}"),
+                AbilityCostRecipe::Tap,
+                AbilityCostRecipe::SacrificeControlled {
+                    count: 1,
+                    filter: PermanentFilterRecipe::Desert,
+                },
+            ],
+            effect: AbilityEffectRecipe::ExileAllGraveyards,
+            activation_zone: "Battlefield",
+            sorcery_speed_only: false,
+            target_spec: "None",
+            activation_target_filter: "TargetSpecOnly",
+            max_activations_per_turn: None,
+        }],
+        "War Room" => &[ActivatedAbilityRecipe {
+            cost: &[
+                AbilityCostRecipe::ManaCost("{3}"),
+                AbilityCostRecipe::Tap,
+                AbilityCostRecipe::PayLifePerCommanderColor,
+            ],
+            effect: AbilityEffectRecipe::DrawCards(1),
+            activation_zone: "Battlefield",
+            sorcery_speed_only: false,
+            target_spec: "None",
+            activation_target_filter: "TargetSpecOnly",
+            max_activations_per_turn: None,
+        }],
         "Connecting the Dots" => &[ActivatedAbilityRecipe {
             cost: &[
                 AbilityCostRecipe::ManaCost("{1}{R}"),
@@ -3931,6 +3992,7 @@ fn ability_cost_src(cost: AbilityCostRecipe) -> String {
         }
         AbilityCostRecipe::DiscardSelf => "CostComponent::DiscardSelf".to_string(),
         AbilityCostRecipe::DiscardHand => "CostComponent::DiscardHand".to_string(),
+        AbilityCostRecipe::PayLifePerCommanderColor => "CostComponent::PayLifePerCommanderColor".to_string(),
         AbilityCostRecipe::SacrificeSelf => "CostComponent::SacrificeSelf".to_string(),
         AbilityCostRecipe::ReturnControlledLandWithSubtype(subtype) => format!(
             "CostComponent::ReturnControlledPermanentToOwnersHand(PermanentFilterDef::LandWithSubtype(Subtype::{subtype}))"
@@ -3969,6 +4031,7 @@ fn ability_cost_token(cost: AbilityCostRecipe) -> String {
         AbilityCostRecipe::DiscardCards(count) => format!("discard_cards:{count}"),
         AbilityCostRecipe::DiscardSelf => "discard_self".to_string(),
         AbilityCostRecipe::DiscardHand => "discard_hand".to_string(),
+        AbilityCostRecipe::PayLifePerCommanderColor => "pay_life_per_commander_color".to_string(),
         AbilityCostRecipe::SacrificeSelf => "sacrifice_self".to_string(),
         AbilityCostRecipe::ReturnControlledLandWithSubtype(subtype) => {
             format!("return_controlled_land_with_subtype:{subtype}")
@@ -3994,6 +4057,7 @@ fn permanent_filter_src(filter: PermanentFilterRecipe) -> &'static str {
     match filter {
         PermanentFilterRecipe::Artifact => "PermanentFilter::Artifact",
         PermanentFilterRecipe::ArtifactOrCreature => "PermanentFilter::ArtifactOrCreature",
+        PermanentFilterRecipe::Desert => "PermanentFilter::Desert",
     }
 }
 
@@ -4001,6 +4065,7 @@ fn permanent_filter_token(filter: PermanentFilterRecipe) -> &'static str {
     match filter {
         PermanentFilterRecipe::Artifact => "artifact",
         PermanentFilterRecipe::ArtifactOrCreature => "artifact_or_creature",
+        PermanentFilterRecipe::Desert => "desert",
     }
 }
 
@@ -4013,6 +4078,7 @@ fn ability_effect_token(effect: AbilityEffectRecipe) -> String {
         AbilityEffectRecipe::MoveAllTargetsToHand => "move_all_targets_to_hand".to_string(),
         AbilityEffectRecipe::ExploreTarget => "explore_target".to_string(),
         AbilityEffectRecipe::ReturnExiledWithToHand => "return_exiled_with_to_hand".to_string(),
+        AbilityEffectRecipe::ExileAllGraveyards => "exile_all_graveyards".to_string(),
         AbilityEffectRecipe::DealDamageAnyTarget(amount) => {
             format!("deal_damage_any_target:{amount}")
         }
@@ -4087,6 +4153,7 @@ fn library_search_filter_token(filter: LibrarySearchFilterRecipe) -> String {
             format!("land_with_subtype:{subtype}")
         }
         LibrarySearchFilterRecipe::BasicLand => "basic_land".to_string(),
+        LibrarySearchFilterRecipe::Land => "land".to_string(),
         LibrarySearchFilterRecipe::BasicLandWithAnySubtype(subtypes) => {
             format!("basic_land_with_any_subtype:{}", subtypes.join("|"))
         }
@@ -4099,6 +4166,7 @@ fn library_search_filter_src(filter: LibrarySearchFilterRecipe) -> String {
             format!("LibraryCardFilter::LandWithSubtype(Subtype::{subtype})")
         }
         LibrarySearchFilterRecipe::BasicLand => "LibraryCardFilter::BasicLand".to_string(),
+        LibrarySearchFilterRecipe::Land => "LibraryCardFilter::Land".to_string(),
         LibrarySearchFilterRecipe::BasicLandWithAnySubtype(subtypes) => format!(
             "LibraryCardFilter::BasicLandWithAnySubtype([{}])",
             subtypes
@@ -4136,6 +4204,7 @@ fn ability_effect_fn_name(effect: AbilityEffectRecipe) -> String {
         AbilityEffectRecipe::ReturnExiledWithToHand => {
             "ability_effect_return_exiled_with_to_hand".to_string()
         }
+        AbilityEffectRecipe::ExileAllGraveyards => "ability_effect_exile_all_graveyards".to_string(),
         AbilityEffectRecipe::DealDamageAnyTarget(amount) => {
             format!("ability_effect_deal_damage_any_target_{amount}")
         }
@@ -4282,6 +4351,7 @@ fn plot_cost_for(name: &str) -> String {
     match name {
         "Highway Robbery" => cost_src("{1}{R}"),
         "Spinewoods Paladin" => cost_src("{3}{G}"),
+        "Slickshot Show-Off" => cost_src("{1}{R}"),
         _ => "None".to_string(),
     }
 }
@@ -4852,6 +4922,9 @@ fn codegen(cards: &[CardJson]) -> String {
             }
             AbilityEffectRecipe::ReturnExiledWithToHand => {
                 writeln!(out, "    EffectOp::ReturnExiledWithToHand").unwrap();
+            }
+            AbilityEffectRecipe::ExileAllGraveyards => {
+                writeln!(out, "    EffectOp::ExileAllGraveyards").unwrap();
             }
             AbilityEffectRecipe::ExploreTarget => {
                 writeln!(

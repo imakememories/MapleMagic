@@ -688,6 +688,8 @@ pub enum PermanentFilter {
     /// A controlled permanent with the Creature card type. Appended for
     /// Dread Return's flashback cost.
     Creature,
+    /// A controlled Desert (Scavenger Grounds' "Sacrifice a Desert").
+    Desert,
 }
 
 /// One component of a composite cost. Composable (a real cost is `&'static
@@ -714,6 +716,12 @@ pub enum CostComponent {
     DiscardCards(u8),
     /// Discard the whole hand (no choice; an empty hand pays it).
     DiscardHand,
+    /// Spectacle's condition (702.137a): payable only if an opponent lost
+    /// life this turn; pays nothing.
+    OpponentLostLifeThisTurn,
+    /// Pay life equal to the number of colors in the payer's commander's
+    /// color identity (War Room); not payable without a commander.
+    PayLifePerCommanderColor,
     /// Sacrifice `n` controlled lands. Exact lands are staged one at a time
     /// through `engine::Decision::ChooseCostTargets`; the public
     /// `PendingCast::sacrifice_chosen` compatibility field also carries the
@@ -1552,7 +1560,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0xd1b4_aa20_79e6_95fb);
+        assert_eq!(KERNEL_CARDDB_HASH, 0x4e3d_aa2f_773b_4d9b);
     }
 
     #[test]

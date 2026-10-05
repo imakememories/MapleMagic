@@ -80,6 +80,17 @@ pub enum TriggerCondition {
     /// artifacts": the intervening "if" (603.4) is checked here, as the
     /// upkeep begins; the effect checks it again on resolution.
     BeginningOfYourUpkeepIfControlsArtifacts { count: u8 },
+    /// "Whenever you cast a noncreature spell".
+    YouCastNoncreatureSpell,
+    /// "Whenever you discard a card": a card moving from its owner's hand to
+    /// its graveyard (701.9a). Madness discards into exile and no Commander
+    /// deck has madness.
+    YouDiscardCard,
+    /// "Whenever one or more cards are put into exile from your library
+    /// and/or your graveyard": once per batch of simultaneous moves.
+    CardsExiledFromYourLibraryOrGraveyard,
+    /// "Whenever a permanent you control enters tapped".
+    ControlledPermanentEntersTapped,
     /// "Whenever one or more creatures you control [that entered this turn]
     /// attack": once per declaration.
     OneOrMoreControlledCreaturesAttack { entered_this_turn: bool },
@@ -95,6 +106,7 @@ impl TriggerCondition {
             self,
             TriggerCondition::OneOrMoreControlledCreaturesAttack { .. }
                 | TriggerCondition::OneOrMoreControlledCreaturesDealCombatDamageToPlayer
+                | TriggerCondition::CardsExiledFromYourLibraryOrGraveyard
         )
     }
 }
@@ -413,6 +425,43 @@ const CONNECTING_THE_DOTS_TRIGGERS: [TriggeredAbilityDef; 1] = [trigger(
     },
     exile_top_face_down_linked_effect,
 )];
+
+fn pump_source_two_power_effect() -> EffectOp {
+    EffectOp::PumpTargetUntilEndOfTurnDynamic {
+        target: TargetRef::ThisSource,
+        power: DynamicValueDef::Fixed(2),
+        toughness: DynamicValueDef::Fixed(0),
+    }
+}
+
+fn impulse_this_turn_effect() -> EffectOp {
+    EffectOp::ImpulseDraw {
+        count: 1,
+        duration: crate::effect::ImpulseDuration::EndOfTurn,
+    }
+}
+
+fn counter_on_source_effect() -> EffectOp {
+    EffectOp::PutPlusOnePlusOneCounter {
+        object: ObjectRef::ThisSource,
+    }
+}
+
+/// Amulet of Vigor's effect before it is bound to the permanent that entered.
+fn untap_entering_permanent_effect() -> EffectOp {
+    EffectOp::Sequence(Vec::new())
+}
+
+const SLICKSHOT_SHOW_OFF_TRIGGERS: [TriggeredAbilityDef; 1] =
+    [trigger(TriggerCondition::YouCastNoncreatureSpell, pump_source_two_power_effect)];
+const HOBGOBLIN_TRIGGERS: [TriggeredAbilityDef; 1] =
+    [trigger(TriggerCondition::YouDiscardCard, pump_source_two_power_effect)];
+const LAELIA_TRIGGERS: [TriggeredAbilityDef; 2] = [
+    trigger(TriggerCondition::Attacks, impulse_this_turn_effect),
+    trigger(TriggerCondition::CardsExiledFromYourLibraryOrGraveyard, counter_on_source_effect),
+];
+const AMULET_OF_VIGOR_TRIGGERS: [TriggeredAbilityDef; 1] =
+    [trigger(TriggerCondition::ControlledPermanentEntersTapped, untap_entering_permanent_effect)];
 
 const OGNIS_TRIGGERS: [TriggeredAbilityDef; 1] = [trigger(
     TriggerCondition::ControlledCreatureAttacks {
@@ -1151,6 +1200,10 @@ pub fn triggers_for(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Whirlwind, Killer Cyclone" => &WHIRLWIND_TRIGGERS,
         "Knuckles the Echidna" => &KNUCKLES_TRIGGERS,
         "Headliner Scarlett" => &HEADLINER_SCARLETT_TRIGGERS,
+        "Slickshot Show-Off" => &SLICKSHOT_SHOW_OFF_TRIGGERS,
+        "Hobgoblin, Mantled Marauder" => &HOBGOBLIN_TRIGGERS,
+        "Laelia, the Blade Reforged" => &LAELIA_TRIGGERS,
+        "Amulet of Vigor" => &AMULET_OF_VIGOR_TRIGGERS,
         "Connecting the Dots" => &CONNECTING_THE_DOTS_TRIGGERS,
         _ => &[],
     }
@@ -1224,6 +1277,9 @@ pub fn trigger_effect_matches(card_def: u16, effect: &EffectOp) -> bool {
         return true;
     }
     if card.name == "Weather the Storm" && matches!(effect, EffectOp::CreateStormCopies { .. }) {
+        return true;
+    }
+    if card.name == "Amulet of Vigor" && matches!(effect, EffectOp::UntapBoundObject { .. }) {
         return true;
     }
     if card.name == "Avenging Hunter" && matches!(effect, EffectOp::ResolveInitiativeTrigger { .. })
@@ -1710,6 +1766,17 @@ fn triggers_from_events(
                         moon_circuit_hacker_combat_effect_for_entered_this_turn(
                             obj.v4.entered_battlefield_turn == Some(state.turn),
                         )
+                    } else if let (TriggerCondition::ControlledPermanentEntersTapped, CommittedEvent::EnteredTapped { object }) =
+                        (def.condition, ev)
+                    {
+                        let entered = state.objects.get(*object);
+                        EffectOp::UntapBoundObject {
+                            object: EffectObjectBinding {
+                                object: *object,
+                                expected_zone: entered.zone,
+                                expected_zone_change_count: entered.zone_change_count,
+                            },
+                        }
                     } else {
                         materialize_trigger_effect(def, id, state)
                     };
@@ -2128,6 +2195,34 @@ fn trigger_matches(
                 controller: caster,
             },
         ) => *spell == source && *caster == controller,
+        (
+            TriggerCondition::YouCastNoncreatureSpell,
+            CommittedEvent::SpellCast {
+                spell,
+                controller: caster,
+            },
+        ) => *caster == controller && !selected_spell_types(state, *spell).contains(&crate::card_def::CardType::Creature),
+        (
+            TriggerCondition::YouDiscardCard,
+            CommittedEvent::ZoneChange {
+                object,
+                from: Zone::Hand,
+                to: Zone::Graveyard,
+                ..
+            },
+        ) => state.objects.get(*object).owner == controller,
+        (
+            TriggerCondition::CardsExiledFromYourLibraryOrGraveyard,
+            CommittedEvent::ZoneChange {
+                object,
+                from: Zone::Library | Zone::Graveyard,
+                to: Zone::Exile,
+                ..
+            },
+        ) => state.objects.get(*object).owner == controller,
+        (TriggerCondition::ControlledPermanentEntersTapped, CommittedEvent::EnteredTapped { object }) => {
+            state.objects.get(*object).controller == controller
+        }
         (
             TriggerCondition::DrawNth(n),
             CommittedEvent::Draw {

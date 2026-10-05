@@ -16,4 +16,5 @@ pub mod mana;
 pub mod runtime_decks;
 pub mod snapshot;
 pub mod state;
+pub mod statics;
 pub mod trigger;

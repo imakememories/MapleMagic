@@ -54,6 +54,7 @@ fn put_in(state: &mut GameState, player: PlayerId, name: &str, zone: Zone) -> Ob
     match zone {
         Zone::Battlefield => state.players[player.index()].battlefield.push(obj),
         Zone::Hand => state.players[player.index()].hand.push(obj),
+        Zone::Graveyard => state.players[player.index()].graveyard.push(obj),
         _ => panic!("put_in {zone:?}"),
     }
     obj
@@ -79,7 +80,11 @@ fn cast(state: &mut GameState, card: &str, target: Option<Target>, mode: u8) -> 
             | Decision::ChooseEffectTargets { legal_targets, can_finish, .. } => match target {
                 Some(t) => {
                     assert!(legal_targets.contains(&t), "{t:?} not in {legal_targets:?}");
-                    Action::ChooseTarget(t)
+                    if matches!(d, Decision::ChooseEffectTargets { .. }) {
+                        Action::ChooseEffectTarget(t)
+                    } else {
+                        Action::ChooseTarget(t)
+                    }
                 }
                 // "Up to" targets: choose none.
                 None if *can_finish => Action::FinishEffectSelection,
@@ -530,4 +535,188 @@ fn lokis_scepter_makes_the_stolen_creature_a_villain_until_end_of_turn() {
     end_turn(&mut state);
     assert!(!engine::has_effective_subtype(&state, theirs, Subtype::Villain));
     assert!(engine::has_effective_subtype(&state, theirs, Subtype::Goblin));
+}
+
+/// Activates `source`'s ability `index` and resolves it: `pick` for a target
+/// when legal, else the first option offered at each choice.
+fn activate(state: &mut GameState, source: ObjectId, index: u8, pick: Option<Target>) {
+    advance(state, |_, d| {
+        matches!(d, Decision::CastSpellOrPass { activatable_abilities, .. } if activatable_abilities.contains(&(source, index)))
+    });
+    engine::step(state, Action::ActivateAbility(source, index)).unwrap();
+    loop {
+        let a = match engine::advance_until_decision(state) {
+            Decision::ChooseTargets { legal_targets, .. } => {
+                Action::ChooseTarget(pick.filter(|t| legal_targets.contains(t)).unwrap_or(legal_targets[0]))
+            }
+            Decision::ChooseEffectTargets { legal_targets, .. } => {
+                Action::ChooseEffectTarget(pick.filter(|t| legal_targets.contains(t)).unwrap_or(legal_targets[0]))
+            }
+            Decision::ChooseCostTargets { candidates, .. } => Action::ChooseCostTarget(candidates[0]),
+            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => return,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(state, a).unwrap();
+    }
+}
+
+#[test]
+fn strip_mine_taps_for_colorless_and_destroys_a_land() {
+    let mut state = game();
+    let mine = put(&mut state, P0, "Strip Mine");
+    let theirs = put(&mut state, P1, "Mountain");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert_eq!(engine::available_mana_ability_choices(P0, mine, &state), vec![ManaColor::C]);
+    activate(&mut state, mine, 0, Some(Target::Object(theirs)));
+    assert_eq!(state.objects.get(theirs).zone, Zone::Graveyard);
+    assert_eq!(state.objects.get(mine).zone, Zone::Graveyard);
+}
+
+#[test]
+fn urzas_cave_fetches_a_land_tapped_which_amulet_of_vigor_untaps() {
+    for amulet in [false, true] {
+        let mut state = game();
+        lands(&mut state, P0, 3);
+        let cave = put(&mut state, P0, "Urza's Cave");
+        if amulet {
+            put(&mut state, P0, "Amulet of Vigor");
+        }
+        activate(&mut state, cave, 0, None);
+        let mountains = named(&state, P0, "Mountain");
+        assert_eq!(mountains.len(), 4);
+        assert_eq!(state.objects.get(*mountains.last().unwrap()).tapped, !amulet, "amulet {amulet}");
+        assert_eq!(state.players[0].library.len(), 9);
+        assert_eq!(state.objects.get(cave).zone, Zone::Graveyard);
+    }
+}
+
+#[test]
+fn amulet_of_vigor_untaps_ognis_treasures_which_enter_tapped() {
+    let mut state = game();
+    put(&mut state, P0, "Amulet of Vigor");
+    let ognis = put(&mut state, P0, "Ognis, the Dragon's Lash");
+    attack_with(&mut state, vec![ognis]);
+    let treasure = named(&state, P0, "Treasure Token")[0];
+    assert!(!state.objects.get(treasure).tapped);
+}
+
+#[test]
+fn scavenger_grounds_can_sacrifice_itself_and_exiles_every_graveyard() {
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let grounds = put(&mut state, P0, "Scavenger Grounds");
+    put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+    put_in(&mut state, P1, "Guttersnipe", Zone::Graveyard);
+    activate(&mut state, grounds, 0, None);
+    assert!(state.players[0].graveyard.is_empty() && state.players[1].graveyard.is_empty());
+    assert_eq!(state.objects.get(grounds).zone, Zone::Exile, "the sacrificed Desert is exiled too");
+}
+
+#[test]
+fn war_room_costs_one_life_per_color_in_the_commanders_identity() {
+    // Ognis, the Dragon's Lash is black, red and green.
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let room = put(&mut state, P0, "War Room");
+    let hand = state.players[0].hand.len();
+    activate(&mut state, room, 0, None);
+    assert_eq!(state.players[0].life, 37, "Ognis's identity is black, red and green");
+    assert_eq!(state.players[0].hand.len(), hand + 1);
+}
+
+#[test]
+fn light_up_the_stage_has_spectacle_once_an_opponent_lost_life() {
+    use mtg_kernel::engine::CastMode;
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    put(&mut state, P0, "Mountain");
+    let stage = put_in(&mut state, P0, "Light Up the Stage", Zone::Hand);
+    let castable = |s: &mut GameState| {
+        matches!(engine::advance_until_decision(s), Decision::CastSpellOrPass { castable_spells, .. } if castable_spells.contains(&stage))
+    };
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert!(!castable(&mut state), "{{2}}{{R}} with one land");
+    // Losing life and then gaining more still counts (2024-01-12 ruling).
+    propose_and_commit(&mut state, ProposedEvent::life_loss(P1, 1));
+    propose_and_commit(&mut state, ProposedEvent::life_gain(P1, 2));
+    assert!(castable(&mut state));
+    engine::step(&mut state, Action::CastSpell(stage)).unwrap();
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseCastMode { .. } => Action::ChooseCastMode(CastMode::Alternative),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    let exiled = state.exile.iter().filter(|&&o| state.objects.get(o).owner == P0).count();
+    assert_eq!(exiled, 2);
+    assert_eq!(state.objects.get(stage).zone, Zone::Graveyard);
+}
+
+#[test]
+fn slickshot_show_off_grows_on_noncreature_spells_and_can_be_plotted() {
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let show_off = put(&mut state, P0, "Slickshot Show-Off");
+    let base = effective_power(&state, show_off);
+    cast(&mut state, "Lightning Bolt", Some(Target::Player(P1)), 0);
+    assert_eq!(effective_power(&state, show_off), base + 2);
+    cast(&mut state, "Masked Meower", None, 0);
+    assert_eq!(effective_power(&state, show_off), base + 2, "a creature spell doesn't count");
+
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let card = put_in(&mut state, P0, "Slickshot Show-Off", Zone::Hand);
+    match advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. })) {
+        Decision::CastSpellOrPass { plot_actions, .. } => assert_eq!(plot_actions, vec![card]),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn laelia_exiles_a_card_to_play_and_grows_once_per_batch_of_exiled_cards() {
+    let mut state = game();
+    let laelia = put(&mut state, P0, "Laelia, the Blade Reforged");
+    attack_with(&mut state, vec![laelia]);
+    let exiled: Vec<_> = state.exile.iter().copied().filter(|&o| state.objects.get(o).owner == P0).collect();
+    assert_eq!(exiled.len(), 1);
+    assert!(state.engine.exile_play_permissions.iter().any(|p| p.object == exiled[0]));
+    assert_eq!(state.objects.get(laelia).counters.plus1_plus1, 1);
+    lands(&mut state, P0, 2);
+    advance(&mut state, |s, _| s.step == Step::Main2);
+    cast(&mut state, "Wrenn's Resolve", None, 0);
+    assert_eq!(state.objects.get(laelia).counters.plus1_plus1, 2, "two cards at once: one counter");
+}
+
+#[test]
+fn hobgoblin_gets_two_power_for_each_card_discarded() {
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let hob = put(&mut state, P0, "Hobgoblin, Mantled Marauder");
+    let dots = put(&mut state, P0, "Connecting the Dots");
+    put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+    put_in(&mut state, P0, "Mountain", Zone::Hand);
+    let base = effective_power(&state, hob);
+    activate(&mut state, dots, 0, None);
+    assert_eq!(effective_power(&state, hob), base + 4);
+}
+
+#[test]
+fn goblin_war_drums_gives_only_your_creatures_menace() {
+    use mtg_kernel::card_def::Keywords;
+    let mut state = game();
+    put(&mut state, P0, "Goblin War Drums");
+    let mine = put(&mut state, P0, "Captain Lannery Storm");
+    let theirs = put(&mut state, P1, "Guttersnipe");
+    put(&mut state, P1, "Myr Enforcer");
+    assert!(engine::has_effective_keyword(&state, mine, Keywords::MENACE));
+    assert!(!engine::has_effective_keyword(&state, theirs, Keywords::MENACE));
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    engine::step(&mut state, Action::DeclareAttackers(vec![mine])).unwrap();
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareBlockers { .. }));
+    assert!(engine::step(&mut state.clone(), Action::DeclareBlockers(vec![(theirs, mine)])).is_err(), "one blocker can't block it");
 }

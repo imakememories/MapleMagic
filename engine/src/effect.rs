@@ -74,6 +74,9 @@ pub enum LibraryCardFilter {
     /// the current kernel has no type-changing operation or effective-type
     /// field. Search validation fails closed outside that invariant.
     LandWithSubtype(Subtype),
+    /// Any land card (Urza's Cave). Appended so earlier filter identities
+    /// stay unchanged.
+    Land,
     /// A card with both the Basic supertype and Land card type. This is
     /// intentionally independent of basic land subtypes: Roost Seek may
     /// find every basic land, including any future nonstandard basic land
@@ -858,6 +861,10 @@ pub enum EffectOp {
     },
     /// Puts every card this source exiled face down into its owner's hand.
     ReturnExiledWithToHand,
+    /// Untaps the bound permanent if it is still that incarnation.
+    UntapBoundObject {
+        object: EffectObjectBinding,
+    },
     /// The object becomes `subtype` in addition to its other types until end
     /// of turn (205.1b, layer 4).
     AddSubtypeUntilEndOfTurn {
@@ -8773,6 +8780,7 @@ fn library_filter_matches(
             def.has_type(CardType::Land)
                 && def.supertypes.contains(&crate::card_def::Supertype::Basic)
         }
+        LibraryCardFilter::Land => def.has_type(CardType::Land),
         LibraryCardFilter::BasicLandOrGate => {
             (def.has_type(CardType::Land)
                 && def.supertypes.contains(&crate::card_def::Supertype::Basic))
@@ -8802,6 +8810,7 @@ fn library_filter_fingerprint(filter: LibraryCardFilter) -> u64 {
             )
         }
         LibraryCardFilter::BasicLand => fnv1a_u64(0xcbf2_9ce4_8422_2325, 1),
+        LibraryCardFilter::Land => fnv1a_u64(0xcbf2_9ce4_8422_2325, 0x4c61_6e64),
         LibraryCardFilter::BasicLandOrGate => fnv1a_u64(0xcbf2_9ce4_8422_2325, 2),
         LibraryCardFilter::CardDefinition(card_def) => {
             fnv1a_u64(fnv1a_u64(0xcbf2_9ce4_8422_2325, 3), u64::from(card_def))
@@ -10213,10 +10222,12 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 ctx,
                 state,
             );
+            // It enters tapped (no Tap event: it never becomes tapped).
             if let Some(crate::event::CommittedEvent::CreateToken { object, .. }) =
                 state.engine.event_log.last().cloned()
             {
-                event::propose_and_commit(state, event::ProposedEvent::tap(object));
+                state.objects.get_mut(object).tapped = true;
+                event::log_entered_tapped(state, object);
             }
         }
         EffectOp::Threaten { object } => {
@@ -10283,6 +10294,12 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                     .map(|id| event::ProposedEvent::damage(ctx.source, Target::Object(id), amount)),
             );
             event::propose_and_commit_batch(state, events);
+        }
+        EffectOp::UntapBoundObject { object } => {
+            let live = state.objects.get(object.object);
+            if live.zone == object.expected_zone && live.zone_change_count == object.expected_zone_change_count {
+                state.objects.get_mut(object.object).tapped = false;
+            }
         }
         EffectOp::ReturnExiledWithToHand => {
             for id in crate::face_down::exiled_with(state, source_link(ctx, state)) {

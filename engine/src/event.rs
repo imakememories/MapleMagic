@@ -434,6 +434,10 @@ pub enum CommittedEvent {
     UpkeepBegan {
         player: PlayerId,
     },
+    /// A permanent entered the battlefield tapped.
+    EnteredTapped {
+        object: ObjectId,
+    },
 }
 
 /// Runs the replace/prevent pass to a fixed point: repeatedly finds an
@@ -644,6 +648,8 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
                 }
                 Target::Player(p) => {
                     state.players[p.index()].life -= d.amount;
+                    // 120.3a: damage to a player is life loss.
+                    state.life_lost_this_turn[p.index()] += d.amount.max(0) as u32;
                 }
             }
             CommittedEvent::Damage {
@@ -676,6 +682,7 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
         }
         ProposedEvent::LifeLoss(l) => {
             state.players[l.player.index()].life -= l.amount;
+            state.life_lost_this_turn[l.player.index()] += l.amount.max(0) as u32;
             CommittedEvent::LifeLoss {
                 player: l.player,
                 amount: l.amount,
@@ -773,8 +780,15 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
         CommittedEvent::ZoneChange { object, .. } if saga_entered => Some(*object),
         _ => None,
     };
+    let entered_tapped = match &committed {
+        CommittedEvent::ZoneChange { object, to: Zone::Battlefield, .. } if state.objects.get(*object).tapped => Some(*object),
+        _ => None,
+    };
     state.engine.event_log.push(committed.clone());
     state.engine.event_history.push(committed);
+    if let Some(object) = entered_tapped {
+        log_entered_tapped(state, object);
+    }
     if let Some(source) = saga_source {
         let chapter = {
             let lore = &mut state.objects.get_mut(source).counters.lore;
@@ -943,6 +957,14 @@ pub fn log_declared_attacker(state: &mut GameState, source: ObjectId) {
 }
 
 /// Logs the start of `player`'s upkeep, for "at the beginning of upkeep" triggers.
+/// `object` entered the battlefield tapped (a tapped token included). Not a
+/// `Tap`: entering tapped isn't becoming tapped.
+pub fn log_entered_tapped(state: &mut GameState, object: ObjectId) {
+    let committed = CommittedEvent::EnteredTapped { object };
+    state.engine.event_log.push(committed.clone());
+    state.engine.event_history.push(committed);
+}
+
 pub fn log_upkeep_began(state: &mut GameState, player: PlayerId) {
     let committed = CommittedEvent::UpkeepBegan { player };
     state.engine.event_log.push(committed.clone());

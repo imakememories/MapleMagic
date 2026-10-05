@@ -5153,7 +5153,7 @@
     },
     {
       "name": "Amulet of Vigor",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{1}",
       "mana_value": 1,
       "colors": [],
@@ -7880,7 +7880,7 @@
     },
     {
       "name": "Goblin War Drums",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}{R}",
       "mana_value": 3,
       "colors": [
@@ -8583,7 +8583,7 @@
     },
     {
       "name": "Hobgoblin, Mantled Marauder",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{1}{R}",
       "mana_value": 2,
       "colors": [
@@ -9357,7 +9357,7 @@
     },
     {
       "name": "Laelia, the Blade Reforged",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}{R}",
       "mana_value": 3,
       "colors": [
@@ -9484,7 +9484,7 @@
     },
     {
       "name": "Light Up the Stage",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}{R}",
       "mana_value": 3,
       "colors": [
@@ -11164,7 +11164,7 @@
     },
     {
       "name": "Scavenger Grounds",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "",
       "mana_value": 0,
       "colors": [],
@@ -11178,13 +11178,17 @@
       "power": null,
       "toughness": null,
       "is_land": true,
-      "produces_mana": [],
+      "produces_mana": [
+        "C"
+      ],
       "decks": [
         "Commander - Ognis"
       ],
       "sideboard_only": false,
       "complexity": "commander",
-      "mechanics": [],
+      "mechanics": [
+        "mana_ability"
+      ],
       "keywords": [],
       "oracle": "{T}: Add {C}.\n{2}, {T}, Sacrifice a Desert: Exile all graveyards.",
       "layout": "normal",
@@ -11694,7 +11698,7 @@
     },
     {
       "name": "Slickshot Show-Off",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{1}{R}",
       "mana_value": 2,
       "colors": [
@@ -12019,7 +12023,7 @@
     },
     {
       "name": "Strip Mine",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "",
       "mana_value": 0,
       "colors": [],
@@ -12031,13 +12035,17 @@
       "power": null,
       "toughness": null,
       "is_land": true,
-      "produces_mana": [],
+      "produces_mana": [
+        "C"
+      ],
       "decks": [
         "Commander - Ognis"
       ],
       "sideboard_only": false,
       "complexity": "commander",
-      "mechanics": [],
+      "mechanics": [
+        "mana_ability"
+      ],
       "keywords": [],
       "oracle": "{T}: Add {C}.\n{T}, Sacrifice this land: Destroy target land.",
       "layout": "normal",
@@ -12735,7 +12743,7 @@
     },
     {
       "name": "Urza's Cave",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "",
       "mana_value": 0,
       "colors": [],
@@ -12750,13 +12758,17 @@
       "power": null,
       "toughness": null,
       "is_land": true,
-      "produces_mana": [],
+      "produces_mana": [
+        "C"
+      ],
       "decks": [
         "Commander - Ognis"
       ],
       "sideboard_only": false,
       "complexity": "commander",
-      "mechanics": [],
+      "mechanics": [
+        "mana_ability"
+      ],
       "keywords": [],
       "oracle": "{T}: Add {C}.\n{3}, {T}, Sacrifice this land: Search your library for a land card, put it onto the battlefield tapped, then shuffle.",
       "layout": "normal",
@@ -13158,7 +13170,7 @@
     },
     {
       "name": "War Room",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "",
       "mana_value": 0,
       "colors": [],
@@ -13170,14 +13182,18 @@
       "power": null,
       "toughness": null,
       "is_land": true,
-      "produces_mana": [],
+      "produces_mana": [
+        "C"
+      ],
       "decks": [
         "Commander - Krenko",
         "Commander - Ognis"
       ],
       "sideboard_only": false,
       "complexity": "commander",
-      "mechanics": [],
+      "mechanics": [
+        "mana_ability"
+      ],
       "keywords": [],
       "oracle": "{T}: Add {C}.\n{3}, {T}, Pay life equal to the number of colors in your commanders' color identity: Draw a card.",
       "layout": "normal",

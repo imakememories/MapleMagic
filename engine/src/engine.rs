@@ -3344,6 +3344,8 @@ fn component_payment_shape_supported(components: &[CostComponent]) -> bool {
                 discard_count += 1;
             }
             CostComponent::DiscardHand => discard_count += 1,
+            CostComponent::OpponentLostLifeThisTurn => {}
+            CostComponent::PayLifePerCommanderColor => pay_life_count += 1,
             CostComponent::SacrificeLands(amount) => {
                 if *amount == 0 {
                     return false;
@@ -3596,6 +3598,12 @@ fn can_pay_components(
                     && state.players[player.index()].hand.contains(&source)
             }
             CostComponent::DiscardHand => true,
+            CostComponent::OpponentLostLifeThisTurn => state.life_lost_this_turn[player.opponent().index()] > 0,
+            // 119.4: life can be paid only up to the current life total.
+            CostComponent::PayLifePerCommanderColor => {
+                state.commander.is_some()
+                    && state.players[player.index()].life >= crate::commander::color_identity(state, player).len() as i32
+            }
             CostComponent::DiscardCards(n) => {
                 let hand_other = state.players[player.index()]
                     .hand
@@ -3930,6 +3938,13 @@ fn pay_cost_components_with_x(
                 ProposedEvent::life_loss(player, i32::from(*amount)),
             ),
             CostComponent::DiscardCards(_) => {}
+            CostComponent::OpponentLostLifeThisTurn => {}
+            CostComponent::PayLifePerCommanderColor => {
+                let n = crate::commander::color_identity(state, player).len() as i32;
+                if n > 0 {
+                    event::propose_and_commit(state, ProposedEvent::life_loss(player, n));
+                }
+            }
             CostComponent::DiscardHand => {
                 for id in state.players[player.index()].hand.clone() {
                     event::propose_and_commit(state, ProposedEvent::zone_change(id, Zone::Graveyard));
@@ -4282,6 +4297,7 @@ fn permanent_matches_filter(def: &card_def::CardDef, filter: PermanentFilter) ->
         }
         PermanentFilter::Artifact => def.has_type(CardType::Artifact),
         PermanentFilter::Creature => def.has_type(CardType::Creature),
+        PermanentFilter::Desert => def.has_type(CardType::Land) && def.subtypes.contains(&card_def::Subtype::Desert),
     }
 }
 
@@ -4375,6 +4391,7 @@ fn cost_kind_for_permanent_filter(filter: PermanentFilter) -> CostKind {
         PermanentFilter::ArtifactOrCreature | PermanentFilter::Creature => {
             CostKind::SacrificePermanents
         }
+        PermanentFilter::Desert => CostKind::SacrificeLands,
     }
 }
 
@@ -7596,6 +7613,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
                     PermanentFilter::Creature => CostKind::SacrificeCreatures,
                     PermanentFilter::Artifact => CostKind::SacrificeArtifacts,
                     PermanentFilter::ArtifactOrCreature => CostKind::SacrificePermanents,
+                    PermanentFilter::Desert => CostKind::SacrificeLands,
                 },
                 remaining,
                 candidates,
@@ -9887,6 +9905,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             }
             state.players[0].draws_this_turn = 0;
             state.players[1].draws_this_turn = 0;
+            state.life_lost_this_turn = [0; 2];
             state.players[0].spells_cast_this_turn = 0;
             state.players[1].spells_cast_this_turn = 0;
             for (_, object) in state.objects.iter_mut() {
@@ -10300,6 +10319,9 @@ pub fn has_effective_keyword(state: &GameState, id: ObjectId, kw: Keywords) -> b
         return true;
     }
     if kw.has(Keywords::LIFELINK) && obj.v4.lifelink_keyword_counters > 0 {
+        return true;
+    }
+    if crate::statics::grants_keyword(state, id, kw) {
         return true;
     }
     if attached_equipment_profiles(state, id)

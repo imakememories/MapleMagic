@@ -48,6 +48,10 @@ pub struct FaceDownV1 {
     pub foretold_turn: Option<u32>,
 }
 
+fn no_life_lost(value: &[u32; 2]) -> bool {
+    *value == [0, 0]
+}
+
 fn i16_is_zero(value: &i16) -> bool {
     *value == 0
 }
@@ -1242,6 +1246,10 @@ pub struct GameState {
     /// then left out of serialization and hashing like `commander`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub face_down: Vec<FaceDownV1>,
+    /// Life each player has lost this turn (spectacle, 702.137), reset as
+    /// each turn begins. Left out of serialization and hashing while zero.
+    #[serde(default, skip_serializing_if = "no_life_lost")]
+    pub life_lost_this_turn: [u32; 2],
     /// Priority/stack/turn-structure bookkeeping and the propose-commit
     /// event log, all owned by the `engine`/`event`/`trigger` modules. See
     /// `engine::EngineState`.
@@ -1282,6 +1290,9 @@ impl Hash for GameState {
         }
         if !self.face_down.is_empty() {
             self.face_down.hash(state);
+        }
+        if !no_life_lost(&self.life_lost_this_turn) {
+            self.life_lost_this_turn.hash(state);
         }
     }
 }
@@ -1416,6 +1427,7 @@ impl GameState {
             randomness: GameRandomnessState::Legacy(SplitMix64::seed(seed)),
             commander: None,
             face_down: Vec::new(),
+            life_lost_this_turn: [0; 2],
             engine: crate::engine::EngineState::default(),
         }
     }
