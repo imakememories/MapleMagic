@@ -847,6 +847,23 @@ pub enum EffectOp {
     },
     /// The controller wins the game (its opponent loses).
     WinTheGame,
+    /// Exiles the top card of the controller's library face down. With
+    /// `owner_knows` the controller may look at it; `playable_this_turn` lets
+    /// it play the card this turn; `linked` remembers this source for
+    /// `ReturnExiledWithToHand`.
+    ExileTopFaceDown {
+        owner_knows: bool,
+        playable_this_turn: bool,
+        linked: bool,
+    },
+    /// Puts every card this source exiled face down into its owner's hand.
+    ReturnExiledWithToHand,
+    /// Damage to each opponent and each creature they control, or
+    /// `exile_amount` when this spell was cast from exile.
+    DamageOpponentsAndTheirCreatures {
+        amount: i32,
+        exile_amount: i32,
+    },
 }
 
 /// Which creatures a `ThreatenAll` takes.
@@ -1612,6 +1629,51 @@ impl std::hash::Hash for ExecCtx {
             std::hash::Hash::hash(&0x6f70_7469_6f6e_616c_u64, state);
             std::hash::Hash::hash(&kind, state);
         }
+    }
+}
+
+/// Lets `holder` play or cast the exiled `id` until `expiry`.
+fn grant_exile_play(
+    state: &mut GameState,
+    id: ObjectId,
+    holder: PlayerId,
+    expiry: crate::engine::PlayPermissionExpiry,
+) {
+    let def = &crate::card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
+    let play_or_cast = if def.is_playable_land() {
+        crate::engine::PlayOrCast::Play
+    } else if def.is_castable() {
+        crate::engine::PlayOrCast::Cast
+    } else {
+        // Exiling still happened, but an unsupported definition
+        // never receives an executable permission. This is the
+        // runtime half of the fail-closed deck preflight.
+        return;
+    };
+    state
+        .engine
+        .exile_play_permissions
+        .push(crate::engine::PlayPermission {
+            object: id,
+            holder,
+            // Snapshot *after* the exile move, so this permission's own
+            // creating zone change isn't what immediately invalidates it --
+            // see `PlayPermission::zone_change_generation`'s doc.
+            zone_change_generation: state.objects.get(id).zone_change_count,
+            play_or_cast,
+            expiry,
+        });
+}
+
+/// The source incarnation an ability belongs to: its frozen contract when it
+/// has one (the source may have left play paying the cost), else as it is now.
+fn source_link(ctx: &ExecCtx, state: &GameState) -> crate::state::ObjectLinkV4 {
+    match ctx.ability_source_contract {
+        Some(c) => crate::state::ObjectLinkV4 { object: c.source, zone_change_count: c.zone_change_count },
+        None => crate::state::ObjectLinkV4 {
+            object: ctx.source,
+            zone_change_count: state.objects.get(ctx.source).zone_change_count,
+        },
     }
 }
 
@@ -10160,6 +10222,46 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         EffectOp::WinTheGame => {
             state.players[ctx.controller.opponent().index()].has_lost = true;
         }
+        EffectOp::ExileTopFaceDown {
+            owner_knows,
+            playable_this_turn,
+            linked,
+        } => {
+            let with = linked.then(|| source_link(ctx, state));
+            if let Some(id) = crate::face_down::exile_top(state, ctx.controller, *owner_knows, with) {
+                if *playable_this_turn {
+                    grant_exile_play(state, id, ctx.controller, crate::engine::PlayPermissionExpiry::EndOfTurn);
+                }
+            }
+        }
+        EffectOp::DamageOpponentsAndTheirCreatures {
+            amount,
+            exile_amount,
+        } => {
+            let from_exile = state
+                .objects
+                .get(ctx.source)
+                .v4
+                .spell_cast_origin
+                .is_some_and(|o| o.origin_zone == Zone::Exile);
+            let amount = if from_exile { *exile_amount } else { *amount };
+            let opponent = ctx.controller.opponent();
+            let mut events = vec![event::ProposedEvent::damage(ctx.source, Target::Player(opponent), amount)];
+            events.extend(
+                state.players[opponent.index()]
+                    .battlefield
+                    .iter()
+                    .copied()
+                    .filter(|&id| crate::engine::object_has_type(state, id, CardType::Creature))
+                    .map(|id| event::ProposedEvent::damage(ctx.source, Target::Object(id), amount)),
+            );
+            event::propose_and_commit_batch(state, events);
+        }
+        EffectOp::ReturnExiledWithToHand => {
+            for id in crate::face_down::exiled_with(state, source_link(ctx, state)) {
+                event::propose_and_commit(state, event::ProposedEvent::zone_change(id, Zone::Hand));
+            }
+        }
         EffectOp::ThreatenAll { filter } => {
             let taken: Vec<ObjectId> = state
                 .players
@@ -10494,31 +10596,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                         }
                     }
                 };
-                let def = &crate::card_def::CARD_DEFS[state.objects.get(top).card_def as usize];
-                let play_or_cast = if def.is_playable_land() {
-                    crate::engine::PlayOrCast::Play
-                } else if def.is_castable() {
-                    crate::engine::PlayOrCast::Cast
-                } else {
-                    // Exiling still happened, but an unsupported definition
-                    // never receives an executable permission. This is the
-                    // runtime half of the fail-closed deck preflight.
-                    continue;
-                };
-                state
-                    .engine
-                    .exile_play_permissions
-                    .push(crate::engine::PlayPermission {
-                        object: top,
-                        holder: ctx.controller,
-                        // Snapshot *after* the exile move above, so this
-                        // permission's own creating zone change isn't what
-                        // immediately invalidates it -- see `PlayPermission::
-                        // zone_change_generation`'s doc.
-                        zone_change_generation: state.objects.get(top).zone_change_count,
-                        play_or_cast,
-                        expiry,
-                    });
+                grant_exile_play(state, top, ctx.controller, expiry);
             }
         }
         EffectOp::OfferAffectedPlayerSpellCopy { affected } => {

@@ -361,6 +361,44 @@ const KNUCKLES_TRIGGERS: [TriggeredAbilityDef; 2] = [
     ),
 ];
 
+fn target_players_creatures_cant_block_effect() -> EffectOp {
+    EffectOp::CreaturesCantBlockThisTurn {
+        player: PlayerRef::Target(0),
+    }
+}
+
+fn exile_top_face_down_playable_effect() -> EffectOp {
+    EffectOp::ExileTopFaceDown {
+        owner_knows: true,
+        playable_this_turn: true,
+        linked: false,
+    }
+}
+
+fn exile_top_face_down_linked_effect() -> EffectOp {
+    EffectOp::ExileTopFaceDown {
+        owner_knows: false,
+        playable_this_turn: false,
+        linked: true,
+    }
+}
+
+const HEADLINER_SCARLETT_TRIGGERS: [TriggeredAbilityDef; 2] = [
+    trigger(TriggerCondition::Etb, target_players_creatures_cant_block_effect),
+    trigger(
+        TriggerCondition::BeginningOfUpkeep {
+            controller_only: true,
+        },
+        exile_top_face_down_playable_effect,
+    ),
+];
+const CONNECTING_THE_DOTS_TRIGGERS: [TriggeredAbilityDef; 1] = [trigger(
+    TriggerCondition::ControlledCreatureAttacks {
+        keyword: crate::card_def::Keywords::NONE,
+    },
+    exile_top_face_down_linked_effect,
+)];
+
 const OGNIS_TRIGGERS: [TriggeredAbilityDef; 1] = [trigger(
     TriggerCondition::ControlledCreatureAttacks {
         keyword: crate::card_def::Keywords::HASTE,
@@ -1096,6 +1134,8 @@ pub fn triggers_for(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Spider-Man, Web-Spinner" => &SPIDER_MAN_WEB_SPINNER_TRIGGERS,
         "Whirlwind, Killer Cyclone" => &WHIRLWIND_TRIGGERS,
         "Knuckles the Echidna" => &KNUCKLES_TRIGGERS,
+        "Headliner Scarlett" => &HEADLINER_SCARLETT_TRIGGERS,
+        "Connecting the Dots" => &CONNECTING_THE_DOTS_TRIGGERS,
         _ => &[],
     }
 }
@@ -1194,6 +1234,12 @@ pub fn target_spec_for_trigger(card_def: u16, effect: &EffectOp) -> Option<Targe
             TargetSpec::TargetOpponent
         } else if card.name == "Journey to Nowhere" && *effect == journey_to_nowhere_etb_effect() {
             TargetSpec::CreatureOtherThanSource
+        } else if card.name == "Headliner Scarlett" {
+            if *effect == target_players_creatures_cant_block_effect() {
+                TargetSpec::AnyPlayer
+            } else {
+                TargetSpec::None
+            }
         } else if card.name == "Smaug the Magnificent" {
             if *effect == smaug_attack_effect() {
                 TargetSpec::AnyTarget

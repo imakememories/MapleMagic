@@ -708,6 +708,8 @@ pub enum CostComponent {
     DiscardSelf,
     /// Discard `n` cards from hand, chosen by the payer (`engine::Decision::Discard`).
     DiscardCards(u8),
+    /// Discard the whole hand (no choice; an empty hand pays it).
+    DiscardHand,
     /// Sacrifice `n` controlled lands. Exact lands are staged one at a time
     /// through `engine::Decision::ChooseCostTargets`; the public
     /// `PendingCast::sacrifice_chosen` compatibility field also carries the
@@ -1088,6 +1090,10 @@ pub struct CardDef {
     pub mode2: Option<ModeDef>,
     /// Optional third printed mode. Piracy Charm is the first consumer.
     pub mode3: Option<ModeDef>,
+    /// `Some` iff this card has Foretell (702.143): on its owner's turn it
+    /// may be exiled face down from hand for {2}, then cast on a later turn
+    /// for this cost (`engine::foretell_candidates`).
+    pub foretell_cost: Option<Cost>,
     /// A permanent token (`cards_v1.json`'s own `is_token`, e.g. Blood),
     /// never itself a deck card -- read by `trigger::sba_fixed_point` for
     /// 111.8/704.5d ("if a token is in a zone other than the battlefield,
@@ -1541,7 +1547,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0xc608_1f29_f3c0_c43e);
+        assert_eq!(KERNEL_CARDDB_HASH, 0xd1b4_aa20_79e6_95fb);
     }
 
     #[test]

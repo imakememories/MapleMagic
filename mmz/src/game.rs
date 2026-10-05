@@ -47,6 +47,7 @@ pub enum Kind {
     Block = 19,
     NoBlock = 20,
     OrderTrigger = 21,
+    Foretell = 22,
 }
 
 /// A choice's tree key and model input. `role` is in the key only.
@@ -309,7 +310,7 @@ impl Game {
     /// The opponent's unknown hand cards and its other unseen cards, as card definitions.
     pub fn hidden_pool(&self, observer: PlayerId) -> (Vec<u16>, Vec<u16>) {
         let opp = observer.opponent();
-        let n = unseen_slots(&self.state, observer, opp, true).len();
+        let n = unseen_hand(&self.state, observer, opp).len();
         let defs: Vec<u16> =
             unseen_slots(&self.state, observer, opp, false).iter().map(|&id| self.state.objects.get(id).card_def).collect();
         (defs[..n].to_vec(), defs[n..].to_vec())
@@ -323,7 +324,7 @@ impl Game {
             defs.sort_unstable();
             let fixed = match hand {
                 Some(h) if owner != observer => {
-                    assert_eq!(h.len(), unseen_slots(&self.state, observer, owner, true).len(), "hand size");
+                    assert_eq!(h.len(), unseen_hand(&self.state, observer, owner).len(), "hand size");
                     let mut h = h.to_vec();
                     h.sort_unstable();
                     for d in &h {
@@ -334,9 +335,25 @@ impl Game {
                 }
                 _ => Vec::new(),
             };
+            // A foretold card is known to have foretell: deal those slots from foretell cards first.
+            let mut pinned = Vec::new();
+            for (k, &id) in slots.iter().skip(fixed.len()).enumerate() {
+                if !self.state.face_down(id).is_some_and(|f| f.foretold_turn.is_some()) {
+                    continue;
+                }
+                let eligible: Vec<usize> = (0..defs.len()).filter(|&j| CARD_DEFS[defs[j] as usize].foretell_cost.is_some()).collect();
+                if eligible.is_empty() {
+                    break; // a pinned hand took them; leave the slot unconstrained
+                }
+                let j = eligible[(rng.next_u64() % eligible.len() as u64) as usize];
+                pinned.push((k, defs.remove(j)));
+            }
             for i in (1..defs.len()).rev() {
                 let j = (rng.next_u64() % (i as u64 + 1)) as usize;
                 defs.swap(i, j);
+            }
+            for (k, d) in pinned {
+                defs.insert(k, d);
             }
             for (id, def) in slots.into_iter().zip(fixed.into_iter().chain(defs)) {
                 set_card(&mut self.state, id, def);
@@ -568,6 +585,7 @@ impl Game {
                 land_drops,
                 activatable_abilities,
                 plot_actions,
+                foretell_actions,
             } => {
                 self.actor = player;
                 out.push(mk(ActFeat::new(Kind::Pass, u16::MAX, 0, 0), Exec::Engine(Action::Pass)));
@@ -585,6 +603,9 @@ impl Game {
                 }
                 for id in plot_actions {
                     push_unique(&mut out, mk(ActFeat::new(Kind::Plot, def_of(st, id), 0, 0), Exec::Engine(Action::PlotSpell(id))));
+                }
+                for id in foretell_actions {
+                    push_unique(&mut out, mk(ActFeat::new(Kind::Foretell, def_of(st, id), 0, 0), Exec::Engine(Action::Foretell(id))));
                 }
                 // Mana abilities with a real cost beyond tapping stay explicit.
                 for &id in &mana_abilities {
@@ -767,14 +788,26 @@ fn decision_name(d: &Decision) -> &'static str {
     }
 }
 
+/// `owner`'s hand cards `observer` can't see.
+fn unseen_hand(state: &GameState, observer: PlayerId, owner: PlayerId) -> Vec<ObjectId> {
+    if owner == observer {
+        return Vec::new();
+    }
+    let zcc = |id: ObjectId| state.objects.get(id).zone_change_count;
+    let known = state.known_hand_cards(observer, owner);
+    state.players[owner.index()]
+        .hand
+        .iter()
+        .copied()
+        .filter(|&id| !known.iter().any(|e| e.object == id && e.zone_change_count == zcc(id)))
+        .collect()
+}
+
+/// `owner`'s cards `observer` can't see: hand first, then library, then face-down exile.
 pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerId, keep_library: bool) -> Vec<ObjectId> {
     let ps = &state.players[owner.index()];
     let zcc = |id: ObjectId| state.objects.get(id).zone_change_count;
-    let mut slots = Vec::new();
-    if owner != observer {
-        let known = state.known_hand_cards(observer, owner);
-        slots.extend(ps.hand.iter().copied().filter(|&id| !known.iter().any(|e| e.object == id && e.zone_change_count == zcc(id))));
-    }
+    let mut slots = unseen_hand(state, observer, owner);
     if !keep_library {
         let known = state.known_library_cards(observer, owner);
         for (pos, &id) in ps.library.iter().enumerate() {
@@ -782,6 +815,11 @@ pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerI
                 slots.push(id);
             }
         }
+    }
+    if !state.face_down.is_empty() {
+        slots.extend(
+            state.exile.iter().copied().filter(|&id| state.objects.get(id).owner == owner && state.face_down_hidden_from(id, observer)),
+        );
     }
     slots
 }
@@ -1109,6 +1147,33 @@ mod tests {
             }
         }
         assert!(split > 0, "no decision offered two copies of one card that differ");
+    }
+
+    #[test]
+    fn foretold_cards_are_dealt_only_foretell_cards() {
+        use mtg_kernel::face_down;
+        let mut g = Game::new("Faeries", "Spy", 3).unwrap();
+        let mut rng = SplitMix64::seed(1);
+        for _ in 0..20 {
+            let n = g.choices().len();
+            g.apply((rng.next_u64() % n as u64) as usize);
+        }
+        let me = g.to_act();
+        let opp = me.opponent();
+        let fireball = mtg_kernel::card_def::card_id_by_name("Delayed Blast Fireball").unwrap();
+        let card = g.state.players[opp.index()].library[0];
+        set_card(&mut g.state, card, fireball);
+        let turn = face_down::turn_index(&g.state);
+        assert!(face_down::exile(&mut g.state, card, true, None, Some(turn)));
+        let plain = face_down::exile_top(&mut g.state, opp, true, None).unwrap();
+        let mut plain_defs = std::collections::HashSet::new();
+        for seed in 0..40 {
+            let mut d = g.clone();
+            d.determinize(me, seed);
+            assert_eq!(d.state.objects.get(card).card_def, fireball);
+            plain_defs.insert(d.state.objects.get(plain).card_def);
+        }
+        assert!(plain_defs.len() > 1, "an ordinary face-down card is resampled");
     }
 
     #[test]

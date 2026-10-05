@@ -6197,7 +6197,7 @@
     },
     {
       "name": "Connecting the Dots",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{1}{R}",
       "mana_value": 2,
       "colors": [
@@ -6516,7 +6516,7 @@
     },
     {
       "name": "Delayed Blast Fireball",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{1}{R}{R}",
       "mana_value": 3,
       "colors": [
@@ -8311,7 +8311,7 @@
     },
     {
       "name": "Headliner Scarlett",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{3}{R}",
       "mana_value": 4,
       "colors": [

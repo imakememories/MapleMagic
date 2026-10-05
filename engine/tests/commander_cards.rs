@@ -332,3 +332,133 @@ fn wrenns_resolve_exiles_two_cards_to_play() {
     assert_eq!(exiled.len(), 2);
     assert_eq!(state.players[0].library.len(), 8);
 }
+
+#[test]
+fn headliner_scarlett_stops_blockers_then_exiles_a_card_only_its_owner_sees() {
+    let mut state = game();
+    lands(&mut state, P0, 4);
+    let wall = put(&mut state, P1, "Guttersnipe");
+    let scarlett = cast(&mut state, "Headliner Scarlett", Some(Target::Player(P1)), 0);
+    let blocks = attack_and_see_blocks(&mut state, vec![scarlett], Target::Player(P1));
+    assert!(blocks.iter().all(|b| !b.1.contains(&wall)), "{blocks:?}");
+
+    // Next upkeep: the top card goes face down, and its owner may play it this turn.
+    let turn = state.turn;
+    advance(&mut state, |s, d| {
+        s.active_player == P0 && s.turn != turn && s.step == Step::Main1 && matches!(d, Decision::CastSpellOrPass { .. })
+    });
+    let card = *state.exile.last().expect("an exiled card");
+    assert!(!state.face_down_hidden_from(card, P0) && state.face_down_hidden_from(card, P1));
+    match engine::advance_until_decision(&mut state) {
+        Decision::CastSpellOrPass { land_drops, .. } => assert!(land_drops.contains(&card), "{land_drops:?}"),
+        other => panic!("{other:?}"),
+    }
+    end_turn(&mut state);
+    assert!(state.engine.exile_play_permissions.iter().all(|p| p.object != card));
+    assert!(state.face_down(card).is_some(), "still face down after the turn");
+}
+
+#[test]
+fn connecting_the_dots_exiles_unseen_cards_and_cashes_them_in() {
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let dots = put(&mut state, P0, "Connecting the Dots");
+    let a = put(&mut state, P0, "Captain Lannery Storm");
+    let b = put(&mut state, P0, "Guttersnipe");
+    let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+    attack_with(&mut state, vec![a, b]);
+    let exiled = state.exile.clone();
+    assert_eq!(exiled.len(), 2);
+    assert!(exiled.iter().all(|&c| state.face_down_hidden_from(c, P0) && state.face_down_hidden_from(c, P1)));
+
+    // {1}{R}, discard the hand, sacrifice: the exiled cards come back to hand.
+    advance(&mut state, |_, d| {
+        matches!(d, Decision::CastSpellOrPass { activatable_abilities, .. } if activatable_abilities.contains(&(dots, 0)))
+    });
+    engine::step(&mut state, Action::ActivateAbility(dots, 0)).unwrap();
+    engine::advance_until_decision(&mut state); // pays the cost
+    assert_eq!(state.objects.get(bolt).zone, Zone::Graveyard);
+    assert_eq!(state.objects.get(dots).zone, Zone::Graveyard);
+    advance(&mut state, |s, d| s.stack.is_empty() && matches!(d, Decision::CastSpellOrPass { .. }));
+    for c in exiled {
+        assert_eq!(state.objects.get(c).zone, Zone::Hand);
+        assert!(state.face_down(c).is_none());
+    }
+}
+
+/// Passes priority until the stack is empty.
+fn resolve(state: &mut GameState) {
+    while !state.stack.is_empty() {
+        match engine::advance_until_decision(state) {
+            Decision::CastSpellOrPass { .. } => engine::step(state, Action::Pass).unwrap(),
+            other => panic!("unhandled decision {other:?}"),
+        }
+    }
+}
+
+/// Damage on player 1's Myr Enforcer (4/4; `None` once dead) and on player 0's creature, and player 1's life.
+fn fireball_marks(state: &GameState, theirs: ObjectId, mine: ObjectId) -> (Option<u16>, u16, i32) {
+    let o = state.objects.get(theirs);
+    ((o.zone == Zone::Battlefield).then_some(o.damage), state.objects.get(mine).damage, state.players[1].life)
+}
+
+#[test]
+fn delayed_blast_fireball_deals_two_from_hand() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let theirs = put(&mut state, P1, "Myr Enforcer");
+    let mine = put(&mut state, P0, "Captain Lannery Storm");
+    cast(&mut state, "Delayed Blast Fireball", None, 0);
+    assert_eq!(fireball_marks(&state, theirs, mine), (Some(2), 0, 38));
+}
+
+#[test]
+fn foretold_delayed_blast_fireball_waits_a_turn_then_deals_five() {
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let theirs = put(&mut state, P1, "Myr Enforcer");
+    let mine = put(&mut state, P0, "Captain Lannery Storm");
+    let fireball = put_in(&mut state, P0, "Delayed Blast Fireball", Zone::Hand);
+    match advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. })) {
+        Decision::CastSpellOrPass { foretell_actions, .. } => assert_eq!(foretell_actions, vec![fireball]),
+        other => panic!("{other:?}"),
+    }
+    engine::step(&mut state, Action::Foretell(fireball)).unwrap();
+    assert!(state.face_down(fireball).is_some_and(|f| f.foretold_turn.is_some()));
+    assert!(!state.face_down_hidden_from(fireball, P0) && state.face_down_hidden_from(fireball, P1));
+    lands(&mut state, P0, 6);
+    match engine::advance_until_decision(&mut state) {
+        Decision::CastSpellOrPass { castable_spells, .. } => assert!(!castable_spells.contains(&fireball), "not the turn it was foretold"),
+        other => panic!("{other:?}"),
+    }
+    // On the opponent's next turn it can be cast for {4}{R}{R}.
+    advance(&mut state, |s, d| {
+        s.active_player == P1 && matches!(d, Decision::CastSpellOrPass { player: P0, castable_spells, .. } if castable_spells.contains(&fireball))
+    });
+    engine::step(&mut state, Action::CastSpell(fireball)).unwrap();
+    resolve(&mut state);
+    assert_eq!(fireball_marks(&state, theirs, mine), (None, 0, 35));
+    assert_eq!(state.objects.get(fireball).zone, Zone::Graveyard);
+}
+
+#[test]
+fn delayed_blast_fireball_cast_from_any_exile_deals_five() {
+    let mut state = game();
+    lands(&mut state, P0, 5);
+    let theirs = put(&mut state, P1, "Myr Enforcer");
+    let mine = put(&mut state, P0, "Captain Lannery Storm");
+    let top = state.players[0].library[0];
+    let def = id("Delayed Blast Fireball");
+    let o = state.objects.get_mut(top);
+    o.card_def = def;
+    o.name = "Delayed Blast Fireball".into();
+    o.v4 = ObjectStateV4::from_card_def(def);
+    cast(&mut state, "Wrenn's Resolve", None, 0);
+    match engine::advance_until_decision(&mut state) {
+        Decision::CastSpellOrPass { castable_spells, .. } => assert!(castable_spells.contains(&top), "{castable_spells:?}"),
+        other => panic!("{other:?}"),
+    }
+    engine::step(&mut state, Action::CastSpell(top)).unwrap();
+    resolve(&mut state);
+    assert_eq!(fireball_marks(&state, theirs, mine), (None, 0, 35));
+}

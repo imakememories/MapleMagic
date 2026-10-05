@@ -1161,6 +1161,24 @@ mod tests {
                     t.state.reseed_shuffles(rng.next_u64());
                     out.push((g.clone(), t, "shuffles"));
                 }
+                if rng.next_u64() % 4 == 0 {
+                    // A card face down in exile that the player to act can't see.
+                    let mut base = g.clone();
+                    let owner = if rng.next_u64() % 2 == 0 { me } else { me.opponent() };
+                    let owner_knows = owner != me && rng.next_u64() % 2 == 0;
+                    let keep = owner == me && sees_own_library(&g);
+                    if let Some(fd) = mtg_kernel::face_down::exile_top(&mut base.state, owner, owner_knows, None) {
+                        let d = |id: mtg_kernel::ids::ObjectId| base.state.objects.get(id).card_def;
+                        let other = unseen_slots(&base.state, me, owner, keep).into_iter().find(|&b| d(b) != d(fd));
+                        if let Some(b) = other {
+                            let mut t = base.clone();
+                            let (da, db) = (d(fd), d(b));
+                            set_card(&mut t.state, fd, db);
+                            set_card(&mut t.state, b, da);
+                            out.push((base, t, "face down"));
+                        }
+                    }
+                }
                 let k = g.choices().len();
                 g.apply((rng.next_u64() % k as u64) as usize);
             }
@@ -1173,7 +1191,9 @@ mod tests {
         let scored = |c: Config| Config { world_sampler: WorldSampler::Scored, ..c };
         let twins = unseen_twins(60);
         assert_eq!(twins.len(), 60);
-        assert!(twins.iter().any(|t| t.2 == "own library") && twins.iter().any(|t| t.2 == "shuffles"));
+        for kind in ["own library", "shuffles", "face down"] {
+            assert!(twins.iter().any(|t| t.2 == kind), "no {kind} twins");
+        }
         for (g, twin, what) in &twins {
             for cfg in [
                 Config::default(),

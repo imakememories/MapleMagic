@@ -10,6 +10,7 @@ pub mod effect;
 pub mod engine;
 pub mod environment_randomization_v2;
 pub mod event;
+pub mod face_down;
 pub mod ids;
 pub mod mana;
 pub mod runtime_decks;

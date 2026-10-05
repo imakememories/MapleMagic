@@ -1042,6 +1042,8 @@ pub enum Decision {
         /// in the same priority window (the real trace's "Plot {1}{R}"
         /// candidate, distinct from "Cast Highway Robbery").
         plot_actions: Vec<ObjectId>,
+        /// Hand cards `player` can foretell now (`Action::Foretell`).
+        foretell_actions: Vec<ObjectId>,
     },
     ChooseTargets {
         player: PlayerId,
@@ -1315,6 +1317,9 @@ pub enum Action {
     /// battlefield object, currently Saruli Caretaker's other untapped
     /// controlled creature. Appended for action identity stability.
     ActivateManaAbilityWithCostTarget(ObjectId, ManaColor, ObjectId),
+    /// Foretells a hand card (702.143a): pays {2} and exiles it face down.
+    /// A special action, like `PlotSpell`.
+    Foretell(ObjectId),
 }
 
 const CHAIN_COPY_COST: Cost = Cost {
@@ -1668,6 +1673,13 @@ fn validate_physical_spell_cast_origin(
                 && source.plotted_turn == Some(plotted_turn)
                 && plotted_turn < state.turn
         }
+        SpellCastRouteV4::Foretold { foretold_turn } => {
+            origin.origin_zone == Zone::Exile
+                && source.owner == item.controller
+                && cast_method == CastMethodV4::Foretold
+                && def.foretell_cost.is_some()
+                && foretold_turn < crate::face_down::turn_index(state)
+        }
         SpellCastRouteV4::Madness => {
             origin.origin_zone == Zone::Exile
                 && source.owner == item.controller
@@ -1813,10 +1825,12 @@ fn validate_spell_source_contract_fields(
                 && source
                     .plotted_turn
                     .is_some_and(|plotted_turn| plotted_turn < state.turn) => {}
+        CastMethodV4::Foretold if def.foretell_cost.is_some() => {}
         CastMethodV4::Alternative
         | CastMethodV4::Flashback
         | CastMethodV4::Madness
         | CastMethodV4::Plotted
+        | CastMethodV4::Foretold
         | CastMethodV4::Escape
         | CastMethodV4::Omen => {
             return Err("spell cast method is unsupported by its source definition".to_string())
@@ -1949,7 +1963,8 @@ fn storm_source_contract_is_structurally_valid(
         | SpellCastRouteV4::Plotted { .. }
         | SpellCastRouteV4::Madness
         | SpellCastRouteV4::GraveyardEscape
-        | SpellCastRouteV4::CommandZone => false,
+        | SpellCastRouteV4::CommandZone
+        | SpellCastRouteV4::Foretold { .. } => false,
     };
     definition.name == "Weather the Storm"
         && definition.is_executable()
@@ -3283,6 +3298,7 @@ fn component_payment_shape_supported(components: &[CostComponent]) -> bool {
                 }
                 discard_count += 1;
             }
+            CostComponent::DiscardHand => discard_count += 1,
             CostComponent::SacrificeLands(amount) => {
                 if *amount == 0 {
                     return false;
@@ -3534,6 +3550,7 @@ fn can_pay_components(
                     && object.zone == Zone::Hand
                     && state.players[player.index()].hand.contains(&source)
             }
+            CostComponent::DiscardHand => true,
             CostComponent::DiscardCards(n) => {
                 let hand_other = state.players[player.index()]
                     .hand
@@ -3868,6 +3885,11 @@ fn pay_cost_components_with_x(
                 ProposedEvent::life_loss(player, i32::from(*amount)),
             ),
             CostComponent::DiscardCards(_) => {}
+            CostComponent::DiscardHand => {
+                for id in state.players[player.index()].hand.clone() {
+                    event::propose_and_commit(state, ProposedEvent::zone_change(id, Zone::Graveyard));
+                }
+            }
             CostComponent::TapOtherUntappedControlledPermanentWithSubtype(_) => {
                 event::propose_and_commit(state, ProposedEvent::tap(object_cost_chosen[0]));
             }
@@ -4841,6 +4863,13 @@ fn is_castable_now(
             });
             main_ok || omen_ok || bestow_ok
         }
+        CastMethodV4::Foretold => {
+            crate::face_down::foretold_before_this_turn(state, id).is_some()
+                && state.objects.get(id).owner == player
+                && def
+                    .foretell_cost
+                    .is_some_and(|cost| mana::can_pay(&cost, 0, player, state).is_some())
+        }
         CastMethodV4::Alternative
         | CastMethodV4::Madness
         | CastMethodV4::Plotted
@@ -4874,6 +4903,12 @@ pub fn castable_spells(player: PlayerId, state: &GameState) -> Vec<ObjectId> {
     }
     for &id in &state.exile {
         if state.objects.get(id).owner == player && is_plotted_castable_now(player, id, state) {
+            out.push(id);
+            continue;
+        }
+        if crate::face_down::foretold_before_this_turn(state, id).is_some()
+            && is_castable_now(player, id, CastMethodV4::Foretold, state)
+        {
             out.push(id);
             continue;
         }
@@ -4969,6 +5004,39 @@ fn plot_action_candidates(player: PlayerId, state: &GameState) -> Vec<ObjectId> 
                     .is_some_and(|cost| mana::can_pay(&cost, 0, player, state).is_some())
         })
         .collect()
+}
+
+/// Foretell's cost (702.143a).
+const FORETELL_ACTION_COST: Cost = Cost { pips: &[], generic: 2, x_count: 0 };
+
+/// Hand cards `player` can foretell now: any time it has priority on its own
+/// turn (702.143a).
+fn foretell_candidates(player: PlayerId, state: &GameState) -> Vec<ObjectId> {
+    if player != state.active_player || player != state.priority_player {
+        return Vec::new();
+    }
+    let hand = &state.players[player.index()].hand;
+    let foretells = |id: ObjectId| {
+        let def = &card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
+        def.is_castable() && def.foretell_cost.is_some()
+    };
+    if !hand.iter().any(|&id| foretells(id)) || mana::can_pay(&FORETELL_ACTION_COST, 0, player, state).is_none() {
+        return Vec::new();
+    }
+    hand.iter().copied().filter(|&id| foretells(id)).collect()
+}
+
+/// Foretells `id`: pays {2} and exiles it face down, marked with this turn.
+/// Doesn't use the stack or pass priority, like `plot_spell`.
+fn foretell(state: &mut GameState, player: PlayerId, id: ObjectId) {
+    let plan = mana::can_pay(&FORETELL_ACTION_COST, 0, player, state)
+        .expect("legality already checked by foretell_candidates");
+    pay_plan(state, player, &plan);
+    let turn = crate::face_down::turn_index(state);
+    crate::face_down::exile(state, id, true, None, Some(turn));
+    collect_and_queue_triggers(state);
+    state.engine.priority_passes = [false, false];
+    state.priority_player = player;
 }
 
 fn available_mana_abilities(player: PlayerId, state: &GameState) -> Vec<ObjectId> {
@@ -5853,6 +5921,7 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
             land_drops: land_drop_candidates(state.priority_player, state),
             activatable_abilities: available_activatable_abilities(state.priority_player, state),
             plot_actions: plot_action_candidates(state.priority_player, state),
+            foretell_actions: foretell_candidates(state.priority_player, state),
         };
     }
 }
@@ -5907,6 +5976,9 @@ fn remaining_cast_payment_is_payable(
             .madness_cost
             .is_some_and(|cost| mana::can_pay(&cost, 0, pending.controller, state).is_some()),
         CastMethodV4::Plotted => true,
+        CastMethodV4::Foretold => def
+            .foretell_cost
+            .is_some_and(|cost| mana::can_pay(&cost, x_value, pending.controller, state).is_some()),
         CastMethodV4::Omen => supported_omen(def).is_some_and(|omen| {
             mana::can_pay(&omen.cost, x_value, pending.controller, state).is_some()
         }),
@@ -6705,6 +6777,15 @@ pub(crate) fn validate_pending_cast(
                 || pending.cast_mode != Some(CastMode::Normal)
             {
                 return Err("Madness cast has a noncanonical origin or definition".to_string());
+            }
+        }
+        CastMethodV4::Foretold => {
+            if pending.origin_zone != Zone::Exile
+                || source.owner != pending.controller
+                || def.foretell_cost.is_none()
+                || pending.cast_mode != Some(CastMode::Normal)
+            {
+                return Err("foretold cast has a noncanonical origin or definition".to_string());
             }
         }
     }
@@ -11049,6 +11130,14 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
             plot_spell(state, p, id);
             Ok(())
         }
+        Action::Foretell(id) => {
+            let p = state.priority_player;
+            if !foretell_candidates(p, state).contains(&id) {
+                return Err(format!("{id} is not a legal foretell action for {p:?}"));
+            }
+            foretell(state, p, id);
+            Ok(())
+        }
         Action::Discard(chosen) => apply_discard_action(state, chosen),
         Action::DeclareAttackers(attackers) => apply_declare_attackers(state, attackers),
         Action::DeclareBlockers(blocks) => apply_declare_blockers(state, blocks),
@@ -12798,6 +12887,15 @@ fn begin_cast_ex(
         && state.objects.get(spell_id).owner == player
         && def.plot_cost.is_some()
         && plotted_turn.is_some_and(|turn| turn < state.turn);
+    let foretold_turn = if forced_cast_method.is_none()
+        && origin_zone == Zone::Exile
+        && state.objects.get(spell_id).owner == player
+        && def.foretell_cost.is_some()
+    {
+        crate::face_down::foretold_before_this_turn(state, spell_id)
+    } else {
+        None
+    };
     let target_spec = def.target_spec;
     let cast_method = forced_cast_method.unwrap_or_else(|| {
         if origin_zone == Zone::Graveyard {
@@ -12806,6 +12904,8 @@ fn begin_cast_ex(
             )
         } else if is_plotted {
             CastMethodV4::Plotted
+        } else if foretold_turn.is_some() {
+            CastMethodV4::Foretold
         } else {
             CastMethodV4::Normal
         }
@@ -12819,6 +12919,9 @@ fn begin_cast_ex(
                 .expect("a Plotted cast was derived from an exact Plot marker"),
         },
         CastMethodV4::Madness => SpellCastRouteV4::Madness,
+        CastMethodV4::Foretold => SpellCastRouteV4::Foretold {
+            foretold_turn: foretold_turn.expect("a foretold cast was derived from a foretell record"),
+        },
         CastMethodV4::Normal if origin_zone == Zone::Hand => SpellCastRouteV4::Hand,
         CastMethodV4::Normal if origin_zone == Zone::Command => SpellCastRouteV4::CommandZone,
         CastMethodV4::Normal if origin_zone == Zone::Exile => {
@@ -13030,6 +13133,16 @@ fn finalize_owned_cast(
 
     match cast_method {
         CastMethodV4::Plotted => {}
+        CastMethodV4::Foretold => {
+            let cost = def
+                .foretell_cost
+                .expect("validated foretold cast has a definition-owned cost");
+            let Some(plan) = mana::can_pay(&cost, 0, pending.controller, state) else {
+                abort_cast(state, pending, cast_method);
+                return Ok(());
+            };
+            pay_plan(state, pending.controller, &plan);
+        }
         CastMethodV4::Madness => {
             let cost = def
                 .madness_cost
@@ -13362,6 +13475,7 @@ fn abort_cast(state: &mut GameState, pending: PendingCast, cast_method: CastMeth
     );
     let owner = state.objects.get(pending.spell).owner;
     let plotted_turn = state.objects.get(pending.spell).plotted_turn;
+    let foretold_route = state.objects.get(pending.spell).v4.spell_cast_origin.map(|o| o.route);
     let to_zone = if cast_method == CastMethodV4::Madness {
         Zone::Graveyard
     } else {
@@ -13397,6 +13511,19 @@ fn abort_cast(state: &mut GameState, pending: PendingCast, cast_method: CastMeth
                 .reveal_hand_card(observer, owner, pending.spell)
                 .expect("an aborted public stack spell just returned to hand");
         }
+    }
+    // A foretold card goes back face down, still foretold.
+    if let (Some(SpellCastRouteV4::Foretold { foretold_turn }), Zone::Exile) = (foretold_route, to_zone) {
+        let card = crate::state::ObjectLinkV4 {
+            object: pending.spell,
+            zone_change_count: state.objects.get(pending.spell).zone_change_count,
+        };
+        state.face_down.push(crate::state::FaceDownV1 {
+            card,
+            owner_knows: true,
+            exiled_with: None,
+            foretold_turn: Some(foretold_turn),
+        });
     }
     collect_and_queue_triggers(state);
     reset_priority(state);
@@ -14757,7 +14884,7 @@ mod tests {
             CastMethodV4::Normal | CastMethodV4::Alternative => {
                 (Zone::Hand, SpellCastRouteV4::Hand, None)
             }
-            CastMethodV4::Bestow | CastMethodV4::Omen => {
+            CastMethodV4::Bestow | CastMethodV4::Omen | CastMethodV4::Foretold => {
                 panic!("test helper cannot fabricate an unsupported cast method")
             }
         };

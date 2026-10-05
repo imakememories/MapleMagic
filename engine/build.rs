@@ -2732,6 +2732,7 @@ enum AbilityCostRecipe {
     Tap,
     DiscardCards(u8),
     DiscardSelf,
+    DiscardHand,
     SacrificeSelf,
     ReturnControlledLandWithSubtype(&'static str),
     ExileSelf,
@@ -2791,6 +2792,7 @@ enum AbilityEffectRecipe {
     SearchLibraryToBattlefieldTapped {
         filter: LibrarySearchFilterRecipe,
     },
+    ReturnExiledWithToHand,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3410,6 +3412,19 @@ fn escape_for(name: &str) -> String {
 /// then resolve the reusable typed library search.
 fn activated_ability_recipes_for(name: &str) -> &'static [ActivatedAbilityRecipe] {
     match name {
+        "Connecting the Dots" => &[ActivatedAbilityRecipe {
+            cost: &[
+                AbilityCostRecipe::ManaCost("{1}{R}"),
+                AbilityCostRecipe::DiscardHand,
+                AbilityCostRecipe::SacrificeSelf,
+            ],
+            effect: AbilityEffectRecipe::ReturnExiledWithToHand,
+            activation_zone: "Battlefield",
+            sorcery_speed_only: false,
+            target_spec: "None",
+            activation_target_filter: "TargetSpecOnly",
+            max_activations_per_turn: None,
+        }],
         "Faerie Macabre" => &[ActivatedAbilityRecipe {
             cost: &[AbilityCostRecipe::DiscardSelf],
             effect: AbilityEffectRecipe::MoveAllTargetsToExile,
@@ -3915,6 +3930,7 @@ fn ability_cost_src(cost: AbilityCostRecipe) -> String {
             format!("CostComponent::DiscardCards({count})")
         }
         AbilityCostRecipe::DiscardSelf => "CostComponent::DiscardSelf".to_string(),
+        AbilityCostRecipe::DiscardHand => "CostComponent::DiscardHand".to_string(),
         AbilityCostRecipe::SacrificeSelf => "CostComponent::SacrificeSelf".to_string(),
         AbilityCostRecipe::ReturnControlledLandWithSubtype(subtype) => format!(
             "CostComponent::ReturnControlledPermanentToOwnersHand(PermanentFilterDef::LandWithSubtype(Subtype::{subtype}))"
@@ -3952,6 +3968,7 @@ fn ability_cost_token(cost: AbilityCostRecipe) -> String {
         AbilityCostRecipe::Tap => "tap".to_string(),
         AbilityCostRecipe::DiscardCards(count) => format!("discard_cards:{count}"),
         AbilityCostRecipe::DiscardSelf => "discard_self".to_string(),
+        AbilityCostRecipe::DiscardHand => "discard_hand".to_string(),
         AbilityCostRecipe::SacrificeSelf => "sacrifice_self".to_string(),
         AbilityCostRecipe::ReturnControlledLandWithSubtype(subtype) => {
             format!("return_controlled_land_with_subtype:{subtype}")
@@ -3995,6 +4012,7 @@ fn ability_effect_token(effect: AbilityEffectRecipe) -> String {
         AbilityEffectRecipe::DamageTarget(amount) => format!("damage_target:{amount}"),
         AbilityEffectRecipe::MoveAllTargetsToHand => "move_all_targets_to_hand".to_string(),
         AbilityEffectRecipe::ExploreTarget => "explore_target".to_string(),
+        AbilityEffectRecipe::ReturnExiledWithToHand => "return_exiled_with_to_hand".to_string(),
         AbilityEffectRecipe::DealDamageAnyTarget(amount) => {
             format!("deal_damage_any_target:{amount}")
         }
@@ -4115,6 +4133,9 @@ fn ability_effect_fn_name(effect: AbilityEffectRecipe) -> String {
             "ability_effect_move_all_targets_to_hand".to_string()
         }
         AbilityEffectRecipe::ExploreTarget => "ability_effect_explore_target".to_string(),
+        AbilityEffectRecipe::ReturnExiledWithToHand => {
+            "ability_effect_return_exiled_with_to_hand".to_string()
+        }
         AbilityEffectRecipe::DealDamageAnyTarget(amount) => {
             format!("ability_effect_deal_damage_any_target_{amount}")
         }
@@ -4279,8 +4300,20 @@ fn madness_cost_for(name: &str) -> String {
 /// Elemental Blast/Pyroblast/Hydroblast family.
 /// Spell programs written by hand in `src/commander_cards.rs`: the spell's
 /// target specification and its program.
+/// `Some` Foretell cost source text (`CardDef::foretell_cost`).
+fn foretell_cost_for(name: &str) -> String {
+    match name {
+        "Delayed Blast Fireball" => cost_src("{4}{R}{R}"),
+        _ => "None".to_string(),
+    }
+}
+
 fn hand_written_spell(name: &str) -> Option<(&'static str, &'static str)> {
     Some(match name {
+        "Delayed Blast Fireball" => (
+            "TargetSpec::None",
+            "crate::commander_cards::delayed_blast_fireball",
+        ),
         "Mass Mutiny" => (
             "TargetSpec::OpponentControlledCreature",
             "crate::commander_cards::threaten_target",
@@ -4816,6 +4849,9 @@ fn codegen(cards: &[CardJson]) -> String {
                     "    EffectOp::MoveAllTargets {{ to_zone: Zone::Hand }}"
                 )
                 .unwrap();
+            }
+            AbilityEffectRecipe::ReturnExiledWithToHand => {
+                writeln!(out, "    EffectOp::ReturnExiledWithToHand").unwrap();
             }
             AbilityEffectRecipe::ExploreTarget => {
                 writeln!(
@@ -6374,6 +6410,7 @@ fn codegen(cards: &[CardJson]) -> String {
         writeln!(out, "        madness_cost: {},", madness_cost_for(&c.name)).unwrap();
         writeln!(out, "        mode2: {},", mode2_for(&c.name)).unwrap();
         writeln!(out, "        mode3: {},", mode3_for(&c.name)).unwrap();
+        writeln!(out, "        foretell_cost: {},", foretell_cost_for(&c.name)).unwrap();
         writeln!(out, "        is_token: {},", c.is_token).unwrap();
         writeln!(out, "        escape: {},", escape_for(&c.name)).unwrap();
         let mana_ability_choices_src = mana_ability_colors
@@ -6692,6 +6729,11 @@ fn codegen(cards: &[CardJson]) -> String {
         canon.push_str(&mode2_for(&c.name));
         canon.push('|');
         canon.push_str(&mode3_for(&c.name));
+        let foretell = foretell_cost_for(&c.name);
+        if foretell != "None" {
+            canon.push_str("|foretell:");
+            canon.push_str(&foretell);
+        }
         canon.push('|');
         canon.push_str("minimum_blockers=");
         canon.push_str(&minimum_blockers_for(&c.name).to_string());

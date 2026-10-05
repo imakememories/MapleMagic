@@ -62,7 +62,7 @@ impl History {
             self.close_turns(st);
         }
         let feat = g.choices()[i].feat;
-        if !matches!(feat.kind, Kind::Cast | Kind::PlayLand | Kind::Activate | Kind::Plot | Kind::Attack | Kind::Block) {
+        if !matches!(feat.kind, Kind::Cast | Kind::PlayLand | Kind::Activate | Kind::Plot | Kind::Foretell | Kind::Attack | Kind::Block) {
             return;
         }
         let actor = g.to_act();
@@ -71,7 +71,8 @@ impl History {
             Kind::Cast => self.spells[actor.index()] += 1,
             _ => {}
         }
-        let hidden_source = feat.kind == Kind::Activate && feat.tgt <= 1;
+        // Activations from hand and foretold cards don't show the card.
+        let hidden_source = (feat.kind == Kind::Activate && feat.tgt <= 1) || feat.kind == Kind::Foretell;
         let card = if feat.src == u16::MAX || hidden_source { 0 } else { feat.src + 1 };
         let stack = st.stack.last().and_then(|s| st.objects.try_get(s.source)).map_or(0, |o| o.card_def + 1);
         let (untapped, hand) = snapshot(st);

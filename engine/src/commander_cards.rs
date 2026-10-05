@@ -3,6 +3,13 @@
 
 use crate::effect::{EffectOp, ObjectRef, ThreatenFilter};
 
+pub fn delayed_blast_fireball() -> Option<EffectOp> {
+    Some(EffectOp::DamageOpponentsAndTheirCreatures {
+        amount: 2,
+        exile_amount: 5,
+    })
+}
+
 pub fn threaten_target() -> Option<EffectOp> {
     Some(EffectOp::Threaten {
         object: ObjectRef::Target(0),

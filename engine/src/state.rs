@@ -28,6 +28,19 @@ pub struct CommanderStateV1 {
     pub damage: [[i32; 2]; 2],
 }
 
+/// A card exiled face down (406.3), hidden from both players unless
+/// `owner_knows`. Bound to one exile incarnation: once the card leaves exile
+/// the entry is stale and ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FaceDownV1 {
+    pub card: ObjectLinkV4,
+    pub owner_knows: bool,
+    /// The permanent whose ability exiled it ("cards exiled with ~").
+    pub exiled_with: Option<ObjectLinkV4>,
+    /// The turn it was foretold (702.143), if it was.
+    pub foretold_turn: Option<u32>,
+}
+
 fn i16_is_zero(value: &i16) -> bool {
     *value == 0
 }
@@ -463,6 +476,8 @@ pub enum CastMethodV4 {
     Escape,
     Bestow,
     Omen,
+    /// Cast from exile for its foretell cost (702.143).
+    Foretold,
 }
 
 /// Independently frozen route by which a physical spell's immediately
@@ -484,6 +499,11 @@ pub enum SpellCastRouteV4 {
     GraveyardEscape,
     /// A commander cast from the command zone (903.8).
     CommandZone,
+    /// A foretold card cast from exile; `foretold_turn` is a
+    /// `face_down::turn_index`.
+    Foretold {
+        foretold_turn: u32,
+    },
 }
 
 /// Incarnation-local cast provenance stored on the physical source object
@@ -1210,6 +1230,10 @@ pub struct GameState {
     randomness: GameRandomnessState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commander: Option<CommanderStateV1>,
+    /// Face-down exiled cards; see [`FaceDownV1`]. Empty in most games, and
+    /// then left out of serialization and hashing like `commander`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub face_down: Vec<FaceDownV1>,
     /// Priority/stack/turn-structure bookkeeping and the propose-commit
     /// event log, all owned by the `engine`/`event`/`trigger` modules. See
     /// `engine::EngineState`.
@@ -1247,6 +1271,9 @@ impl Hash for GameState {
         }
         if let Some(commander) = &self.commander {
             commander.hash(state);
+        }
+        if !self.face_down.is_empty() {
+            self.face_down.hash(state);
         }
     }
 }
@@ -1380,6 +1407,7 @@ impl GameState {
             }),
             randomness: GameRandomnessState::Legacy(SplitMix64::seed(seed)),
             commander: None,
+            face_down: Vec::new(),
             engine: crate::engine::EngineState::default(),
         }
     }
@@ -1454,6 +1482,23 @@ impl GameState {
 
     pub fn known_hand_cards(&self, observer: PlayerId, owner: PlayerId) -> &[HandKnowledgeEntry] {
         &self.hand_knowledge[observer.index()][owner.index()]
+    }
+
+    /// The record of `id` if it lies face down in exile now.
+    pub fn face_down(&self, id: ObjectId) -> Option<&FaceDownV1> {
+        if self.face_down.is_empty() {
+            return None;
+        }
+        let o = self.objects.get(id);
+        if o.zone != Zone::Exile {
+            return None;
+        }
+        self.face_down.iter().find(|f| f.card.object == id && f.card.zone_change_count == o.zone_change_count)
+    }
+
+    /// Whether `viewer` can't tell which card the face-down `id` is.
+    pub fn face_down_hidden_from(&self, id: ObjectId, viewer: PlayerId) -> bool {
+        self.face_down(id).is_some_and(|f| !f.owner_knows || self.objects.get(id).owner != viewer)
     }
 
     /// Records a revealed hand identity for exactly one observer. The entry

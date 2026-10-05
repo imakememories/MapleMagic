@@ -159,7 +159,18 @@ pub fn observe_with(g: &Game, viewer: PlayerId, perfect: bool) -> Vec<[u16; TOKE
     }
     for &id in &st.exile {
         let o = st.objects.get(id);
-        out.push(object_token(st, id, me, Zone::Exile, o.owner == me));
+        let mut t = if !perfect && st.face_down_hidden_from(id, me) {
+            let mut t = [0u16; TOKEN_FIELDS];
+            t[1] = place_code(Zone::Exile, o.owner == me);
+            t
+        } else {
+            object_token(st, id, me, Zone::Exile, o.owner == me)
+        };
+        // Face down, foretold.
+        if let Some(f) = st.face_down(id) {
+            t[2] = 1 | (f.foretold_turn.is_some() as u16) << 1;
+        }
+        out.push(t);
     }
     // Graveyards last, newest first, so truncation drops the oldest.
     let mut yards: Vec<[u16; TOKEN_FIELDS]> = Vec::new();
@@ -219,6 +230,11 @@ mod tests {
             let mut g = if seed < 30 { Game::new("Faeries", "Spy", seed).unwrap() } else { Game::new_commander(&ca, &cb, seed) };
             while !g.is_over() {
                 let me = g.to_act();
+                // Now and then a library's top card goes face down into exile.
+                if rng.next_u64() % 6 == 0 {
+                    let owner = if rng.next_u64() % 2 == 0 { me } else { me.opponent() };
+                    mtg_kernel::face_down::exile_top(&mut g.state, owner, rng.next_u64() % 2 == 0, None);
+                }
                 let obs = observe(&g, me);
                 for t in &obs {
                     for (i, &v) in t.iter().enumerate() {
@@ -238,6 +254,11 @@ mod tests {
                 assert_eq!(p.len(), obs.len());
                 let opp_hand = |o: &[[u16; TOKEN_FIELDS]]| o.iter().filter(|t| t[1] == place_code(Zone::Hand, false) && t[0] == 0).count();
                 assert_eq!(opp_hand(&p), 0);
+                let hidden_exile = |o: &[[u16; TOKEN_FIELDS]]| {
+                    o.iter().filter(|t| t[0] == 0 && (t[1] == place_code(Zone::Exile, true) || t[1] == place_code(Zone::Exile, false))).count()
+                };
+                assert_eq!(hidden_exile(&p), 0);
+                assert_eq!(hidden_exile(&obs), g.state.exile.iter().filter(|&&id| g.state.face_down_hidden_from(id, me)).count());
                 let n = g.choices().len();
                 g.apply((rng.next_u64() % n as u64) as usize);
             }
