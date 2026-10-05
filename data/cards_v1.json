@@ -5842,7 +5842,7 @@
     },
     {
       "name": "Call for Aid",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{4}{R}",
       "mana_value": 5,
       "colors": [
@@ -8345,7 +8345,7 @@
     },
     {
       "name": "Hellkite Charger",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{4}{R}{R}",
       "mana_value": 6,
       "colors": [
@@ -10595,7 +10595,7 @@
     },
     {
       "name": "Pyreswipe Hawk",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{3}{R}{R}",
       "mana_value": 5,
       "colors": [

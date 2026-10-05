@@ -1159,3 +1159,73 @@ fn depthshaker_titan_animates_artifacts_that_attack_with_melee_then_are_sacrific
     assert_eq!(state.objects.get(treasure).zone, Zone::Battlefield);
     assert_eq!(state.objects.get(titan).zone, Zone::Battlefield);
 }
+
+#[test]
+fn call_for_aid_takes_their_creatures_but_you_cant_attack_them_or_sacrifice_those() {
+    let mut state = game();
+    lands(&mut state, P0, 5);
+    let guttersnipe = put(&mut state, P1, "Guttersnipe");
+    let spitter = put(&mut state, P1, "Fume Spitter");
+    cast(&mut state, "Call for Aid", Some(Target::Player(P1)), 0);
+    assert_eq!((state.objects.get(guttersnipe).controller, state.objects.get(spitter).controller), (P0, P0));
+    assert!(!offered_ability(&mut state, spitter, 0), "you can't sacrifice those creatures this turn");
+    let d = advance(&mut state, |s, d| matches!(d, Decision::DeclareAttackers { .. }) || s.step == Step::Main2);
+    if let Decision::DeclareAttackers { eligible, .. } = d {
+        assert!(eligible.is_empty(), "you can't attack that player this turn");
+    }
+}
+
+#[test]
+fn hellkite_charger_pays_for_another_combat_with_its_attackers_untapped() {
+    let mut state = game();
+    lands(&mut state, P0, 7);
+    let hellkite = put(&mut state, P0, "Hellkite Charger");
+    let mut combats = 0;
+    let mut paid = false;
+    for _ in 0..200 {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::DeclareAttackers { eligible, .. } if state.active_player == P0 => {
+                combats += 1;
+                assert!(eligible.contains(&hellkite), "combat {combats}");
+                Action::DeclareAttackers(vec![hellkite])
+            }
+            Decision::ChooseEffectBoolean { .. } => {
+                let pay = !paid;
+                paid = true;
+                Action::ChooseEffectBoolean(pay)
+            }
+            Decision::CastSpellOrPass { .. } if state.step == Step::Main2 => break,
+            Decision::CastSpellOrPass { .. } => Action::Pass,
+            Decision::DeclareBlockers { .. } => Action::DeclareBlockers(vec![]),
+            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(combats, 2);
+    assert_eq!(state.players[1].life, 30, "5 in each combat");
+}
+
+#[test]
+fn pyreswipe_hawk_grows_by_artifact_mana_value_and_takes_an_artifact_on_expend_six() {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    let hawk = put(&mut state, P0, "Pyreswipe Hawk");
+    put(&mut state, P0, "Sol Ring");
+    put(&mut state, P0, "Liquimetal Torque");
+    let base = effective_power(&state, hawk);
+    attack_with(&mut state, vec![hawk]);
+    assert_eq!(effective_power(&state, hawk), base + 2, "Liquimetal Torque has mana value 2");
+
+    let mut state = game();
+    let hawk = put(&mut state, P0, "Pyreswipe Hawk");
+    let theirs = put(&mut state, P1, "Sol Ring");
+    lands(&mut state, P0, 6);
+    cast(&mut state, "Guttersnipe", None, 0);
+    assert_eq!(state.objects.get(theirs).controller, P1, "three mana spent");
+    cast(&mut state, "Guttersnipe", Some(Target::Object(theirs)), 0);
+    assert_eq!(state.objects.get(theirs).controller, P0, "the sixth mana");
+    propose_and_commit(&mut state, ProposedEvent::zone_change(hawk, Zone::Graveyard));
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert_eq!(state.objects.get(theirs).controller, P1, "only as long as you control the Hawk");
+}

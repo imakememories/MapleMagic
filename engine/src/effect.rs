@@ -883,6 +883,17 @@ pub enum EffectOp {
     DrawPerOpponentTappedCreature,
     /// Put a charge counter on the source if it is on the battlefield.
     AddChargeCounterToSource,
+    /// Call for Aid: take every creature target 0 (a player) controls until
+    /// end of turn, untapped and hasty; you can't attack that player this
+    /// turn or sacrifice those creatures this turn.
+    CallForAid,
+    /// Untap every attacking creature (Hellkite Charger).
+    UntapAttackingCreatures,
+    /// There is an additional combat phase after this one (Hellkite Charger).
+    AddCombatPhase,
+    /// Gain control of target 0 for as long as you control the source, if
+    /// you still do (Pyreswipe Hawk).
+    GainControlWhileControllingSource,
     /// Each still-legal target becomes a 3/3 artifact creature (no
     /// duration); they're sacrificed at the beginning of the next end step
     /// (Depthshaker Titan).
@@ -8771,7 +8782,9 @@ fn creature_sacrifice_bindings(
             .get(object.card_def as usize)
             .ok_or_else(|| "creature-sacrifice card definition is missing".to_string())?;
         let _ = def;
-        if crate::engine::object_has_type(state, object_id, CardType::Creature) {
+        if crate::engine::object_has_type(state, object_id, CardType::Creature)
+            && crate::engine::can_be_sacrificed(state, object_id)
+        {
             bindings.push(EffectObjectBinding {
                 object: object_id,
                 expected_zone: Zone::Battlefield,
@@ -10379,6 +10392,58 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 event::propose_and_commit(state, event::ProposedEvent::draw(ctx.controller));
             }
         }
+        EffectOp::CallForAid => {
+            let player = ctx.resolve_player(PlayerRef::Target(0), state);
+            let creatures: Vec<ObjectId> = state.players[player.index()]
+                .battlefield
+                .iter()
+                .copied()
+                .filter(|&id| crate::engine::object_has_type(state, id, CardType::Creature))
+                .collect();
+            for id in creatures {
+                crate::engine::threaten(state, id, ctx.controller);
+                let generation = state.objects.get(id).zone_change_count;
+                state.engine.until_end_of_turn.push(crate::engine::UntilEndOfTurnEffect::CantBeSacrificed {
+                    object_id: id,
+                    object_zone_change_count: generation,
+                });
+            }
+            state.engine.until_end_of_turn.push(crate::engine::UntilEndOfTurnEffect::CantAttackPlayer {
+                attacker: ctx.controller,
+                defender: player,
+            });
+        }
+        EffectOp::UntapAttackingCreatures => {
+            for id in state.engine.combat.attackers.clone() {
+                if state.objects.get(id).zone == Zone::Battlefield {
+                    state.objects.get_mut(id).tapped = false;
+                }
+            }
+        }
+        EffectOp::AddCombatPhase => {
+            state.extra_combats = state.extra_combats.saturating_add(1);
+        }
+        EffectOp::GainControlWhileControllingSource => {
+            let source = state.objects.get(ctx.source);
+            let source_ok = source.zone == Zone::Battlefield
+                && source.controller == ctx.controller
+                && ctx.ability_source_contract.is_none_or(|c| c.zone_change_count == source.zone_change_count);
+            if source_ok && !ctx.targets.is_empty() && ctx.target_incarnation_matches(0, state) {
+                let id = ctx.resolve_object(ObjectRef::Target(0));
+                let target = state.objects.get(id);
+                let previous_controller = target.controller;
+                let link = crate::state::ObjectLinkV4 { object: id, zone_change_count: target.zone_change_count };
+                let source_link = crate::state::ObjectLinkV4 { object: ctx.source, zone_change_count: source.zone_change_count };
+                crate::engine::set_controller(state, id, ctx.controller);
+                let link = crate::state::ObjectLinkV4 { zone_change_count: state.objects.get(id).zone_change_count, ..link };
+                state.control_while.push(crate::state::ControlWhileV1 {
+                    object: link,
+                    source: source_link,
+                    controller: ctx.controller,
+                    previous_controller,
+                });
+            }
+        }
         EffectOp::AnimateTargetArtifacts => {
             let mut animated = Vec::new();
             for index in 0..ctx.targets.len() {
@@ -10412,7 +10477,10 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 .iter()
                 .filter(|l| {
                     let o = state.objects.get(l.object);
-                    o.zone == Zone::Battlefield && o.zone_change_count == l.zone_change_count && o.controller == ctx.controller
+                    o.zone == Zone::Battlefield
+                        && o.zone_change_count == l.zone_change_count
+                        && o.controller == ctx.controller
+                        && crate::engine::can_be_sacrificed(state, l.object)
                 })
                 .map(|l| l.object)
                 .collect();

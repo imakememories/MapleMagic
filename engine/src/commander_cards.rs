@@ -16,6 +16,10 @@ pub fn vision_of_love() -> Option<EffectOp> {
     })
 }
 
+pub fn call_for_aid() -> Option<EffectOp> {
+    Some(EffectOp::CallForAid)
+}
+
 pub fn shivan_devastator() -> Option<EffectOp> {
     Some(EffectOp::PutSourceOntoBattlefieldWithXPlusOneCounters)
 }

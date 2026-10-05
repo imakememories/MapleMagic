@@ -564,6 +564,8 @@ pub enum TargetSpec {
     /// Any number (up to 16) of noncreature artifacts the controller
     /// controls (Depthshaker Titan).
     AnyNumberOfNoncreatureArtifactsYouControl,
+    /// Zero or one artifact, any controller (Pyreswipe Hawk).
+    UpToOneArtifact,
 }
 
 impl TargetSpec {
@@ -612,6 +614,7 @@ impl TargetSpec {
             TargetSpec::AnyTargetOtherThanSource => 37,
             TargetSpec::PlayerThenUpToOneCreature => 38,
             TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl => 39,
+            TargetSpec::UpToOneArtifact => 40,
         }
     }
 }
@@ -914,6 +917,9 @@ pub enum DynamicValueDef {
     /// Count the evaluating controller's battlefield permanents with the
     /// named effective subtype (Smaug: "the number of Treasures you control").
     ControllerPermanentsWithSubtype(Subtype),
+    /// The greatest mana value among artifacts the controller controls
+    /// (Pyreswipe Hawk).
+    GreatestControlledArtifactManaValue,
 }
 
 /// Reusable definition for a single printed mana ability whose cost, amount,
@@ -1570,6 +1576,7 @@ mod tests {
             (TargetSpec::AnyTargetOtherThanSource, 37),
             (TargetSpec::PlayerThenUpToOneCreature, 38),
             (TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl, 39),
+            (TargetSpec::UpToOneArtifact, 40),
         ];
         for (target_spec, ordinal) in stable_ordinals {
             assert_eq!(target_spec.stable_id(), ordinal);
@@ -1589,7 +1596,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0xa854_e7cd_451a_cec4);
+        assert_eq!(KERNEL_CARDDB_HASH, 0xf5ff_23cd_ee6c_41f6);
     }
 
     #[test]

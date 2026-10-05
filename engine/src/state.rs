@@ -53,6 +53,16 @@ pub struct DelayedSacrificeV1 {
     pub objects: Vec<ObjectLinkV4>,
 }
 
+/// Control of `object` while `controller` controls `source` (Pyreswipe
+/// Hawk); it reverts to `previous_controller` when that stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ControlWhileV1 {
+    pub object: ObjectLinkV4,
+    pub source: ObjectLinkV4,
+    pub controller: PlayerId,
+    pub previous_controller: PlayerId,
+}
+
 /// A card exiled face down (406.3), hidden from every player not in
 /// `known_to`. Bound to one exile incarnation: once the card leaves exile
 /// the entry is stale and ignored.
@@ -74,6 +84,10 @@ fn no_life_lost(value: &[u32; 2]) -> bool {
 
 fn no_tokens_created(value: &[u16; 2]) -> bool {
     *value == [0, 0]
+}
+
+fn u8_is_zero(value: &u8) -> bool {
+    *value == 0
 }
 
 fn no_celebration(value: &[u8; 2]) -> bool {
@@ -848,6 +862,7 @@ pub fn stack_target_contract_is_structurally_valid(
                 | TargetSpec::ControlledCreature
                 | TargetSpec::OpponentControlledCreature
                 | TargetSpec::UpToOneOpponentControlledCreature
+                | TargetSpec::UpToOneArtifact
                 | TargetSpec::UpToOneTappedCreature
                 | TargetSpec::NoncreatureArtifactPermanent
                 | TargetSpec::Land
@@ -1327,6 +1342,15 @@ pub struct GameState {
     /// See [`DelayedSacrificeV1`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delayed_sacrifices: Vec<DelayedSacrificeV1>,
+    /// Mana each player has spent casting spells this turn (expend, 702.170).
+    #[serde(default, skip_serializing_if = "no_tokens_created")]
+    pub spell_mana_this_turn: [u16; 2],
+    /// Additional combat phases still to come this turn (Hellkite Charger).
+    #[serde(default, skip_serializing_if = "u8_is_zero")]
+    pub extra_combats: u8,
+    /// See [`ControlWhileV1`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub control_while: Vec<ControlWhileV1>,
     /// Priority/stack/turn-structure bookkeeping and the propose-commit
     /// event log, all owned by the `engine`/`event`/`trigger` modules. See
     /// `engine::EngineState`.
@@ -1393,6 +1417,15 @@ impl Hash for GameState {
         }
         if !self.delayed_sacrifices.is_empty() {
             self.delayed_sacrifices.hash(state);
+        }
+        if !no_tokens_created(&self.spell_mana_this_turn) {
+            self.spell_mana_this_turn.hash(state);
+        }
+        if self.extra_combats != 0 {
+            self.extra_combats.hash(state);
+        }
+        if !self.control_while.is_empty() {
+            self.control_while.hash(state);
         }
         if !self.last_known_charge.is_empty() {
             self.last_known_charge.iter().map(|e| e.1).collect::<Vec<_>>().hash(state);
@@ -1553,6 +1586,9 @@ impl GameState {
             creature_type_overrides: Vec::new(),
             type_additions: Vec::new(),
             delayed_sacrifices: Vec::new(),
+            spell_mana_this_turn: [0; 2],
+            extra_combats: 0,
+            control_while: Vec::new(),
             engine: crate::engine::EngineState::default(),
         }
     }

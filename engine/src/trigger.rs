@@ -103,6 +103,8 @@ pub enum TriggerCondition {
     /// An artifact creature you control attacks (melee granted by
     /// Depthshaker Titan, one instance per Titan).
     ControlledArtifactCreatureAttacks,
+    /// "Whenever you expend N": your spell mana this turn reaches N.
+    YouExpend(u16),
     /// "Whenever this creature is dealt damage": once per batch, for the
     /// batch's total (damage from several sources at once triggers once).
     IsDealtDamage,
@@ -507,6 +509,34 @@ fn animate_artifacts_effect() -> EffectOp {
 const DEPTHSHAKER_TITAN_TRIGGERS: [TriggeredAbilityDef; 2] = [
     trigger(TriggerCondition::Etb, animate_artifacts_effect),
     trigger(TriggerCondition::ControlledArtifactCreatureAttacks, bound_at_trigger_effect),
+];
+
+fn hellkite_charger_attack_effect() -> EffectOp {
+    EffectOp::MayPayManaThen {
+        player: PlayerRef::Controller,
+        colored: vec![crate::mana::ManaColor::R, crate::mana::ManaColor::R],
+        generic: 5,
+        then: Box::new(EffectOp::Sequence(vec![EffectOp::UntapAttackingCreatures, EffectOp::AddCombatPhase])),
+    }
+}
+
+fn pyreswipe_hawk_attack_effect() -> EffectOp {
+    EffectOp::PumpTargetUntilEndOfTurnDynamic {
+        target: TargetRef::ThisSource,
+        power: DynamicValueDef::GreatestControlledArtifactManaValue,
+        toughness: DynamicValueDef::Fixed(0),
+    }
+}
+
+fn gain_control_while_effect() -> EffectOp {
+    EffectOp::GainControlWhileControllingSource
+}
+
+const HELLKITE_CHARGER_TRIGGERS: [TriggeredAbilityDef; 1] =
+    [trigger(TriggerCondition::Attacks, hellkite_charger_attack_effect)];
+const PYRESWIPE_HAWK_TRIGGERS: [TriggeredAbilityDef; 2] = [
+    trigger(TriggerCondition::Attacks, pyreswipe_hawk_attack_effect),
+    trigger(TriggerCondition::YouExpend(6), gain_control_while_effect),
 ];
 
 const GORNOG_TRIGGERS: [TriggeredAbilityDef; 1] =
@@ -1278,6 +1308,8 @@ pub fn triggers_for(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Dragonspark Reactor" => &DRAGONSPARK_REACTOR_TRIGGERS,
         "Gornog, the Red Reaper" => &GORNOG_TRIGGERS,
         "Depthshaker Titan" => &DEPTHSHAKER_TITAN_TRIGGERS,
+        "Hellkite Charger" => &HELLKITE_CHARGER_TRIGGERS,
+        "Pyreswipe Hawk" => &PYRESWIPE_HAWK_TRIGGERS,
         "Urabrask, Heretic Praetor" => &URABRASK_TRIGGERS,
         "Cavern-Hoard Dragon" => &CAVERN_HOARD_DRAGON_TRIGGERS,
         "Screaming Nemesis" => &SCREAMING_NEMESIS_TRIGGERS,
@@ -1396,6 +1428,12 @@ pub fn target_spec_for_trigger(card_def: u16, effect: &EffectOp) -> Option<Targe
             TargetSpec::TargetOpponent
         } else if card.name == "Journey to Nowhere" && *effect == journey_to_nowhere_etb_effect() {
             TargetSpec::CreatureOtherThanSource
+        } else if card.name == "Pyreswipe Hawk" {
+            if *effect == gain_control_while_effect() {
+                TargetSpec::UpToOneArtifact
+            } else {
+                TargetSpec::None
+            }
         } else if card.name == "Depthshaker Titan" {
             if *effect == animate_artifacts_effect() {
                 TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl
@@ -1503,6 +1541,33 @@ fn creature_dies_to_state_based_actions(
 
 /// Runs state-based actions to a fixed point: repeat the full SBA sweep
 /// until one pass makes no change (704.3).
+/// Control "for as long as you control" a source (Pyreswipe Hawk) ends when
+/// that stops being true; returns whether anything changed.
+fn release_ended_control(state: &mut GameState) -> bool {
+    if state.control_while.is_empty() {
+        return false;
+    }
+    let mut changed = false;
+    for entry in std::mem::take(&mut state.control_while) {
+        let object = state.objects.get(entry.object.object);
+        if object.zone != Zone::Battlefield || object.zone_change_count != entry.object.zone_change_count {
+            changed = true;
+            continue;
+        }
+        let source = state.objects.get(entry.source.object);
+        if source.zone == Zone::Battlefield
+            && source.zone_change_count == entry.source.zone_change_count
+            && source.controller == entry.controller
+        {
+            state.control_while.push(entry);
+        } else {
+            crate::engine::set_controller(state, entry.object.object, entry.previous_controller);
+            changed = true;
+        }
+    }
+    changed
+}
+
 pub fn sba_fixed_point(state: &mut GameState) {
     sba_fixed_point_with_protected_triggers(state, &[]);
 }
@@ -1676,6 +1741,9 @@ fn sba_fixed_point_with_protected_triggers(
             }
         }
         if crate::commander::state_based_actions(state) {
+            changed = true;
+        }
+        if release_ended_control(state) {
             changed = true;
         }
 
@@ -2372,6 +2440,9 @@ fn trigger_matches(
                 && crate::engine::object_has_type(state, *object, crate::card_def::CardType::Artifact)
         }
         (TriggerCondition::BeginningOfOpponentsUpkeep, CommittedEvent::UpkeepBegan { player }) => *player != controller,
+        (TriggerCondition::YouExpend(n), CommittedEvent::Expended { player, before, after }) => {
+            *player == controller && *before < n && *after >= n
+        }
         (
             TriggerCondition::ControlledArtifactCreatureAttacks,
             CommittedEvent::DeclaredAttacker {

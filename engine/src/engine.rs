@@ -384,6 +384,16 @@ pub enum UntilEndOfTurnEffect {
         timestamp: u64,
         duration: EffectDuration,
     },
+    /// `attacker` can't attack `defender` this turn (Call for Aid).
+    CantAttackPlayer {
+        attacker: PlayerId,
+        defender: PlayerId,
+    },
+    /// One battlefield incarnation can't be sacrificed this turn.
+    CantBeSacrificed {
+        object_id: ObjectId,
+        object_zone_change_count: u32,
+    },
     /// One battlefield incarnation can't block this turn.
     CantBlock {
         object_id: ObjectId,
@@ -428,6 +438,15 @@ fn subtypes_added_this_turn(state: &GameState, id: ObjectId) -> impl Iterator<It
             Some(subtype)
         }
         _ => None,
+    })
+}
+
+/// Whether `id` may be sacrificed: not if an effect forbids it this turn.
+pub(crate) fn can_be_sacrificed(state: &GameState, id: ObjectId) -> bool {
+    let generation = state.objects.get(id).zone_change_count;
+    !state.engine.until_end_of_turn.iter().any(|e| {
+        matches!(*e, UntilEndOfTurnEffect::CantBeSacrificed { object_id, object_zone_change_count }
+            if object_id == id && object_zone_change_count == generation)
     })
 }
 
@@ -1456,6 +1475,7 @@ fn target_count(spec: TargetSpec) -> u8 {
         | TargetSpec::TargetOpponent
         | TargetSpec::OpponentControlledCreature
         | TargetSpec::UpToOneOpponentControlledCreature
+        | TargetSpec::UpToOneArtifact
         | TargetSpec::SpellManaValueAtMostControlledSubtypes { .. }
         | TargetSpec::UpToOneTappedCreature
         | TargetSpec::NoncreatureArtifactPermanent
@@ -1481,7 +1501,8 @@ fn target_min_count(spec: TargetSpec) -> u8 {
         | TargetSpec::UpToTwoCardsInGraveyards
         | TargetSpec::UpToOneTappedCreature
         | TargetSpec::UpToOneOpponentControlledCreature
-        | TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl => 0,
+        | TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl
+        | TargetSpec::UpToOneArtifact => 0,
         TargetSpec::PlayerThenUpToOneCreature => 1,
         _ => target_count(spec),
     }
@@ -2549,6 +2570,10 @@ fn legal_targets_for_controller_from_source(
             }
             out
         }
+        TargetSpec::UpToOneArtifact => battlefield_objects(state)
+            .filter(|&id| object_has_type(state, id, CardType::Artifact))
+            .map(Target::Object)
+            .collect(),
         TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl => state.players[controller.index()]
             .battlefield
             .iter()
@@ -3168,6 +3193,15 @@ pub(crate) fn evaluate_dynamic_value(
                 && card_def::CARD_DEFS[live.card_def as usize].has_type(card_type)
         })
         .count(),
+        DynamicValueDef::GreatestControlledArtifactManaValue => {
+            return state.players[controller.index()]
+                .battlefield
+                .iter()
+                .filter(|&&id| object_has_type(state, id, CardType::Artifact))
+                .map(|&id| i32::from(card_def::CARD_DEFS[state.objects.get(id).card_def as usize].mana_value))
+                .max()
+                .unwrap_or(0)
+        }
         DynamicValueDef::ControllerPermanentsWithSubtype(subtype) => state.players
             [controller.index()]
         .battlefield
@@ -3655,7 +3689,8 @@ fn can_pay_components(
                 // kept for correctness if a future card needs it.
                 !(obj.tapped || (object_has_type(state, source, CardType::Creature) && obj.summoning_sick))
             }
-            CostComponent::SacrificeSelf | CostComponent::ExileSelf => true,
+            CostComponent::SacrificeSelf => can_be_sacrificed(state, source),
+            CostComponent::ExileSelf => true,
             CostComponent::DiscardSelf => {
                 let object = state.objects.get(source);
                 object.owner == player
@@ -4357,6 +4392,7 @@ fn sacrificeable_lands(
         .filter(|&id| {
             card_def::CARD_DEFS[state.objects.get(id).card_def as usize].is_land
                 && !already_chosen.contains(&id)
+                && can_be_sacrificed(state, id)
         })
         .collect()
 }
@@ -4391,6 +4427,7 @@ fn sacrificeable_controlled_permanents(
             object.zone == Zone::Battlefield
                 && object.controller == player
                 && permanent_matches_filter(state, id, filter)
+                && can_be_sacrificed(state, id)
         })
         .collect()
 }
@@ -5704,6 +5741,12 @@ fn can_attack(state: &GameState, id: ObjectId) -> bool {
 }
 
 fn eligible_attackers(state: &GameState) -> Vec<ObjectId> {
+    let attacker = state.active_player;
+    if state.engine.until_end_of_turn.iter().any(|e| {
+        matches!(*e, UntilEndOfTurnEffect::CantAttackPlayer { attacker: a, defender } if a == attacker && defender == attacker.opponent())
+    }) {
+        return Vec::new();
+    }
     state.players[state.active_player.index()]
         .battlefield
         .iter()
@@ -9950,6 +9993,11 @@ fn advance_step(state: &mut GameState) {
     }
 
     let mut next = STEP_ORDER[next_idx];
+    // An additional combat phase follows this one directly (Hellkite Charger).
+    if state.step == Step::EndCombat && state.extra_combats > 0 {
+        state.extra_combats -= 1;
+        next = Step::BeginCombat;
+    }
     // 508.4/509.1: `DeclareBlockers` (and everything after it this combat)
     // is skipped not just when *no attackers were ever declared*, but
     // whenever *none of them are still around to be blocked* -- confirmed
@@ -10056,6 +10104,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             state.life_lost_this_turn = [0; 2];
             state.tokens_created_this_turn = [0; 2];
             state.nonland_permanents_entered = [0; 2];
+            state.spell_mana_this_turn = [0; 2];
             state.players[0].spells_cast_this_turn = 0;
             state.players[1].spells_cast_this_turn = 0;
             for (_, object) in state.objects.iter_mut() {
@@ -10193,6 +10242,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             }
             state.last_known_charge.clear();
             state.type_additions.retain(|a| !a.until_end_of_turn);
+            state.extra_combats = 0;
             let returns: Vec<(ObjectId, u32, PlayerId)> = state
                 .engine
                 .until_end_of_turn
@@ -10581,7 +10631,10 @@ pub fn has_effective_keyword(state: &GameState, id: ObjectId, kw: Keywords) -> b
                 UntilEndOfTurnEffect::SyntheticMarker(_) => false,
                 UntilEndOfTurnEffect::DamageCannotBePrevented { .. } => false,
                 UntilEndOfTurnEffect::ControlChange { .. } => false,
-                UntilEndOfTurnEffect::CantBlock { .. } | UntilEndOfTurnEffect::AddSubtype { .. } => false,
+                UntilEndOfTurnEffect::CantBlock { .. }
+                | UntilEndOfTurnEffect::AddSubtype { .. }
+                | UntilEndOfTurnEffect::CantAttackPlayer { .. }
+                | UntilEndOfTurnEffect::CantBeSacrificed { .. } => false,
             };
             if grants {
                 return true;
@@ -13438,7 +13491,7 @@ fn finalize_owned_cast(
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             };
-            pay_plan(state, pending.controller, &plan);
+            pay_spell_plan(state, pending.controller, &plan);
         }
         CastMethodV4::Madness => {
             let cost = def
@@ -13448,7 +13501,7 @@ fn finalize_owned_cast(
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             };
-            pay_plan(state, pending.controller, &plan);
+            pay_spell_plan(state, pending.controller, &plan);
         }
         CastMethodV4::Flashback => {
             let fb = def
@@ -13465,6 +13518,7 @@ fn finalize_owned_cast(
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             }
+            record_spell_mana(state, pending.controller, components_mana(fb.cost));
         }
         CastMethodV4::Escape => {
             let escape = def
@@ -13481,6 +13535,7 @@ fn finalize_owned_cast(
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             }
+            record_spell_mana(state, pending.controller, components_mana(escape.cost));
         }
         CastMethodV4::Normal => {
             let kicked = pending.kicked == Some(true);
@@ -13503,7 +13558,7 @@ fn finalize_owned_cast(
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             };
-            pay_plan(state, pending.controller, &plan);
+            pay_spell_plan(state, pending.controller, &plan);
             was_kicked = kicked;
         }
         CastMethodV4::Alternative => {
@@ -13520,6 +13575,7 @@ fn finalize_owned_cast(
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             }
+            record_spell_mana(state, pending.controller, components_mana(alt));
         }
         CastMethodV4::Omen => {
             let omen = supported_omen(def)
@@ -13528,7 +13584,7 @@ fn finalize_owned_cast(
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             };
-            pay_plan(state, pending.controller, &plan);
+            pay_spell_plan(state, pending.controller, &plan);
         }
         CastMethodV4::Bestow => {
             let bestow = supported_bestow(def)
@@ -13537,7 +13593,7 @@ fn finalize_owned_cast(
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             };
-            pay_plan(state, pending.controller, &plan);
+            pay_spell_plan(state, pending.controller, &plan);
         }
     }
     if let Some(binding) = pending.chosen_creature_cost {
@@ -14040,6 +14096,35 @@ fn move_to_stack(state: &mut GameState, id: ObjectId, from_zone: Zone) {
     object
         .v4
         .reset_for_zone_change(object.card_def, Zone::Stack, turn);
+}
+
+/// [`pay_plan`] for a spell's cost: the mana counts toward expend.
+fn pay_spell_plan(state: &mut GameState, player: PlayerId, plan: &mana::PaymentPlan) {
+    pay_plan(state, player, plan);
+    let spent = plan.taps.len() as u16 + plan.pool_used.iter().map(|&m| u16::from(m)).sum::<u16>();
+    record_spell_mana(state, player, spent);
+}
+
+/// Mana in a spell's cost components, all of which was just paid.
+fn components_mana(components: &[CostComponent]) -> u16 {
+    components
+        .iter()
+        .map(|c| match c {
+            CostComponent::Mana(cost) => u16::from(cost.generic) + cost.pips.len() as u16,
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Adds `spent` to `player`'s spell mana this turn (expend, 702.170).
+fn record_spell_mana(state: &mut GameState, player: PlayerId, spent: u16) {
+    if spent == 0 {
+        return;
+    }
+    let before = state.spell_mana_this_turn[player.index()];
+    let after = before.saturating_add(spent);
+    state.spell_mana_this_turn[player.index()] = after;
+    event::log_expended(state, player, before, after);
 }
 
 pub(crate) fn pay_plan(state: &mut GameState, player: PlayerId, plan: &mana::PaymentPlan) {

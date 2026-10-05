@@ -458,6 +458,13 @@ pub enum CommittedEvent {
     EnteredTapped {
         object: ObjectId,
     },
+    /// `player`'s mana spent casting spells this turn went from `before` to
+    /// `after` (expend).
+    Expended {
+        player: PlayerId,
+        before: u16,
+        after: u16,
+    },
 }
 
 /// Runs the replace/prevent pass to a fixed point: repeatedly finds an
@@ -1022,6 +1029,12 @@ pub fn log_declared_attacker(state: &mut GameState, source: ObjectId) {
 /// `Tap`: entering tapped isn't becoming tapped.
 pub fn log_entered_tapped(state: &mut GameState, object: ObjectId) {
     let committed = CommittedEvent::EnteredTapped { object };
+    state.engine.event_log.push(committed.clone());
+    state.engine.event_history.push(committed);
+}
+
+pub fn log_expended(state: &mut GameState, player: PlayerId, before: u16, after: u16) {
+    let committed = CommittedEvent::Expended { player, before, after };
     state.engine.event_log.push(committed.clone());
     state.engine.event_history.push(committed);
 }
