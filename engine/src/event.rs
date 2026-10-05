@@ -655,7 +655,7 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
         ProposedEvent::ZoneChange(z) => {
             let from = state.objects.get(z.object).zone;
             let controller_before = state.objects.get(z.object).controller;
-            let to_zone = crate::commander::destination(state, z.object, z.to_zone);
+            let to_zone = z.to_zone;
             commit_zone_change(
                 state,
                 z.object,

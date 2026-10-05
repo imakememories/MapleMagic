@@ -358,6 +358,18 @@ impl Game {
             for (id, def) in slots.into_iter().zip(fixed.into_iter().chain(defs)) {
                 set_card(&mut self.state, id, def);
             }
+            // A commander in a library is a known card; only its position is hidden.
+            if !(keep_own_library && owner == observer) {
+                let c = self.state.commander.as_ref().map(|c| c.commanders[owner.index()]);
+                let at = c.and_then(|c| self.state.players[owner.index()].library.iter().position(|&id| id == c));
+                if let Some(at) = at {
+                    let unknown = unknown_library_positions(&self.state, observer, owner);
+                    if unknown.contains(&at) {
+                        let to = unknown[(rng.next_u64() % unknown.len() as u64) as usize];
+                        self.state.players[owner.index()].library.swap(at, to);
+                    }
+                }
+            }
         }
         self.state.reseed_shuffles(rng.next_u64());
         if self.outcome.is_none() && matches!(self.pending, Pending::None) {
@@ -730,6 +742,11 @@ impl Game {
                 self.actor = player;
                 yes_no(&mut out, def_of(st, source), 4, Action::ChooseEffectBoolean);
             }
+            Decision::ChooseCommanderZone { player, commander } => {
+                self.actor = player;
+                let zone = zone_code(st.objects.get(commander).zone) as u16;
+                yes_no(&mut out, def_of(st, commander), 5 + zone, Action::ChooseCommanderZone);
+            }
             Decision::Discard { player, count, choices } => {
                 self.actor = player;
                 self.pending = Pending::Discard { count, pool: choices, picked: Vec::new() };
@@ -788,7 +805,7 @@ fn decision_name(d: &Decision) -> &'static str {
     }
 }
 
-/// `owner`'s hand cards `observer` can't see.
+/// `owner`'s hand cards `observer` can't see. A commander is always known.
 fn unseen_hand(state: &GameState, observer: PlayerId, owner: PlayerId) -> Vec<ObjectId> {
     if owner == observer {
         return Vec::new();
@@ -799,7 +816,19 @@ fn unseen_hand(state: &GameState, observer: PlayerId, owner: PlayerId) -> Vec<Ob
         .hand
         .iter()
         .copied()
-        .filter(|&id| !known.iter().any(|e| e.object == id && e.zone_change_count == zcc(id)))
+        .filter(|&id| !known.iter().any(|e| e.object == id && e.zone_change_count == zcc(id)) && !mtg_kernel::commander::is_commander(state, id))
+        .collect()
+}
+
+/// Library positions of `owner`'s `observer` doesn't know.
+fn unknown_library_positions(state: &GameState, observer: PlayerId, owner: PlayerId) -> Vec<usize> {
+    let known = state.known_library_cards(observer, owner);
+    let lib = &state.players[owner.index()].library;
+    (0..lib.len())
+        .filter(|&pos| {
+            let id = lib[pos];
+            !known.iter().any(|e| e.position as usize == pos && e.object == id && e.zone_change_count == state.objects.get(id).zone_change_count)
+        })
         .collect()
 }
 
@@ -811,7 +840,9 @@ pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerI
     if !keep_library {
         let known = state.known_library_cards(observer, owner);
         for (pos, &id) in ps.library.iter().enumerate() {
-            if !known.iter().any(|e| e.position as usize == pos && e.object == id && e.zone_change_count == zcc(id)) {
+            if !known.iter().any(|e| e.position as usize == pos && e.object == id && e.zone_change_count == zcc(id))
+                && !mtg_kernel::commander::is_commander(state, id)
+            {
                 slots.push(id);
             }
         }
@@ -1147,6 +1178,32 @@ mod tests {
             }
         }
         assert!(split > 0, "no decision offered two copies of one card that differ");
+    }
+
+    #[test]
+    fn commanders_in_a_hand_or_library_keep_their_identity_in_every_world() {
+        // A commander's identity is public; in a library only its position is hidden.
+        let g = Game::new_commander(&padded("Goblin Tomb Raider", "Burn"), &padded("Masked Meower", "Rally"), 1);
+        let me = g.to_act();
+        let opp = me.opponent();
+        let theirs = g.state.commander.as_ref().unwrap().commanders[opp.index()];
+        let def = def_of(&g.state, theirs);
+        for (zone, min_positions) in [(Zone::Hand, 1), (Zone::Library, 2)] {
+            let mut t = g.clone();
+            mtg_kernel::event::commit(&mut t.state, mtg_kernel::event::ProposedEvent::zone_change(theirs, zone));
+            let generation = t.state.objects.get(theirs).zone_change_count;
+            t.state.commander.as_mut().unwrap().declined[opp.index()] = Some(generation);
+            let mut positions = std::collections::HashSet::new();
+            for seed in 0..30 {
+                let mut d = t.clone();
+                d.determinize(me, seed);
+                let o = d.state.objects.get(theirs);
+                assert_eq!((o.card_def, o.zone), (def, zone));
+                assert_eq!(crate::features::observe(&d, me), crate::features::observe(&t, me));
+                positions.insert(d.state.players[opp.index()].library.iter().position(|&id| id == theirs));
+            }
+            assert!(positions.len() >= min_positions, "{zone:?}: {positions:?}");
+        }
     }
 
     #[test]

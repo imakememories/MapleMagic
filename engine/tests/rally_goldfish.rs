@@ -216,6 +216,7 @@ fn run_goldfish(state: &mut GameState) -> RunResult {
             | Decision::ChooseSpellMode { .. }
             | Decision::ChooseEffectOption { .. }
             | Decision::ChooseEffectBoolean { .. }
+            | Decision::ChooseCommanderZone { .. }
             | Decision::ChooseEffectTargets { .. }
             | Decision::ChooseOptionalCost { .. }
             | Decision::ChooseSpellCopyPayment { .. }

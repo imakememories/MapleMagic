@@ -26,6 +26,11 @@ pub struct CommanderStateV1 {
     /// Combat damage each player has taken from each player's commander,
     /// `[damaged player][commander's owner]` (903.10a).
     pub damage: [[i32; 2]; 2],
+    /// 903.9: the zone-change count of the commander incarnation its owner
+    /// chose to leave where it is, so the owner isn't asked again until it
+    /// changes zones.
+    #[serde(default)]
+    pub declined: [Option<u32>; 2],
 }
 
 /// A card exiled face down (406.3), hidden from both players unless
@@ -1442,6 +1447,7 @@ impl GameState {
             commanders: ids,
             casts: [0; 2],
             damage: [[0; 2]; 2],
+            declined: [None, None],
         });
         state
     }

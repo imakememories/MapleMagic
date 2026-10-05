@@ -79,34 +79,50 @@ pub(crate) fn record_combat_damage(state: &mut GameState, source: ObjectId, play
 
 /// 903.9b: a commander that would go to a hand or library goes to the
 /// command zone instead. The owner may decline; this engine never does.
-pub(crate) fn destination(state: &GameState, id: ObjectId, to: Zone) -> Zone {
-    if matches!(to, Zone::Hand | Zone::Library) && is_commander(state, id) {
-        Zone::Command
+/// 903.9: a commander whose owner may now put it into the command zone: one
+/// put into a graveyard or exile (a state-based action, 903.9a) or into its
+/// owner's hand or library (a replacement, 903.9b), unless the owner already
+/// declined for this incarnation. The active player chooses first.
+///
+/// The engine commits zone changes inside effects without pausing, so the
+/// hand/library choice is asked as soon as the effect finishes, before
+/// triggers or priority. That matches 903.9b for every card here; it would
+/// differ only for one effect that moves a commander to a hand or library and
+/// then uses that same hand or library.
+pub fn pending_zone_choice(state: &GameState) -> Option<(PlayerId, ObjectId)> {
+    let c = state.commander.as_ref()?;
+    [state.active_player, state.active_player.opponent()].into_iter().find_map(|p| {
+        let id = c.commanders[p.index()];
+        let o = state.objects.get(id);
+        (matches!(o.zone, Zone::Graveyard | Zone::Exile | Zone::Hand | Zone::Library)
+            && c.declined[p.index()] != Some(o.zone_change_count))
+        .then_some((p, id))
+    })
+}
+
+/// Answers [`pending_zone_choice`]: the command zone, or leave it where it is.
+pub(crate) fn choose_zone(state: &mut GameState, to_command_zone: bool) -> Result<(), String> {
+    let (p, id) = pending_zone_choice(state).ok_or("no commander zone choice is pending")?;
+    if to_command_zone {
+        crate::event::commit(state, crate::event::ProposedEvent::zone_change(id, Zone::Command));
     } else {
-        to
+        let generation = state.objects.get(id).zone_change_count;
+        state.commander.as_mut().expect("a pending choice implies a Commander game").declined[p.index()] =
+            Some(generation);
     }
+    Ok(())
 }
 
 /// Commander state-based actions; returns whether anything changed.
-/// - 903.9a: a commander in a graveyard or exile returns to the command zone
-///   (again the owner may decline, and this engine never does).
-/// - 704.6c: a player dealt 21 or more combat damage by one commander loses.
+/// 704.6c: a player dealt 21 or more combat damage by one commander loses.
+/// (704.6d, returning a commander, is the owner's choice: see
+/// [`pending_zone_choice`].)
 pub(crate) fn state_based_actions(state: &mut GameState) -> bool {
     let Some(c) = state.commander.as_ref() else {
         return false;
     };
     let damage = c.damage;
-    let returning: Vec<ObjectId> = c
-        .commanders
-        .iter()
-        .copied()
-        .filter(|&id| matches!(state.objects.get(id).zone, Zone::Graveyard | Zone::Exile))
-        .collect();
     let mut changed = false;
-    for id in returning {
-        crate::event::commit(state, crate::event::ProposedEvent::zone_change(id, Zone::Command));
-        changed = true;
-    }
     for p in [PlayerId::P0, PlayerId::P1] {
         let ps = &mut state.players[p.index()];
         if !ps.has_lost && damage[p.index()].iter().any(|&d| d >= COMMANDER_DAMAGE_TO_LOSE) {
@@ -157,6 +173,17 @@ mod tests {
         }
     }
 
+    /// Answers the 903.9 choice `advance_until_decision` must now offer for `id`.
+    fn choose(state: &mut GameState, id: ObjectId, to_command_zone: bool) {
+        match advance_until_decision(state) {
+            Decision::ChooseCommanderZone { player, commander } => {
+                assert_eq!((player, commander), (state.objects.get(id).owner, id));
+            }
+            other => panic!("expected ChooseCommanderZone, got {other:?}"),
+        }
+        step(state, Action::ChooseCommanderZone(to_command_zone)).unwrap();
+    }
+
     /// Casts `id` and passes priority until the stack is empty.
     fn cast_and_resolve(state: &mut GameState, id: ObjectId) {
         step(state, Action::CastSpell(id)).unwrap();
@@ -200,9 +227,9 @@ mod tests {
         assert_eq!(state.commander.as_ref().unwrap().casts, [1, 0]);
         assert_eq!(tax(&state, raider), 2);
 
-        // Dies, then returns to the command zone as a state-based action.
+        // Dies; its owner puts it into the command zone (903.9a).
         commit(&mut state, ProposedEvent::zone_change(raider, Zone::Graveyard));
-        crate::trigger::sba_fixed_point(&mut state);
+        choose(&mut state, raider, true);
         assert_eq!(state.objects.get(raider).zone, Zone::Command);
         assert!(state.command.contains(&raider));
         assert!(!state.players[0].graveyard.contains(&raider));
@@ -227,18 +254,63 @@ mod tests {
     }
 
     #[test]
-    fn commander_headed_to_hand_or_library_goes_to_the_command_zone() {
-        for to in [Zone::Hand, Zone::Library, Zone::Exile] {
-            let mut state = game();
-            let raider = commander(&state, PlayerId::P0);
-            state.players[0].mana_pool[ManaColor::R.pool_index()] = 1;
-            castable(&mut state, raider);
-            cast_and_resolve(&mut state, raider);
-            commit(&mut state, ProposedEvent::zone_change(raider, to));
-            crate::trigger::sba_fixed_point(&mut state);
-            assert_eq!(state.objects.get(raider).zone, Zone::Command, "sent to {to:?}");
-            assert!(state.players[0].hand.is_empty() && state.players[0].library.is_empty());
+    fn owner_may_move_a_commander_to_the_command_zone_or_leave_it() {
+        // 903.9a (graveyard, exile) and 903.9b (hand, library) are both "may".
+        for to in [Zone::Graveyard, Zone::Exile, Zone::Hand, Zone::Library] {
+            for accept in [true, false] {
+                let mut state = game();
+                let raider = commander(&state, PlayerId::P0);
+                state.players[0].mana_pool[ManaColor::R.pool_index()] = 1;
+                castable(&mut state, raider);
+                cast_and_resolve(&mut state, raider);
+                commit(&mut state, ProposedEvent::zone_change(raider, to));
+                choose(&mut state, raider, accept);
+                let expected = if accept { Zone::Command } else { to };
+                assert_eq!(state.objects.get(raider).zone, expected, "{to:?}, accept {accept}");
+                // Asked once per zone change.
+                assert!(
+                    matches!(advance_until_decision(&mut state), Decision::CastSpellOrPass { .. }),
+                    "{to:?}, accept {accept}"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn a_commander_kept_in_hand_is_cast_without_tax() {
+        // 903.8: only casts from the command zone pay or add to the tax.
+        let mut state = game();
+        let raider = commander(&state, PlayerId::P0);
+        let red = ManaColor::R.pool_index();
+        state.players[0].mana_pool[red] = 1;
+        castable(&mut state, raider);
+        cast_and_resolve(&mut state, raider);
+        commit(&mut state, ProposedEvent::zone_change(raider, Zone::Hand));
+        choose(&mut state, raider, false);
+        assert!(state.players[0].hand.contains(&raider));
+        state.players[0].mana_pool[red] = 1;
+        assert!(castable(&mut state, raider), "{{R}} from hand");
+        cast_and_resolve(&mut state, raider);
+        assert_eq!(state.objects.get(raider).zone, Zone::Battlefield);
+        assert_eq!(state.commander.as_ref().unwrap().casts, [1, 0]);
+        // Declined in the graveyard, then exiled: a new zone change, asked again.
+        commit(&mut state, ProposedEvent::zone_change(raider, Zone::Graveyard));
+        choose(&mut state, raider, false);
+        commit(&mut state, ProposedEvent::zone_change(raider, Zone::Exile));
+        choose(&mut state, raider, true);
+        assert_eq!(state.objects.get(raider).zone, Zone::Command);
+    }
+
+    #[test]
+    fn the_active_player_chooses_first() {
+        let mut state = game();
+        let (mine, theirs) = (commander(&state, PlayerId::P0), commander(&state, PlayerId::P1));
+        commit(&mut state, ProposedEvent::zone_change(theirs, Zone::Exile));
+        commit(&mut state, ProposedEvent::zone_change(mine, Zone::Exile));
+        choose(&mut state, mine, false);
+        choose(&mut state, theirs, true);
+        assert_eq!(state.objects.get(mine).zone, Zone::Exile);
+        assert_eq!(state.objects.get(theirs).zone, Zone::Command);
     }
 
     #[test]

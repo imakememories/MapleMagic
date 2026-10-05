@@ -1274,6 +1274,12 @@ pub enum Decision {
         default: Option<bool>,
         purpose: effect::EffectBooleanChoicePurpose,
     },
+    /// 903.9: whether `player` puts its `commander` into the command zone
+    /// (`Action::ChooseCommanderZone`); see `commander::pending_zone_choice`.
+    ChooseCommanderZone {
+        player: PlayerId,
+        commander: ObjectId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1353,6 +1359,9 @@ pub enum Action {
     /// Foretells a hand card (702.143a): pays {2} and exiles it face down.
     /// A special action, like `PlotSpell`.
     Foretell(ObjectId),
+    /// Answers `Decision::ChooseCommanderZone`: true puts the commander into
+    /// the command zone.
+    ChooseCommanderZone(bool),
 }
 
 const CHAIN_COPY_COST: Cost = Cost {
@@ -5770,6 +5779,11 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
         // a fresh `pending_discard` of its own.
         if state.engine.pending_discard.is_some() {
             continue;
+        }
+
+        // 903.9: after state-based actions, before triggers go on the stack.
+        if let Some((player, commander)) = crate::commander::pending_zone_choice(state) {
+            return Decision::ChooseCommanderZone { player, commander };
         }
 
         if let Some(d) = drain_pending_triggers_or_decide(state) {
@@ -11174,6 +11188,11 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
                 return Err(format!("{id} is not a legal Plot action for {p:?}"));
             }
             plot_spell(state, p, id);
+            Ok(())
+        }
+        Action::ChooseCommanderZone(to_command_zone) => {
+            crate::commander::choose_zone(state, to_command_zone)?;
+            collect_and_queue_triggers(state);
             Ok(())
         }
         Action::Foretell(id) => {

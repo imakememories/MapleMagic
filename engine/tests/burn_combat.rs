@@ -69,6 +69,7 @@ fn kind_of(d: &Decision) -> Kind {
         Decision::ChooseSpellMode { .. }
         | Decision::ChooseEffectOption { .. }
         | Decision::ChooseEffectBoolean { .. }
+        | Decision::ChooseCommanderZone { .. }
         | Decision::ChooseEffectTargets { .. }
         | Decision::ChooseOptionalCost { .. }
         | Decision::ChooseSpellCopyPayment { .. }
@@ -313,6 +314,7 @@ fn run_combat_game(state: &mut GameState) -> (Vec<Kind>, u32) {
             Decision::ChooseSpellMode { .. }
             | Decision::ChooseEffectOption { .. }
             | Decision::ChooseEffectBoolean { .. }
+            | Decision::ChooseCommanderZone { .. }
             | Decision::ChooseEffectTargets { .. }
             | Decision::ChooseOptionalCost { .. }
             | Decision::ChooseSpellCopyPayment { .. }

@@ -138,7 +138,9 @@ pub fn observe_with(g: &Game, viewer: PlayerId, perfect: bool) -> Vec<[u16; TOKE
     // Opponent hand: known cards by identity, the rest hidden.
     for &id in &po.hand {
         let zcc = st.objects.get(id).zone_change_count;
-        let known = perfect || st.known_hand_cards(me, opp).iter().any(|e| e.object == id && e.zone_change_count == zcc);
+        let known = perfect
+            || mtg_kernel::commander::is_commander(st, id)
+            || st.known_hand_cards(me, opp).iter().any(|e| e.object == id && e.zone_change_count == zcc);
         if known {
             out.push(object_token(st, id, me, Zone::Hand, false));
         } else {
