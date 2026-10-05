@@ -47,6 +47,9 @@ pub enum CardType {
     Sorcery,
     Artifact,
     Enchantment,
+    Planeswalker,
+    Battle,
+    Kindred,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,7 +208,45 @@ pub enum Subtype {
     Clue,
     /// Appended for the 4/1 black Skeleton token created by Undercity's
     /// Catacombs room. Existing stable ids remain fixed.
-    Skeleton,
+    Skeleton,    // Appended for the Commander decks.
+    Archer,
+    Assassin,
+    Astartes,
+    Avatar,
+    Badger,
+    Barbarian,
+    Beast,
+    Berserker,
+    Cleric,
+    Construct,
+    Dinosaur,
+    Djinn,
+    Drake,
+    Echidna,
+    Elder,
+    Elephant,
+    Gnome,
+    God,
+    Lizard,
+    Minotaur,
+    Mole,
+    Mutant,
+    Noble,
+    Phoenix,
+    Praetor,
+    Robot,
+    Scout,
+    Turtle,
+    Tyranid,
+    Villain,
+    Warlock,
+    Wurm,
+    Cave,
+    Desert,
+    Urzas,
+    Lesson,
+    Siege,
+    Tyvar,
 }
 
 impl Subtype {
@@ -268,6 +309,38 @@ impl Subtype {
         Subtype::Phyrexian,
         Subtype::Horror,
         Subtype::Nightmare,
+        Subtype::Archer,
+        Subtype::Assassin,
+        Subtype::Astartes,
+        Subtype::Avatar,
+        Subtype::Badger,
+        Subtype::Barbarian,
+        Subtype::Beast,
+        Subtype::Berserker,
+        Subtype::Cleric,
+        Subtype::Construct,
+        Subtype::Dinosaur,
+        Subtype::Djinn,
+        Subtype::Drake,
+        Subtype::Echidna,
+        Subtype::Elder,
+        Subtype::Elephant,
+        Subtype::Gnome,
+        Subtype::God,
+        Subtype::Lizard,
+        Subtype::Minotaur,
+        Subtype::Mole,
+        Subtype::Mutant,
+        Subtype::Noble,
+        Subtype::Phoenix,
+        Subtype::Praetor,
+        Subtype::Robot,
+        Subtype::Scout,
+        Subtype::Turtle,
+        Subtype::Tyranid,
+        Subtype::Villain,
+        Subtype::Warlock,
+        Subtype::Wurm,
     ];
 
     /// Schema-v4 observation id. Existing discriminants are append-only:
@@ -801,6 +874,9 @@ pub enum DynamicValueDef {
     /// graveyard. The controller is supplied by the effect or mana-ability
     /// context at the moment the value is sampled.
     ControllerGraveyardCardsWithType(CardType),
+    /// Count the evaluating controller's battlefield permanents with the
+    /// named effective subtype (Smaug: "the number of Treasures you control").
+    ControllerPermanentsWithSubtype(Subtype),
 }
 
 /// Reusable definition for a single printed mana ability whose cost, amount,
@@ -1177,7 +1253,23 @@ impl CardDef {
     pub fn is_automatic_payment_mana_source(&self) -> bool {
         self.is_executable()
             && !self.mana_ability_choices.is_empty()
-            && self.mana_ability_def.is_none()
+            && self.automatic_mana_amount().is_some()
+    }
+
+    /// Mana one tap makes if the payment solver may tap this source: the
+    /// legacy tap-for-one ability, or a plain "{T}: Add" of a fixed amount
+    /// (Sol Ring).
+    pub fn automatic_mana_amount(&self) -> Option<u8> {
+        match self.mana_ability_def {
+            None => Some(1),
+            Some(ManaAbilityDef {
+                cost: ManaAbilityCostDef::TapSelf,
+                amount: ManaAbilityAmountDef::Fixed(n),
+                controller_damage: 0,
+                max_activations_per_turn: None,
+            }) => Some(n),
+            Some(_) => None,
+        }
     }
 
     /// Non-allocating core of [`Self::primary_mana_ability_choices`]. Writes
@@ -1380,8 +1472,9 @@ mod tests {
     #[test]
     fn card_defs_len_matches_pool() {
         // Hero Token remains id 159 and Clue Token remains id 160. Skeleton
-        // Token is appended as id 161 without renumbering earlier ids.
-        assert_eq!(CARD_DEFS.len(), 162);
+        // Token is appended as id 161 without renumbering earlier ids. The
+        // Commander decks' cards follow from id 162.
+        assert_eq!(CARD_DEFS.len(), 439);
     }
 
     #[test]
@@ -1447,7 +1540,8 @@ mod tests {
     fn card_db_hash_v32_is_frozen() {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
-        assert_eq!(KERNEL_CARDDB_HASH, 0x64c8_2a26_1e07_8f1a);
+        // Every Commander card added or implemented since moves this value.
+        assert_eq!(KERNEL_CARDDB_HASH, 0xc608_1f29_f3c0_c43e);
     }
 
     #[test]
@@ -1643,7 +1737,7 @@ mod tests {
 
     #[test]
     fn capability_is_the_fail_closed_source_for_programs_and_deck_preflight() {
-        let full = CARD_DEFS
+        let full = CARD_DEFS[..162]
             .iter()
             .filter(|def| def.capability == CardCapability::Full)
             .count();

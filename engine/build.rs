@@ -71,6 +71,9 @@ struct CardJson {
     /// since tokens are never cast, only created by another card's effect).
     #[serde(default)]
     is_token: bool,
+    /// Evergreen keywords, by name ("haste", "flying", ...).
+    #[serde(default)]
+    keywords: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
@@ -2884,7 +2887,7 @@ fn special_for(name: &str) -> Special {
         "End the Festivities" => Special::EndTheFestivities,
         "Galvanic Blast" => Special::GalvanicBlast,
         "Rally at the Hornburg" => Special::RallyAtTheHornburg,
-        "Reckless Impulse" => Special::RecklessImpulse,
+        "Reckless Impulse" | "Wrenn's Resolve" => Special::RecklessImpulse,
         "Winding Way" => Special::WindingWay,
         "Lead the Stampede" => Special::LookTopSelectByTypeToHandBottomRest {
             look: 5,
@@ -3145,6 +3148,28 @@ fn keywords_for(card: &CardJson) -> String {
     if card.name == "Saiba Cryptomancer" {
         keywords.push("Keywords::HEXPROOF");
     }
+    for k in &card.keywords {
+        let k = match k.as_str() {
+            "flying" => "Keywords::FLYING",
+            "reach" => "Keywords::REACH",
+            "haste" => "Keywords::HASTE",
+            "vigilance" => "Keywords::VIGILANCE",
+            "trample" => "Keywords::TRAMPLE",
+            "first strike" => "Keywords::FIRST_STRIKE",
+            "double strike" => "Keywords::DOUBLE_STRIKE",
+            "deathtouch" => "Keywords::DEATHTOUCH",
+            "menace" => "Keywords::MENACE",
+            "defender" => "Keywords::DEFENDER",
+            "lifelink" => "Keywords::LIFELINK",
+            "hexproof" => "Keywords::HEXPROOF",
+            "indestructible" => "Keywords::INDESTRUCTIBLE",
+            "flash" => "Keywords::FLASH",
+            other => panic!("cards_v1.json: {:?} has unknown keyword {other:?}", card.name),
+        };
+        if !keywords.contains(&k) {
+            keywords.push(k);
+        }
+    }
     if keywords.is_empty() {
         "Keywords::NONE".to_string()
     } else if keywords.len() == 1 {
@@ -3242,6 +3267,7 @@ fn mana_ability_def_for(name: &str) -> &'static str {
         "Wall of Roots" => "Some(ManaAbilityDef { cost: ManaAbilityCostDef::PutMinus0Minus1CounterOnSelf, amount: ManaAbilityAmountDef::Fixed(1), controller_damage: 0, max_activations_per_turn: Some(1) })",
         "Treasure Token" => "Some(ManaAbilityDef { cost: ManaAbilityCostDef::TapAndSacrificeSelf, amount: ManaAbilityAmountDef::Fixed(1), controller_damage: 0, max_activations_per_turn: None })",
         "Eldrazi Spawn Token" => "Some(ManaAbilityDef { cost: ManaAbilityCostDef::SacrificeSelf, amount: ManaAbilityAmountDef::Fixed(1), controller_damage: 0, max_activations_per_turn: None })",
+        "Sol Ring" => "Some(ManaAbilityDef { cost: ManaAbilityCostDef::TapSelf, amount: ManaAbilityAmountDef::Fixed(2), controller_damage: 0, max_activations_per_turn: None })",
         _ => "None",
     }
 }
@@ -4251,7 +4277,27 @@ fn madness_cost_for(name: &str) -> String {
 
 /// `Some` second-mode source text (`CardDef::mode2`) for the symmetric
 /// Elemental Blast/Pyroblast/Hydroblast family.
+/// Spell programs written by hand in `src/commander_cards.rs`: the spell's
+/// target specification and its program.
+fn hand_written_spell(name: &str) -> Option<(&'static str, &'static str)> {
+    Some(match name {
+        "Mass Mutiny" => (
+            "TargetSpec::OpponentControlledCreature",
+            "crate::commander_cards::threaten_target",
+        ),
+        "Insurrection" => ("TargetSpec::None", "crate::commander_cards::insurrection"),
+        "Mob Rule" => (
+            "TargetSpec::None",
+            "crate::commander_cards::mob_rule_power_four_or_more",
+        ),
+        _ => return None,
+    })
+}
+
 fn mode2_for(name: &str) -> String {
+    if name == "Mob Rule" {
+        return "Some(ModeDef { target_spec: TargetSpec::None, effect: crate::commander_cards::mob_rule_power_three_or_less })".to_string();
+    }
     match special_for(name) {
         Special::ColorBlast {
             checked_color,
@@ -6233,6 +6279,10 @@ fn codegen(cards: &[CardJson]) -> String {
         if executable && matches!(special, Special::None) && is_ordinary_permanent(c) {
             spell_effect_src = "spell_effect_ordinary_permanent".to_string();
         }
+        let (target_spec_src, spell_effect_src) = match hand_written_spell(&c.name) {
+            Some((target, program)) if executable => (target, program.to_string()),
+            _ => (target_spec_src, spell_effect_src),
+        };
 
         // Keep the historical function-pointer program for single-color
         // sources. Multi-color sources expose one action per printed mana
@@ -6701,6 +6751,9 @@ fn card_type_variant(t: &str) -> &'static str {
         "Sorcery" => "Sorcery",
         "Artifact" => "Artifact",
         "Enchantment" => "Enchantment",
+        "Planeswalker" => "Planeswalker",
+        "Battle" => "Battle",
+        "Kindred" => "Kindred",
         other => panic!("cards_v1.json: unknown card type {other:?}"),
     }
 }
@@ -6794,6 +6847,45 @@ fn subtype_variant(t: &str) -> &'static str {
         "Nightmare" => "Subtype::Nightmare",
         "Clue" => "Subtype::Clue",
         "Skeleton" => "Subtype::Skeleton",
+        "Monk" => "Subtype::Monk",
+        "Archer" => "Subtype::Archer",
+        "Assassin" => "Subtype::Assassin",
+        "Astartes" => "Subtype::Astartes",
+        "Avatar" => "Subtype::Avatar",
+        "Badger" => "Subtype::Badger",
+        "Barbarian" => "Subtype::Barbarian",
+        "Beast" => "Subtype::Beast",
+        "Berserker" => "Subtype::Berserker",
+        "Cleric" => "Subtype::Cleric",
+        "Construct" => "Subtype::Construct",
+        "Dinosaur" => "Subtype::Dinosaur",
+        "Djinn" => "Subtype::Djinn",
+        "Drake" => "Subtype::Drake",
+        "Echidna" => "Subtype::Echidna",
+        "Elder" => "Subtype::Elder",
+        "Elephant" => "Subtype::Elephant",
+        "Gnome" => "Subtype::Gnome",
+        "God" => "Subtype::God",
+        "Lizard" => "Subtype::Lizard",
+        "Minotaur" => "Subtype::Minotaur",
+        "Mole" => "Subtype::Mole",
+        "Mutant" => "Subtype::Mutant",
+        "Noble" => "Subtype::Noble",
+        "Phoenix" => "Subtype::Phoenix",
+        "Praetor" => "Subtype::Praetor",
+        "Robot" => "Subtype::Robot",
+        "Scout" => "Subtype::Scout",
+        "Turtle" => "Subtype::Turtle",
+        "Tyranid" => "Subtype::Tyranid",
+        "Villain" => "Subtype::Villain",
+        "Warlock" => "Subtype::Warlock",
+        "Wurm" => "Subtype::Wurm",
+        "Cave" => "Subtype::Cave",
+        "Desert" => "Subtype::Desert",
+        "Urza's" => "Subtype::Urzas",
+        "Lesson" => "Subtype::Lesson",
+        "Siege" => "Subtype::Siege",
+        "Tyvar" => "Subtype::Tyvar",
         other => panic!("cards_v1.json: unknown subtype {other:?}"),
     }
 }

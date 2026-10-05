@@ -424,6 +424,16 @@ pub enum CommittedEvent {
     InitiativeTrigger {
         binding: crate::state::InitiativeTriggerBindingV1,
     },
+    /// 508.1: a creature was declared as an attacker.
+    DeclaredAttacker {
+        source: ObjectId,
+        source_zone_change_count: u32,
+        controller: PlayerId,
+    },
+    /// 503.1a: an upkeep step began.
+    UpkeepBegan {
+        player: PlayerId,
+    },
 }
 
 /// Runs the replace/prevent pass to a fixed point: repeatedly finds an
@@ -645,10 +655,11 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
         ProposedEvent::ZoneChange(z) => {
             let from = state.objects.get(z.object).zone;
             let controller_before = state.objects.get(z.object).controller;
+            let to_zone = crate::commander::destination(state, z.object, z.to_zone);
             commit_zone_change(
                 state,
                 z.object,
-                z.to_zone,
+                to_zone,
                 z.library_placement,
                 z.preserve_known_identity,
                 z.library_insert_visibility,
@@ -659,7 +670,7 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
             CommittedEvent::ZoneChange {
                 object: z.object,
                 from,
-                to: z.to_zone,
+                to: to_zone,
                 controller_before,
             }
         }
@@ -917,6 +928,25 @@ pub fn log_initiative_trigger(
     state.engine.event_log.push(committed.clone());
     state.engine.event_history.push(committed);
     Ok(binding)
+}
+
+/// Logs that `source` was declared as an attacker, for attack triggers.
+pub fn log_declared_attacker(state: &mut GameState, source: ObjectId) {
+    let object = state.objects.get(source);
+    let committed = CommittedEvent::DeclaredAttacker {
+        source,
+        source_zone_change_count: object.zone_change_count,
+        controller: object.controller,
+    };
+    state.engine.event_log.push(committed.clone());
+    state.engine.event_history.push(committed);
+}
+
+/// Logs the start of `player`'s upkeep, for "at the beginning of upkeep" triggers.
+pub fn log_upkeep_began(state: &mut GameState, player: PlayerId) {
+    let committed = CommittedEvent::UpkeepBegan { player };
+    state.engine.event_log.push(committed.clone());
+    state.engine.event_history.push(committed);
 }
 
 fn permanent_enters_battlefield_tapped(

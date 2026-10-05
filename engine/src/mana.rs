@@ -165,6 +165,8 @@ impl Cost {
 pub struct ManaSource {
     pub id: ObjectId,
     pub choices: Vec<ManaColor>,
+    /// Mana one tap makes; what the cost doesn't use floats.
+    pub amount: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -292,9 +294,18 @@ pub fn gather_sources(player: PlayerId, state: &GameState) -> Vec<ManaSource> {
         if def.is_automatic_payment_mana_source()
             && !(def.has_type(crate::card_def::CardType::Creature) && obj.summoning_sick)
         {
+            let mut choices = def.primary_mana_ability_choices(obj.v4.chosen_color);
+            if crate::commander::makes_identity_mana(def) {
+                let identity = crate::commander::color_identity(state, player);
+                choices.retain(|c| identity.contains(c));
+            }
+            if choices.is_empty() {
+                continue;
+            }
             sources.push(ManaSource {
                 id,
-                choices: def.primary_mana_ability_choices(obj.v4.chosen_color),
+                choices,
+                amount: def.automatic_mana_amount().unwrap_or(1),
             });
         }
     }
@@ -424,9 +435,12 @@ fn solve_pips(
             }
             used[i] = true;
             plan.taps.push((sources[i].id, c));
+            let extra = sources[i].amount.saturating_sub(1);
+            pool_remaining[c.pool_index()] += extra;
             if solve_pips(pips, idx + 1, sources, used, pool_remaining, plan) {
                 return true;
             }
+            pool_remaining[c.pool_index()] -= extra;
             plan.taps.pop();
             used[i] = false;
         }
@@ -470,7 +484,10 @@ fn pay_generic(
         if let Some(&c) = sources[i].choices.first() {
             used[i] = true;
             plan.taps.push((sources[i].id, c));
-            needed -= 1;
+            // The tap's first mana is spent as the tap; the rest come out of the pool it fills.
+            let take = u32::from(sources[i].amount.max(1)).min(needed);
+            plan.pool_used[c.pool_index()] += (take - 1) as u8;
+            needed -= take;
         }
     }
     needed == 0
@@ -484,6 +501,7 @@ mod tests {
         ManaSource {
             id: ObjectId(id),
             choices: choices.to_vec(),
+            amount: 1,
         }
     }
 

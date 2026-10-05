@@ -10,6 +10,23 @@ use serde::{Deserialize, Serialize};
 use std::hash::{Hash, Hasher};
 
 pub const STARTING_LIFE: i32 = 20;
+/// 903.7: each player starts a Commander game at 40 life.
+pub const COMMANDER_STARTING_LIFE: i32 = 40;
+/// 704.6c: 21 combat damage from one commander loses the game.
+pub const COMMANDER_DAMAGE_TO_LOSE: i32 = 21;
+
+/// Commander bookkeeping (rule 903). `GameState::commander` is `None` outside
+/// Commander games, so ordinary states serialize and hash as before.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CommanderStateV1 {
+    /// Each player's commander card, indexed by owner.
+    pub commanders: [ObjectId; 2],
+    /// Times each player has cast its commander from the command zone (903.8).
+    pub casts: [u16; 2],
+    /// Combat damage each player has taken from each player's commander,
+    /// `[damaged player][commander's owner]` (903.10a).
+    pub damage: [[i32; 2]; 2],
+}
 
 fn i16_is_zero(value: &i16) -> bool {
     *value == 0
@@ -465,6 +482,8 @@ pub enum SpellCastRouteV4 {
     },
     Madness,
     GraveyardEscape,
+    /// A commander cast from the command zone (903.8).
+    CommandZone,
 }
 
 /// Incarnation-local cast provenance stored on the physical source object
@@ -1189,6 +1208,8 @@ pub struct GameState {
     pub hand_knowledge: [[Vec<HandKnowledgeEntry>; 2]; 2],
     #[serde(flatten)]
     randomness: GameRandomnessState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commander: Option<CommanderStateV1>,
     /// Priority/stack/turn-structure bookkeeping and the propose-commit
     /// event log, all owned by the `engine`/`event`/`trigger` modules. See
     /// `engine::EngineState`.
@@ -1223,6 +1244,9 @@ impl Hash for GameState {
         self.engine.hash(state);
         if self.starting_player != PlayerId::P0 {
             self.starting_player.hash(state);
+        }
+        if let Some(commander) = &self.commander {
+            commander.hash(state);
         }
     }
 }
@@ -1355,8 +1379,42 @@ impl GameState {
                 std::array::from_fn(|_| Vec::<HandKnowledgeEntry>::new())
             }),
             randomness: GameRandomnessState::Legacy(SplitMix64::seed(seed)),
+            commander: None,
             engine: crate::engine::EngineState::default(),
         }
+    }
+
+    /// A two-player Commander game (903): 40 life each, and each player's
+    /// commander (`commanders[i]`, a card definition) starts in the command
+    /// zone. The libraries are the other 99 cards, already shuffled.
+    pub fn new_commander_game_v1(
+        lib0: &[u16],
+        lib1: &[u16],
+        commanders: [u16; 2],
+        names: impl Fn(u16) -> String,
+        seed: u64,
+        starting_player: PlayerId,
+    ) -> GameState {
+        let mut state =
+            Self::new_from_libraries_with_starting_player_v1(lib0, lib1, &names, seed, starting_player);
+        let ids = [PlayerId::P0, PlayerId::P1].map(|owner| {
+            let card_def = commanders[owner.index()];
+            let id = state
+                .objects
+                .push(GameObject::new_in_library(card_def, names(card_def), owner));
+            state.objects.get_mut(id).zone = Zone::Command;
+            state.command.push(id);
+            id
+        });
+        for player in &mut state.players {
+            player.life = COMMANDER_STARTING_LIFE;
+        }
+        state.commander = Some(CommanderStateV1 {
+            commanders: ids,
+            casts: [0; 2],
+            damage: [[0; 2]; 2],
+        });
+        state
     }
 
     /// Removes the top card of `player`'s library and puts it in hand.
@@ -2012,6 +2070,13 @@ impl GameState {
             GameRandomnessState::Legacy(rng) => Some(rng),
             GameRandomnessState::EnvironmentV2(_) => None,
         }
+    }
+
+    /// Gives a search world its own shuffles, so it can't foresee the real
+    /// game's: without this, a shuffle in the search tree would move a card
+    /// the searcher knows exactly where the real shuffle will.
+    pub fn reseed_shuffles(&mut self, seed: u64) {
+        self.randomness = GameRandomnessState::Legacy(SplitMix64::seed(seed));
     }
 
     /// Read-only shared view of the environment-v2 randomness state; `None`

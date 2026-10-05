@@ -69,6 +69,30 @@ pub enum TriggerCondition {
     /// This creature deals combat damage to a player. The committed marker
     /// carries the source's exact zone-change generation.
     DealsCombatDamageToPlayer,
+    /// This creature is declared as an attacker.
+    Attacks,
+    /// A creature the source's controller controls is declared as an
+    /// attacker; one with `keyword` as it attacks, unless that is `NONE`.
+    ControlledCreatureAttacks { keyword: crate::card_def::Keywords },
+    /// 503.1a: at the beginning of each upkeep, or only its controller's.
+    BeginningOfUpkeep { controller_only: bool },
+    /// "Whenever one or more creatures you control [that entered this turn]
+    /// attack": once per declaration.
+    OneOrMoreControlledCreaturesAttack { entered_this_turn: bool },
+    /// "Whenever one or more creatures you control deal combat damage to a
+    /// player": once per combat damage step.
+    OneOrMoreControlledCreaturesDealCombatDamageToPlayer,
+}
+
+impl TriggerCondition {
+    /// Fires at most once per batch of simultaneous events.
+    fn once_per_event_batch(self) -> bool {
+        matches!(
+            self,
+            TriggerCondition::OneOrMoreControlledCreaturesAttack { .. }
+                | TriggerCondition::OneOrMoreControlledCreaturesDealCombatDamageToPlayer
+        )
+    }
 }
 
 pub struct TriggeredAbilityDef {
@@ -250,6 +274,115 @@ fn sneaky_snacker_effect() -> EffectOp {
         },
     ])
 }
+
+fn treasure() -> u16 {
+    crate::card_def::card_id_by_name("Treasure Token").expect("Treasure Token in CARD_DEFS")
+}
+
+fn create_treasure_effect() -> EffectOp {
+    EffectOp::CreateToken {
+        token_def: treasure(),
+        controller: PlayerRef::Controller,
+    }
+}
+
+fn create_tapped_treasure_effect() -> EffectOp {
+    EffectOp::CreateTappedToken {
+        token_def: treasure(),
+        controller: PlayerRef::Controller,
+    }
+}
+
+fn pump_source_one_power_effect() -> EffectOp {
+    EffectOp::PumpTargetUntilEndOfTurnDynamic {
+        target: TargetRef::ThisSource,
+        power: DynamicValueDef::Fixed(1),
+        toughness: DynamicValueDef::Fixed(0),
+    }
+}
+
+fn smaug_attack_effect() -> EffectOp {
+    EffectOp::DealDamageDynamic {
+        target: TargetRef::Target(0),
+        amount: DynamicValueDef::ControllerPermanentsWithSubtype(Subtype::Treasure),
+    }
+}
+
+const fn trigger(condition: TriggerCondition, effect: fn() -> EffectOp) -> TriggeredAbilityDef {
+    TriggeredAbilityDef {
+        condition,
+        home_zone: Zone::Battlefield,
+        intervening_if_kicked: false,
+        intervening_if_controls_another_source_card: false,
+        effect,
+    }
+}
+
+fn threaten_target_effect() -> EffectOp {
+    EffectOp::Threaten {
+        object: ObjectRef::Target(0),
+    }
+}
+
+const THREATEN_ETB_TRIGGERS: [TriggeredAbilityDef; 1] =
+    [trigger(TriggerCondition::Etb, threaten_target_effect)];
+fn target_cant_block_effect() -> EffectOp {
+    EffectOp::CantBlockThisTurn {
+        object: ObjectRef::Target(0),
+    }
+}
+
+fn knuckles_upkeep_effect() -> EffectOp {
+    EffectOp::Conditional {
+        cond: EffectCond::ControlsArtifactCount(30),
+        then: Box::new(EffectOp::WinTheGame),
+        else_: Box::new(EffectOp::Sequence(Vec::new())),
+    }
+}
+
+const SPIDER_MAN_WEB_SPINNER_TRIGGERS: [TriggeredAbilityDef; 1] =
+    [trigger(TriggerCondition::Attacks, target_cant_block_effect)];
+const WHIRLWIND_TRIGGERS: [TriggeredAbilityDef; 1] = [trigger(
+    TriggerCondition::OneOrMoreControlledCreaturesAttack {
+        entered_this_turn: true,
+    },
+    target_cant_block_effect,
+)];
+const KNUCKLES_TRIGGERS: [TriggeredAbilityDef; 2] = [
+    trigger(
+        TriggerCondition::OneOrMoreControlledCreaturesDealCombatDamageToPlayer,
+        create_treasure_effect,
+    ),
+    trigger(
+        TriggerCondition::BeginningOfUpkeep {
+            controller_only: true,
+        },
+        knuckles_upkeep_effect,
+    ),
+];
+
+const OGNIS_TRIGGERS: [TriggeredAbilityDef; 1] = [trigger(
+    TriggerCondition::ControlledCreatureAttacks {
+        keyword: crate::card_def::Keywords::HASTE,
+    },
+    create_tapped_treasure_effect,
+)];
+const CAPTAIN_LANNERY_STORM_TRIGGERS: [TriggeredAbilityDef; 2] = [
+    trigger(TriggerCondition::Attacks, create_treasure_effect),
+    trigger(
+        TriggerCondition::SacrificeAnotherWithSubtype(Subtype::Treasure),
+        pump_source_one_power_effect,
+    ),
+];
+const SMAUG_TRIGGERS: [TriggeredAbilityDef; 2] = [
+    trigger(TriggerCondition::Attacks, smaug_attack_effect),
+    trigger(
+        TriggerCondition::BeginningOfUpkeep {
+            controller_only: true,
+        },
+        create_treasure_effect,
+    ),
+];
 
 const GUTTERSNIPE_TRIGGERS: [TriggeredAbilityDef; 1] = [TriggeredAbilityDef {
     condition: TriggerCondition::CastInstantOrSorcery,
@@ -956,6 +1089,13 @@ pub fn triggers_for(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Troublemaker Ouphe" => &TROUBLEMAKER_OUPHE_TRIGGERS,
         "Vitu-Ghazi Inspector" => &VITU_GHAZI_INSPECTOR_TRIGGERS,
         "Avenging Hunter" => &AVENGING_HUNTER_TRIGGERS,
+        "Ognis, the Dragon's Lash" => &OGNIS_TRIGGERS,
+        "Captain Lannery Storm" => &CAPTAIN_LANNERY_STORM_TRIGGERS,
+        "Smaug the Magnificent" => &SMAUG_TRIGGERS,
+        "Zealous Conscripts" | "Molten Primordial" | "Loki's Scepter" => &THREATEN_ETB_TRIGGERS,
+        "Spider-Man, Web-Spinner" => &SPIDER_MAN_WEB_SPINNER_TRIGGERS,
+        "Whirlwind, Killer Cyclone" => &WHIRLWIND_TRIGGERS,
+        "Knuckles the Echidna" => &KNUCKLES_TRIGGERS,
         _ => &[],
     }
 }
@@ -979,6 +1119,11 @@ pub fn trigger_target_spec(card_def: u16) -> TargetSpec {
             TargetSpec::OpponentArtifactOrEnchantmentPermanent
         }
         "Vitu-Ghazi Inspector" => TargetSpec::Creature,
+        "Zealous Conscripts" => TargetSpec::AnyPermanent,
+        "Molten Primordial" => TargetSpec::OpponentControlledCreature,
+        "Loki's Scepter" => TargetSpec::Creature,
+        "Spider-Man, Web-Spinner" => TargetSpec::Creature,
+        "Whirlwind, Killer Cyclone" => TargetSpec::OpponentControlledCreature,
         _ => TargetSpec::None,
     }
 }
@@ -1049,6 +1194,12 @@ pub fn target_spec_for_trigger(card_def: u16, effect: &EffectOp) -> Option<Targe
             TargetSpec::TargetOpponent
         } else if card.name == "Journey to Nowhere" && *effect == journey_to_nowhere_etb_effect() {
             TargetSpec::CreatureOtherThanSource
+        } else if card.name == "Smaug the Magnificent" {
+            if *effect == smaug_attack_effect() {
+                TargetSpec::AnyTarget
+            } else {
+                TargetSpec::None
+            }
         } else if card.name == "Avenging Hunter" {
             match effect {
                 EffectOp::ResolveInitiativeTrigger { binding } => match binding.kind {
@@ -1311,6 +1462,9 @@ fn sba_fixed_point_with_protected_triggers(
                 changed = true;
             }
         }
+        if crate::commander::state_based_actions(state) {
+            changed = true;
+        }
 
         // 111.8/704.5d: a token in any zone other than the battlefield
         // ceases to exist -- most commonly a sacrificed/died Blood Token
@@ -1567,6 +1721,9 @@ fn triggers_from_events(
                         optional_additional_cost_paid: paid_optional_cost,
                         paid_cost_refs,
                     });
+                    if def.condition.once_per_event_batch() {
+                        break;
+                    }
                 }
             }
         }
@@ -1825,6 +1982,52 @@ fn trigger_matches(
             count >= usize::from(minimum_count)
         }
         (TriggerCondition::DealsDamage, CommittedEvent::Damage { source: s, .. }) => *s == source,
+        (
+            TriggerCondition::Attacks,
+            CommittedEvent::DeclaredAttacker {
+                source: attacker,
+                source_zone_change_count,
+                controller: attacker_controller,
+            },
+        ) => {
+            *attacker == source
+                && *attacker_controller == controller
+                && state.objects.get(source).zone_change_count == *source_zone_change_count
+        }
+        (
+            TriggerCondition::ControlledCreatureAttacks { keyword },
+            CommittedEvent::DeclaredAttacker {
+                source: attacker,
+                source_zone_change_count,
+                controller: attacker_controller,
+            },
+        ) => {
+            *attacker_controller == controller
+                && state.objects.get(*attacker).zone_change_count == *source_zone_change_count
+                && (keyword == crate::card_def::Keywords::NONE
+                    || crate::engine::has_effective_keyword(state, *attacker, keyword))
+        }
+        (
+            TriggerCondition::BeginningOfUpkeep { controller_only },
+            CommittedEvent::UpkeepBegan { player },
+        ) => !controller_only || *player == controller,
+        (
+            TriggerCondition::OneOrMoreControlledCreaturesAttack { entered_this_turn },
+            CommittedEvent::DeclaredAttacker {
+                source: attacker,
+                source_zone_change_count,
+                controller: attacker_controller,
+            },
+        ) => {
+            let live = state.objects.get(*attacker);
+            *attacker_controller == controller
+                && live.zone_change_count == *source_zone_change_count
+                && (!entered_this_turn || live.v4.entered_battlefield_turn == Some(state.turn))
+        }
+        (
+            TriggerCondition::OneOrMoreControlledCreaturesDealCombatDamageToPlayer,
+            CommittedEvent::CombatDamageToPlayer { source: damager, .. },
+        ) => state.objects.try_get(*damager).is_some_and(|o| o.controller == controller),
         (
             TriggerCondition::DealsCombatDamageToPlayer,
             CommittedEvent::CombatDamageToPlayer {

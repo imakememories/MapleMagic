@@ -4,6 +4,8 @@
 //! The research/audit/training-store layers of the original are dropped.
 
 pub mod card_def;
+pub mod commander;
+pub mod commander_cards;
 pub mod effect;
 pub mod engine;
 pub mod environment_randomization_v2;

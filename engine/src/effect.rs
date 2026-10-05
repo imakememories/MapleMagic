@@ -823,6 +823,38 @@ pub enum EffectOp {
     ResolveUndercityThrone {
         binding: InitiativeTriggerBindingV1,
     },
+    /// `CreateToken`, entering tapped (Ognis's Treasure).
+    CreateTappedToken {
+        token_def: u16,
+        controller: PlayerRef,
+    },
+    /// Gain control of the object until end of turn, untap it, and it gains
+    /// haste until end of turn.
+    Threaten {
+        object: ObjectRef,
+    },
+    /// `Threaten` for every creature matching `filter` at resolution.
+    ThreatenAll {
+        filter: ThreatenFilter,
+    },
+    /// The object can't block this turn.
+    CantBlockThisTurn {
+        object: ObjectRef,
+    },
+    /// The creatures the player controls at resolution can't block this turn.
+    CreaturesCantBlockThisTurn {
+        player: PlayerRef,
+    },
+    /// The controller wins the game (its opponent loses).
+    WinTheGame,
+}
+
+/// Which creatures a `ThreatenAll` takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ThreatenFilter {
+    AllCreatures,
+    PowerAtLeast(i32),
+    PowerAtMost(i32),
 }
 
 /// One owned interpreter frame. `path` is the structural route through the
@@ -10086,6 +10118,65 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 state,
                 event::ProposedEvent::create_token(*token_def, controller),
             );
+        }
+        EffectOp::CreateTappedToken {
+            token_def,
+            controller,
+        } => {
+            execute(
+                &EffectOp::CreateToken {
+                    token_def: *token_def,
+                    controller: *controller,
+                },
+                ctx,
+                state,
+            );
+            if let Some(crate::event::CommittedEvent::CreateToken { object, .. }) =
+                state.engine.event_log.last().cloned()
+            {
+                event::propose_and_commit(state, event::ProposedEvent::tap(object));
+            }
+        }
+        EffectOp::Threaten { object } => {
+            let object = ctx.resolve_object(*object);
+            crate::engine::threaten(state, object, ctx.controller);
+        }
+        EffectOp::CantBlockThisTurn { object } => {
+            let object = ctx.resolve_object(*object);
+            crate::engine::forbid_blocking(state, object);
+        }
+        EffectOp::CreaturesCantBlockThisTurn { player } => {
+            let player = ctx.resolve_player(*player, state);
+            let creatures: Vec<ObjectId> = state.players[player.index()]
+                .battlefield
+                .iter()
+                .copied()
+                .filter(|&id| crate::engine::object_has_type(state, id, CardType::Creature))
+                .collect();
+            for id in creatures {
+                crate::engine::forbid_blocking(state, id);
+            }
+        }
+        EffectOp::WinTheGame => {
+            state.players[ctx.controller.opponent().index()].has_lost = true;
+        }
+        EffectOp::ThreatenAll { filter } => {
+            let taken: Vec<ObjectId> = state
+                .players
+                .iter()
+                .flat_map(|p| p.battlefield.iter().copied())
+                .filter(|&id| {
+                    crate::engine::object_has_type(state, id, CardType::Creature)
+                        && match *filter {
+                            ThreatenFilter::AllCreatures => true,
+                            ThreatenFilter::PowerAtLeast(n) => crate::engine::effective_power(state, id) >= n,
+                            ThreatenFilter::PowerAtMost(n) => crate::engine::effective_power(state, id) <= n,
+                        }
+                })
+                .collect();
+            for id in taken {
+                crate::engine::threaten(state, id, ctx.controller);
+            }
         }
         EffectOp::MayPayCostThen {
             discard,

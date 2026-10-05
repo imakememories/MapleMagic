@@ -384,6 +384,87 @@ pub enum UntilEndOfTurnEffect {
         timestamp: u64,
         duration: EffectDuration,
     },
+    /// One battlefield incarnation can't block this turn.
+    CantBlock {
+        object_id: ObjectId,
+        object_zone_change_count: u32,
+    },
+    /// Control of one battlefield incarnation changed until end of turn;
+    /// cleanup returns it to `previous_controller`.
+    ControlChange {
+        object_id: ObjectId,
+        object_zone_change_count: u32,
+        previous_controller: PlayerId,
+    },
+}
+
+/// Whether an effect says `id` can't block this turn.
+fn cant_block(state: &GameState, id: ObjectId) -> bool {
+    let generation = state.objects.get(id).zone_change_count;
+    state.engine.until_end_of_turn.iter().any(|e| {
+        matches!(*e, UntilEndOfTurnEffect::CantBlock { object_id, object_zone_change_count }
+            if object_id == id && object_zone_change_count == generation)
+    })
+}
+
+/// `id` can't block this turn.
+pub(crate) fn forbid_blocking(state: &mut GameState, id: ObjectId) {
+    let object = state.objects.get(id);
+    if object.zone == Zone::Battlefield {
+        let object_zone_change_count = object.zone_change_count;
+        state.engine.until_end_of_turn.push(UntilEndOfTurnEffect::CantBlock {
+            object_id: id,
+            object_zone_change_count,
+        });
+    }
+}
+
+/// Moves a battlefield permanent under `to`'s control. It can't attack or pay
+/// {T} costs this turn without haste (302.6) and leaves combat (506.4).
+pub(crate) fn set_controller(state: &mut GameState, id: ObjectId, to: PlayerId) {
+    let from = state.objects.get(id).controller;
+    if from == to {
+        return;
+    }
+    state.players[from.index()].battlefield.retain(|&x| x != id);
+    state.players[to.index()].battlefield.push(id);
+    let object = state.objects.get_mut(id);
+    object.controller = to;
+    object.summoning_sick = true;
+    let combat = &mut state.engine.combat;
+    combat.attackers.retain(|&a| a != id);
+    combat.blocked_by.retain(|(a, _)| *a != id);
+    for (_, blockers) in combat.blocked_by.iter_mut() {
+        blockers.retain(|&b| b != id);
+    }
+}
+
+/// Gains control of `id` for `player` until end of turn, untaps it, and gives
+/// it haste until end of turn (the "threaten" effects).
+pub(crate) fn threaten(state: &mut GameState, id: ObjectId, player: PlayerId) {
+    let object = state.objects.get(id);
+    if object.zone != Zone::Battlefield {
+        return;
+    }
+    let (previous, generation) = (object.controller, object.zone_change_count);
+    if previous != player {
+        set_controller(state, id, player);
+        state.engine.until_end_of_turn.push(UntilEndOfTurnEffect::ControlChange {
+            object_id: id,
+            object_zone_change_count: generation,
+            previous_controller: previous,
+        });
+    }
+    state.objects.get_mut(id).tapped = false;
+    let timestamp = next_timestamp(state);
+    state.engine.until_end_of_turn.push(UntilEndOfTurnEffect::ResolvedObjectKeywordEffect {
+        object_id: id,
+        object_zone_change_count: generation,
+        layer: Layers::ABILITY_ADDING,
+        timestamp,
+        duration: EffectDuration::EndOfTurn,
+        keywords: Keywords::HASTE,
+    });
 }
 
 /// Whether an `effect::EffectOp::ImpulseDraw`-exiled card's `PlayPermission`
@@ -1600,6 +1681,12 @@ fn validate_physical_spell_cast_origin(
                 && def.escape.is_some()
                 && def.flashback.is_none()
         }
+        SpellCastRouteV4::CommandZone => {
+            origin.origin_zone == Zone::Command
+                && source.owner == item.controller
+                && cast_method == CastMethodV4::Normal
+                && crate::commander::is_commander(state, item.source)
+        }
     };
     if !route_supports_method {
         return Err("spell cast method is incompatible with its exact pre-stack route".to_string());
@@ -1861,7 +1948,8 @@ fn storm_source_contract_is_structurally_valid(
         SpellCastRouteV4::GraveyardFlashback
         | SpellCastRouteV4::Plotted { .. }
         | SpellCastRouteV4::Madness
-        | SpellCastRouteV4::GraveyardEscape => false,
+        | SpellCastRouteV4::GraveyardEscape
+        | SpellCastRouteV4::CommandZone => false,
     };
     definition.name == "Weather the Storm"
         && definition.is_executable()
@@ -2969,6 +3057,14 @@ pub(crate) fn evaluate_dynamic_value(
                 && live.zone == Zone::Graveyard
                 && !live.v4.is_token
                 && card_def::CARD_DEFS[live.card_def as usize].has_type(card_type)
+        })
+        .count(),
+        DynamicValueDef::ControllerPermanentsWithSubtype(subtype) => state.players
+            [controller.index()]
+        .battlefield
+        .iter()
+        .filter(|&&id| {
+            state.objects.get(id).controller == controller && has_effective_subtype(state, id, subtype)
         })
         .count(),
     };
@@ -4337,6 +4433,17 @@ fn checked_graveyard_exile_candidates(
 /// cost calculation for this certified shape. A future reducer paired with
 /// Kicker or another generic additional cost must deliberately extend this
 /// helper across the combined total rather than silently reusing it.
+/// A pending cast's normal cost, including the commander tax when it is
+/// being cast from the command zone.
+fn pending_normal_cast_cost(def: &card_def::CardDef, pending: &PendingCast, state: &GameState) -> Cost {
+    crate::commander::with_tax(
+        effective_normal_cast_cost(def, pending.controller, state),
+        state,
+        pending.spell,
+        pending.origin_zone,
+    )
+}
+
 fn effective_normal_cast_cost(
     def: &card_def::CardDef,
     player: PlayerId,
@@ -4556,7 +4663,7 @@ fn viable_pending_spell_forms(
         return viable_printed_spell_modes(def, pending.spell, pending.controller, state);
     };
     let mut forms = Vec::with_capacity(2);
-    let normal_cost = effective_normal_cast_cost(def, pending.controller, state);
+    let normal_cost = pending_normal_cast_cost(def, &pending, state);
     if target_prefix_can_complete_for_controller_and_source(
         def.target_spec,
         &pending.targets_chosen,
@@ -4588,7 +4695,7 @@ fn payable_cast_modes(
     state: &GameState,
 ) -> Vec<CastMode> {
     let mut modes = Vec::new();
-    let normal = effective_normal_cast_cost(def, pending.controller, state);
+    let normal = pending_normal_cast_cost(def, &pending, state);
     if pending_cast_form_timing_ok(def.types, def.keywords, pending, state)
         && mana::can_pay(&normal, 0, pending.controller, state).is_some()
     {
@@ -4612,7 +4719,7 @@ fn pending_cast_selected_mana_cost(
     match pending.mode_chosen {
         Some(1) if supported_bestow(def).is_some() => supported_bestow(def).map(|b| b.cost),
         Some(1) if supported_omen(def).is_some() => supported_omen(def).map(|o| o.cost),
-        Some(_) => Some(effective_normal_cast_cost(def, pending.controller, state)),
+        Some(_) => Some(pending_normal_cast_cost(def, &pending, state)),
         None => None,
     }
 }
@@ -4691,7 +4798,12 @@ fn is_castable_now(
                 && can_pay_components(escape.cost, player, id, state)
         }),
         CastMethodV4::Normal => {
-            let normal_cost = effective_normal_cast_cost(def, player, state);
+            let normal_cost = crate::commander::with_tax(
+                effective_normal_cast_cost(def, player, state),
+                state,
+                id,
+                state.objects.get(id).zone,
+            );
             let normal_ok =
                 main_timing_ok && mana::can_pay(&normal_cost, 0, player, state).is_some();
             let alt_ok = def
@@ -4748,6 +4860,14 @@ pub fn castable_spells(player: PlayerId, state: &GameState) -> Vec<ObjectId> {
         let def = &card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
         if unambiguous_graveyard_cast_method(def)
             .is_some_and(|method| is_castable_now(player, id, method, state))
+        {
+            out.push(id);
+        }
+    }
+    for &id in &state.command {
+        if state.objects.get(id).owner == player
+            && crate::commander::is_commander(state, id)
+            && is_castable_now(player, id, CastMethodV4::Normal, state)
         {
             out.push(id);
         }
@@ -4927,6 +5047,16 @@ pub(crate) fn available_mana_ability_choices_into(
 
     let mut primary = ManaColorSetV1::new();
     def.primary_mana_ability_choices_into(object.v4.chosen_color, &mut primary);
+    if crate::commander::makes_identity_mana(def) {
+        let identity = crate::commander::color_identity(state, player);
+        let mut kept = ManaColorSetV1::new();
+        for &color in primary.as_slice() {
+            if identity.contains(&color) {
+                kept.push(color);
+            }
+        }
+        primary = kept;
+    }
     let primary_payable = if let Some(rich) = def.mana_ability_def {
         rich_mana_ability_is_payable(player, source, 0, rich, None, state)
     } else {
@@ -5395,6 +5525,9 @@ fn legal_blockers_for(state: &GameState, attacker: ObjectId) -> Vec<ObjectId> {
             if !def.is_executable() || !object_has_type(state, id, CardType::Creature) {
                 return false;
             }
+            if cant_block(state, id) {
+                return false;
+            }
             if has_effective_keyword(state, attacker, Keywords::PROTECTION_FROM_MONOCOLORED)
                 && object_is_monocolored(state, id)
             {
@@ -5751,7 +5884,7 @@ fn remaining_cast_payment_is_payable(
     let x_value = pending.x_value.unwrap_or(0);
     let base_payable = match cast_method {
         CastMethodV4::Normal => {
-            let normal = effective_normal_cast_cost(def, pending.controller, state);
+            let normal = pending_normal_cast_cost(def, &pending, state);
             if pending.kicked == Some(true) {
                 def.kicker_cost.is_some_and(|kicker| {
                     mana::can_pay_combined(&[&normal, &kicker], 0, pending.controller, state)
@@ -6496,16 +6629,22 @@ pub(crate) fn validate_pending_cast(
     };
     match method {
         CastMethodV4::Normal => {
+            let from_command_zone = pending.origin_zone == Zone::Command
+                && crate::commander::is_commander(state, pending.spell);
             if pending.origin_zone != Zone::Hand
+                && !from_command_zone
                 && !(pending.origin_zone == Zone::Exile && has_prior_exile_permission())
             {
                 return Err(
                     "normal cast has an invalid origin zone or exile permission".to_string()
                 );
             }
-            if pending.origin_zone == Zone::Hand && source.owner != pending.controller {
+            if matches!(pending.origin_zone, Zone::Hand | Zone::Command)
+                && source.owner != pending.controller
+            {
                 return Err(
-                    "a normal hand cast must be controlled by its physical owner".to_string(),
+                    "a normal hand or command-zone cast must be controlled by its physical owner"
+                        .to_string(),
                 );
             }
             if def.alt_cost.is_none() {
@@ -7087,7 +7226,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
     // here.
     if let Some(kicker_cost) = def.kicker_cost {
         if pending.kicked.is_none() {
-            let normal_cost = effective_normal_cast_cost(def, pending.controller, state);
+            let normal_cost = pending_normal_cast_cost(def, &pending, state);
             let payable =
                 mana::can_pay_combined(&[&normal_cost, &kicker_cost], 0, pending.controller, state)
                     .is_some();
@@ -9641,6 +9780,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
         }
         Step::Upkeep => {
             let p = state.active_player;
+            event::log_upkeep_began(state, p);
             if state.initiative == Some(p) {
                 let Some(source) = state.engine.initiative_source else {
                     state.engine.halted =
@@ -9661,8 +9801,8 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
                     ));
                     return;
                 }
-                collect_and_queue_triggers(state);
             }
+            collect_and_queue_triggers(state);
         }
         Step::Draw => {
             let p = state.active_player;
@@ -9730,6 +9870,27 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             for (_, obj) in state.objects.iter_mut() {
                 obj.damage = 0;
                 obj.v4.deathtouch_damage = false;
+            }
+            let returns: Vec<(ObjectId, u32, PlayerId)> = state
+                .engine
+                .until_end_of_turn
+                .iter()
+                .rev()
+                .filter_map(|effect| match *effect {
+                    UntilEndOfTurnEffect::ControlChange {
+                        object_id,
+                        object_zone_change_count,
+                        previous_controller,
+                    } => Some((object_id, object_zone_change_count, previous_controller)),
+                    _ => None,
+                })
+                .collect();
+            for (id, generation, previous) in returns {
+                if state.objects.try_get(id).is_some_and(|o| {
+                    o.zone == Zone::Battlefield && o.zone_change_count == generation
+                }) {
+                    set_controller(state, id, previous);
+                }
             }
             state.engine.until_end_of_turn.clear();
             state.engine.active_replacements.retain(|replacement| {
@@ -10075,6 +10236,8 @@ pub fn has_effective_keyword(state: &GameState, id: ObjectId, kw: Keywords) -> b
                 UntilEndOfTurnEffect::ResolvedObjectKeywordEffect { .. } => false,
                 UntilEndOfTurnEffect::SyntheticMarker(_) => false,
                 UntilEndOfTurnEffect::DamageCannotBePrevented { .. } => false,
+                UntilEndOfTurnEffect::ControlChange { .. } => false,
+                UntilEndOfTurnEffect::CantBlock { .. } => false,
             };
             if grants {
                 return true;
@@ -10275,6 +10438,7 @@ fn combat_damage_wave(state: &mut GameState, first_strike_wave: bool) {
         .collect::<Vec<_>>();
     for (source, source_zone_change_count, player, amount) in combat_player_damage {
         event::log_combat_damage_to_player(state, source, source_zone_change_count, player, amount);
+        crate::commander::record_combat_damage(state, source, player, amount);
     }
     if let Some(holder) = state.initiative {
         let transfer_player = state.engine.event_log[event_start..]
@@ -10806,7 +10970,7 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
             let kicker = def
                 .kicker_cost
                 .ok_or("this spell has no kicker choice")?;
-            let normal = effective_normal_cast_cost(def, pending.controller, state);
+            let normal = pending_normal_cast_cost(def, &pending, state);
             if mana::can_pay_combined(&[&normal, &kicker], 0, pending.controller, state).is_none() {
                 return Err("the kicker choice is no longer payable".to_string());
             }
@@ -12292,6 +12456,9 @@ fn apply_declare_attackers(state: &mut GameState, attackers: Vec<ObjectId>) -> R
             event::propose_and_commit(state, ProposedEvent::tap(id));
         }
     }
+    for &id in &attackers {
+        event::log_declared_attacker(state, id);
+    }
     state.engine.combat.attackers = attackers;
     state.engine.combat.attackers_declared = true;
     collect_and_queue_triggers(state);
@@ -12653,6 +12820,7 @@ fn begin_cast_ex(
         },
         CastMethodV4::Madness => SpellCastRouteV4::Madness,
         CastMethodV4::Normal if origin_zone == Zone::Hand => SpellCastRouteV4::Hand,
+        CastMethodV4::Normal if origin_zone == Zone::Command => SpellCastRouteV4::CommandZone,
         CastMethodV4::Normal if origin_zone == Zone::Exile => {
             let permission = active_permission_for(player, spell_id, state)
                 .expect("an ordinary Exile cast was offered through an exact play permission");
@@ -12906,7 +13074,7 @@ fn finalize_owned_cast(
         }
         CastMethodV4::Normal => {
             let kicked = pending.kicked == Some(true);
-            let normal_cost = effective_normal_cast_cost(def, pending.controller, state);
+            let normal_cost = pending_normal_cast_cost(def, &pending, state);
             let plan = if kicked {
                 let kicker_cost = def
                     .kicker_cost
@@ -13116,6 +13284,9 @@ fn finalize_owned_cast(
         [pending.controller.index()]
     .spells_cast_this_turn
     .saturating_add(1);
+    if pending.origin_zone == Zone::Command {
+        crate::commander::record_cast(state, pending.spell);
+    }
     log_final_targeting_events(state, stack_item_id)?;
     event::log_spell_cast(state, pending.spell, pending.controller);
 
@@ -13200,7 +13371,8 @@ fn abort_cast(state: &mut GameState, pending: PendingCast, cast_method: CastMeth
         Zone::Hand => state.players[owner.index()].hand.push(pending.spell),
         Zone::Graveyard => state.players[owner.index()].graveyard.push(pending.spell),
         Zone::Exile => state.exile.push(pending.spell),
-        _ => unreachable!("origin_zone is always Hand, Graveyard, or Exile"),
+        Zone::Command => state.command.push(pending.spell),
+        _ => unreachable!("origin_zone is always Hand, Graveyard, Exile, or Command"),
     }
     state.forget_hand_object(pending.spell);
     state.clear_object_relations(pending.spell);
@@ -13429,6 +13601,7 @@ fn move_to_stack(state: &mut GameState, id: ObjectId, from_zone: Zone) {
     match from_zone {
         Zone::Graveyard => state.players[owner.index()].graveyard.retain(|&x| x != id),
         Zone::Exile => state.exile.retain(|&x| x != id),
+        Zone::Command => state.command.retain(|&x| x != id),
         _ => state.players[owner.index()].hand.retain(|&x| x != id),
     }
     state.forget_hand_object(id);
@@ -13445,8 +13618,14 @@ fn move_to_stack(state: &mut GameState, id: ObjectId, from_zone: Zone) {
 
 pub(crate) fn pay_plan(state: &mut GameState, player: PlayerId, plan: &mana::PaymentPlan) {
     for &(id, color) in &plan.taps {
+        let amount = card_def::CARD_DEFS[state.objects.get(id).card_def as usize]
+            .automatic_mana_amount()
+            .unwrap_or(1);
         event::propose_and_commit(state, ProposedEvent::tap(id));
-        event::propose_and_commit(state, ProposedEvent::mana_add(player, vec![color]));
+        event::propose_and_commit(
+            state,
+            ProposedEvent::mana_add(player, vec![color; usize::from(amount)]),
+        );
     }
     // Spend: every newly-tapped mana is fully consumed by this cost by
     // construction (the solver only taps what it needs), plus whatever
