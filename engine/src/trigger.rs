@@ -384,7 +384,7 @@ fn target_players_creatures_cant_block_effect() -> EffectOp {
 
 fn exile_top_face_down_playable_effect() -> EffectOp {
     EffectOp::ExileTopFaceDown {
-        owner_knows: true,
+        owner_may_look: true,
         playable_this_turn: true,
         linked: false,
     }
@@ -392,7 +392,7 @@ fn exile_top_face_down_playable_effect() -> EffectOp {
 
 fn exile_top_face_down_linked_effect() -> EffectOp {
     EffectOp::ExileTopFaceDown {
-        owner_knows: false,
+        owner_may_look: false,
         playable_this_turn: false,
         linked: true,
     }

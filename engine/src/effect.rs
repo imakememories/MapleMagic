@@ -848,11 +848,11 @@ pub enum EffectOp {
     /// The controller wins the game (its opponent loses).
     WinTheGame,
     /// Exiles the top card of the controller's library face down. With
-    /// `owner_knows` the controller may look at it; `playable_this_turn` lets
+    /// `owner_may_look` the controller may look at it; `playable_this_turn` lets
     /// it play the card this turn; `linked` remembers this source for
     /// `ReturnExiledWithToHand`.
     ExileTopFaceDown {
-        owner_knows: bool,
+        owner_may_look: bool,
         playable_this_turn: bool,
         linked: bool,
     },
@@ -1660,7 +1660,9 @@ fn grant_exile_play(
     let def = &crate::card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
     let play_or_cast = if def.is_playable_land() {
         crate::engine::PlayOrCast::Play
-    } else if def.is_castable() {
+    } else if def.is_castable() || state.face_down(id).is_some() {
+        // Granted for any face-down card, so its permission can't reveal
+        // what it is; an unsupported definition still can't be cast.
         crate::engine::PlayOrCast::Cast
     } else {
         // Exiling still happened, but an unsupported definition
@@ -10248,12 +10250,12 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             state.players[ctx.controller.opponent().index()].has_lost = true;
         }
         EffectOp::ExileTopFaceDown {
-            owner_knows,
+            owner_may_look,
             playable_this_turn,
             linked,
         } => {
             let with = linked.then(|| source_link(ctx, state));
-            if let Some(id) = crate::face_down::exile_top(state, ctx.controller, *owner_knows, with) {
+            if let Some(id) = crate::face_down::exile_top(state, ctx.controller, *owner_may_look, with) {
                 if *playable_this_turn {
                     grant_exile_play(state, id, ctx.controller, crate::engine::PlayPermissionExpiry::EndOfTurn);
                 }

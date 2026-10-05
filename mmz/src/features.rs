@@ -168,11 +168,29 @@ pub fn observe_with(g: &Game, viewer: PlayerId, perfect: bool) -> Vec<[u16; TOKE
         } else {
             object_token(st, id, me, Zone::Exile, o.owner == me)
         };
-        // Face down, foretold.
+        // Public facts about exiled cards: face down, foretold, castable from
+        // foretell now, exiled with a permanent, playable by a permission.
         if let Some(f) = st.face_down(id) {
-            t[2] = 1 | (f.foretold_turn.is_some() as u16) << 1;
+            let earlier = mtg_kernel::face_down::foretold_before_this_turn(st, id).is_some();
+            t[2] = 1 | (f.foretold_turn.is_some() as u16) << 1 | (earlier as u16) << 2 | (f.exiled_with.is_some() as u16) << 3;
+        }
+        let generation = o.zone_change_count;
+        if st.engine.exile_play_permissions.iter().any(|p| p.object == id && p.zone_change_generation == generation) {
+            t[2] |= 1 << 4;
         }
         out.push(t);
+    }
+    // Library cards the viewer knows (a revealed top card, say), with their position.
+    for p in [me, opp] {
+        let lib = &st.players[p.index()].library;
+        for e in st.known_library_cards(me, p) {
+            let pos = e.position as usize;
+            if lib.get(pos) == Some(&e.object) && st.objects.get(e.object).zone_change_count == e.zone_change_count {
+                let mut t = object_token(st, e.object, me, Zone::Library, p == me);
+                t[5] = clamp(e.position as i32, 0, 31);
+                out.push(t);
+            }
+        }
     }
     // Graveyards last, newest first, so truncation drops the oldest.
     let mut yards: Vec<[u16; TOKEN_FIELDS]> = Vec::new();
@@ -220,6 +238,17 @@ mod tests {
         let mut cards = mtg_kernel::runtime_decks::runtime_deck_by_id(base).unwrap().card_ids.to_vec();
         cards.resize(99, card_id_by_name("Mountain").unwrap());
         crate::commander::CommanderDeck { name: base.into(), commander: card_id_by_name(commander).unwrap(), cards }
+    }
+
+    #[test]
+    fn known_library_cards_are_observed_only_by_who_knows_them() {
+        let mut g = Game::new("Faeries", "Spy", 1).unwrap();
+        let (p0, p1) = (PlayerId::P0, PlayerId::P1);
+        g.state.reveal_library_top(p0, p1, 1);
+        let card = g.state.objects.get(g.state.players[1].library[0]).card_def + 1;
+        let shown = |o: &[[u16; TOKEN_FIELDS]], mine| o.iter().any(|t| t[0] == card && t[1] == place_code(Zone::Library, mine) && t[5] == 0);
+        assert!(shown(&observe(&g, p0), false));
+        assert!(!shown(&observe(&g, p1), true));
     }
 
     #[test]

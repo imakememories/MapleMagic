@@ -1025,6 +1025,8 @@ fn commit_zone_change(
             0
         };
 
+    // Who knew a face-down exiled card (406.3); read before it goes stale.
+    let face_down_knowers = state.face_down(id).map(|f| f.known_to);
     remove_from_zone(state, owner, id, from_zone);
     state.forget_hand_object(id);
     state.clear_object_relations(id);
@@ -1134,8 +1136,12 @@ fn commit_zone_change(
     if to_zone == Zone::Hand && from_zone != Zone::Library {
         // Returning a publicly identified card to hand does not make that
         // identity secret again. The owner sees it through `own_hand`; the
-        // other observer receives an incarnation-bound known-hand fact.
+        // other observer receives an incarnation-bound known-hand fact. A
+        // face-down card stays unknown to whoever didn't know it.
         for observer in [PlayerId::P0, PlayerId::P1] {
+            if observer != owner && face_down_knowers.is_some_and(|k| !k[observer.index()]) {
+                continue;
+            }
             state
                 .reveal_hand_card(observer, owner, id)
                 .expect("just moved this live public object into its owner's hand");

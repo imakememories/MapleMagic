@@ -860,6 +860,11 @@ pub(crate) fn set_card(state: &mut GameState, id: ObjectId, def: u16) {
     o.card_def = def;
     o.name = CARD_DEFS[def as usize].name.to_string();
     o.v4 = ObjectStateV4::from_card_def(def);
+    // A permission to play an exiled card plays it as whatever it now is.
+    let land = CARD_DEFS[def as usize].is_playable_land();
+    for p in state.engine.exile_play_permissions.iter_mut().filter(|p| p.object == id) {
+        p.play_or_cast = if land { engine::PlayOrCast::Play } else { engine::PlayOrCast::Cast };
+    }
 }
 
 fn mk(feat: ActFeat, exec: Exec) -> Choice {

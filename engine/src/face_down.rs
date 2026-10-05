@@ -6,15 +6,39 @@ use crate::event::{self, ProposedEvent};
 use crate::ids::{ObjectId, PlayerId};
 use crate::state::{FaceDownV1, GameState, ObjectLinkV4, Zone};
 
-/// Exiles `id` face down; `owner_knows` lets its owner look at it.
-/// Returns false if the card didn't end up in exile.
+/// Which players know which card `id` is where it is now: everyone in a
+/// public zone; in a hand its owner and anyone it was revealed to; in a
+/// library whoever knows that position; face down, whoever already did.
+pub fn knowers(state: &GameState, id: ObjectId) -> [bool; 2] {
+    let o = state.objects.get(id);
+    let (owner, generation) = (o.owner, o.zone_change_count);
+    let position = state.players[owner.index()].library.iter().position(|&x| x == id);
+    [PlayerId::P0, PlayerId::P1].map(|p| match o.zone {
+        Zone::Hand => {
+            p == owner
+                || state.known_hand_cards(p, owner).iter().any(|e| e.object == id && e.zone_change_count == generation)
+        }
+        Zone::Library => state
+            .known_library_cards(p, owner)
+            .iter()
+            .any(|e| Some(e.position as usize) == position && e.object == id && e.zone_change_count == generation),
+        Zone::Exile => !state.face_down_hidden_from(id, p),
+        _ => true,
+    })
+}
+
+/// Exiles `id` face down; `owner_may_look` lets its owner look at it. Anyone
+/// who knew the card before still does. Returns false if the card didn't end
+/// up in exile.
 pub fn exile(
     state: &mut GameState,
     id: ObjectId,
-    owner_knows: bool,
+    owner_may_look: bool,
     exiled_with: Option<ObjectLinkV4>,
     foretold_turn: Option<u32>,
 ) -> bool {
+    let mut known_to = knowers(state, id);
+    known_to[state.objects.get(id).owner.index()] |= owner_may_look;
     event::propose_and_commit(state, ProposedEvent::zone_change(id, Zone::Exile));
     let o = state.objects.get(id);
     if o.zone != Zone::Exile {
@@ -26,7 +50,7 @@ pub fn exile(
         let o = objects.get(f.card.object);
         o.zone == Zone::Exile && o.zone_change_count == f.card.zone_change_count
     });
-    state.face_down.push(FaceDownV1 { card, owner_knows, exiled_with, foretold_turn });
+    state.face_down.push(FaceDownV1 { card, known_to, exiled_with, foretold_turn });
     true
 }
 
@@ -34,11 +58,11 @@ pub fn exile(
 pub fn exile_top(
     state: &mut GameState,
     player: PlayerId,
-    owner_knows: bool,
+    owner_may_look: bool,
     exiled_with: Option<ObjectLinkV4>,
 ) -> Option<ObjectId> {
     let top = *state.players[player.index()].library.first()?;
-    exile(state, top, owner_knows, exiled_with, None).then_some(top)
+    exile(state, top, owner_may_look, exiled_with, None).then_some(top)
 }
 
 /// Counts individual turns (`GameState::turn` counts rounds): foretold
@@ -104,6 +128,29 @@ mod tests {
         event::propose_and_commit(&mut state, ProposedEvent::zone_change(a, Zone::Hand));
         assert_eq!(exiled_with(&state, link(src)), vec![b]);
         assert!(exiled_with(&state, ObjectLinkV4 { object: src, zone_change_count: 1 }).is_empty());
+    }
+
+    #[test]
+    fn players_who_knew_a_card_still_know_it_face_down() {
+        // 406.3 stops players looking, not remembering.
+        let mut state = game();
+        let (p0, p1) = (PlayerId::P0, PlayerId::P1);
+        state.reveal_library_top(p1, p0, 1);
+        let top = exile_top(&mut state, p0, false, None).unwrap();
+        assert!(!state.face_down_hidden_from(top, p1) && state.face_down_hidden_from(top, p0));
+
+        let card = state.players[0].library[0];
+        event::propose_and_commit(&mut state, ProposedEvent::zone_change(card, Zone::Hand));
+        state.reveal_hand_card(p1, p0, card).unwrap();
+        assert!(exile(&mut state, card, true, None, Some(0)));
+        assert!(!state.face_down_hidden_from(card, p1), "a revealed card, foretold");
+
+        // Back to hand: known there only to whoever knew it face down.
+        event::propose_and_commit(&mut state, ProposedEvent::zone_change(top, Zone::Hand));
+        assert!(state.known_hand_cards(p1, p0).iter().any(|e| e.object == top));
+        let unseen = exile_top(&mut state, p0, true, None).unwrap();
+        event::propose_and_commit(&mut state, ProposedEvent::zone_change(unseen, Zone::Hand));
+        assert!(!state.known_hand_cards(p1, p0).iter().any(|e| e.object == unseen));
     }
 
     #[test]

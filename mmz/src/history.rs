@@ -20,6 +20,8 @@ pub fn hist_vocab() -> [usize; HIST_FIELDS] {
 struct Event {
     kind: u16,
     actor: PlayerId,
+    /// The card is hidden from the other player (a foretold card).
+    secret: bool,
     turn: u32,
     step: u16,
     card: u16,
@@ -71,12 +73,12 @@ impl History {
             Kind::Cast => self.spells[actor.index()] += 1,
             _ => {}
         }
-        // Activations from hand and foretold cards don't show the card.
-        let hidden_source = (feat.kind == Kind::Activate && feat.tgt <= 1) || feat.kind == Kind::Foretell;
-        let card = if feat.src == u16::MAX || hidden_source { 0 } else { feat.src + 1 };
+        // Activating from a hidden zone reveals the card (602.2a); foretelling doesn't.
+        let card = if feat.src == u16::MAX { 0 } else { feat.src + 1 };
+        let secret = feat.kind == Kind::Foretell;
         let stack = st.stack.last().and_then(|s| st.objects.try_get(s.source)).map_or(0, |o| o.card_def + 1);
         let (untapped, hand) = snapshot(st);
-        self.events.push(Event { kind: feat.kind as u16 + 1, actor, turn: st.turn, step: st.step as u16, card, stack, untapped, hand });
+        self.events.push(Event { kind: feat.kind as u16 + 1, actor, secret, turn: st.turn, step: st.step as u16, card, stack, untapped, hand });
     }
 
     fn close_turns(&mut self, st: &GameState) {
@@ -86,7 +88,7 @@ impl History {
                 let actor = if (t - self.turn) % 2 == 0 { active } else { active.opponent() };
                 let (lands, mine, theirs) =
                     if t == self.turn { (self.lands, self.spells[actor.index()], self.spells[actor.opponent().index()]) } else { (0, 0, 0) };
-                self.events.push(Event { kind: TURN_END, actor, turn: t, step: lands, card: mine, stack: theirs, untapped, hand });
+                self.events.push(Event { kind: TURN_END, actor, secret: false, turn: t, step: lands, card: mine, stack: theirs, untapped, hand });
             }
         }
         self.turn = st.turn;
@@ -104,8 +106,9 @@ impl History {
             .map(|e| {
                 let ago = now_turn.saturating_sub(e.turn).min(15) as u16;
                 let actor = if e.actor == observer { 1 } else { 2 };
+                let card = if e.secret && e.actor != observer { 0 } else { e.card };
                 let (step, card, stack) =
-                    if e.kind == TURN_END { (e.step.min(15), e.card.min(15), e.stack.min(15)) } else { (e.step.min(15), e.card, e.stack) };
+                    if e.kind == TURN_END { (e.step.min(15), card.min(15), e.stack.min(15)) } else { (e.step.min(15), card, e.stack) };
                 [e.kind, card, actor, ago, step, stack, e.untapped[opp].min(15), e.hand[opp].min(15)]
             })
             .collect()
@@ -120,6 +123,15 @@ mod tests {
     use mtg_kernel::state::SplitMix64;
 
     #[test]
+    fn a_foretold_card_is_hidden_only_from_the_opponent() {
+        let mut h = History::default();
+        let e = Event { kind: Kind::Foretell as u16 + 1, actor: PlayerId::P0, secret: true, turn: 1, step: 0, card: 42, stack: 0, untapped: [0; 2], hand: [0; 2] };
+        h.events.push(e);
+        assert_eq!(h.tokens(PlayerId::P0, 1)[0][1], 42);
+        assert_eq!(h.tokens(PlayerId::P1, 1)[0][1], 0);
+    }
+
+    #[test]
     fn activated_cards_are_ones_the_other_player_has_seen() {
         let mut rng = SplitMix64::seed(3);
         let (mut logged, mut hidden) = (0, Vec::new());
@@ -127,26 +139,25 @@ mod tests {
             for b in deck_names() {
                 let mut g = Game::new(a, b, 7).unwrap();
                 let mut h = History::default();
+                // Logged cards the other player hasn't been shown yet. A card
+                // activated from hand is revealed once the activation is
+                // complete (602.2a), which may take more choices.
+                let mut awaiting: Vec<(u16, PlayerId)> = Vec::new();
+                let shown = |g: &Game, card: u16, actor: PlayerId| observe(g, actor.opponent()).iter().any(|t| t[0] == card);
                 while !g.is_over() {
                     let n = g.choices().len();
                     let i = (rng.next_u64() % n as u64) as usize;
                     let before = h.events.len();
                     h.record(&g, i);
-                    let new_card = h.events[before..].iter().rev().find(|e| e.kind == Kind::Activate as u16 + 1).map(|e| (e.card, e.actor));
-                    let shown = |g: &Game, card: u16, actor: PlayerId| observe(g, actor.opponent()).iter().any(|t| t[0] == card);
-                    let seen_before = new_card.is_some_and(|(card, actor)| shown(&g, card, actor));
-                    g.apply(i);
-                    if let Some((card, actor)) = new_card {
-                        if card == 0 {
-                            continue;
-                        }
+                    if let Some(e) = h.events[before..].iter().rev().find(|e| e.kind == Kind::Activate as u16 + 1 && e.card != 0) {
                         logged += 1;
-                        let seen = seen_before || shown(&g, card, actor);
-                        if !seen {
-                            hidden.push(format!("{a} vs {b}: {}", CARD_DEFS[card as usize - 1].name));
-                        }
+                        awaiting.push((e.card, e.actor));
                     }
+                    awaiting.retain(|&(card, actor)| !shown(&g, card, actor));
+                    g.apply(i);
+                    awaiting.retain(|&(card, actor)| !shown(&g, card, actor));
                 }
+                hidden.extend(awaiting.iter().map(|&(card, _)| format!("{a} vs {b}: {}", CARD_DEFS[card as usize - 1].name)));
                 let vocab = hist_vocab();
                 for p in [PlayerId::P0, PlayerId::P1] {
                     let toks = h.tokens(p, g.state.turn);

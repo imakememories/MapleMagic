@@ -389,6 +389,7 @@ fn connecting_the_dots_exiles_unseen_cards_and_cashes_them_in() {
     for c in exiled {
         assert_eq!(state.objects.get(c).zone, Zone::Hand);
         assert!(state.face_down(c).is_none());
+        assert!(!state.known_hand_cards(P1, P0).iter().any(|e| e.object == c), "never shown to the opponent");
     }
 }
 

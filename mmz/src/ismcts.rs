@@ -1124,6 +1124,21 @@ mod tests {
         }
     }
 
+    /// Lets `holder` play the exiled `id` until its next turn, as the engine
+    /// grants it from the card's true identity.
+    fn permit(state: &mut mtg_kernel::state::GameState, id: mtg_kernel::ids::ObjectId, holder: PlayerId) {
+        use mtg_kernel::engine::{PlayOrCast, PlayPermission, PlayPermissionExpiry};
+        let land = CARD_DEFS[state.objects.get(id).card_def as usize].is_playable_land();
+        state.engine.exile_play_permissions.retain(|p| p.object != id);
+        state.engine.exile_play_permissions.push(PlayPermission {
+            object: id,
+            holder,
+            zone_change_generation: state.objects.get(id).zone_change_count,
+            play_or_cast: if land { PlayOrCast::Play } else { PlayOrCast::Cast },
+            expiry: PlayPermissionExpiry::UntilHoldersNextTurn { holder_turn_started: false },
+        });
+    }
+
     /// Whether the player to act can see its own library (it is searching it).
     fn sees_own_library(g: &Game) -> bool {
         let me = g.to_act();
@@ -1168,13 +1183,26 @@ mod tests {
                     let owner_knows = owner != me && rng.next_u64() % 2 == 0;
                     let keep = owner == me && sees_own_library(&g);
                     if let Some(fd) = mtg_kernel::face_down::exile_top(&mut base.state, owner, owner_knows, None) {
+                        // A card its owner may look at can also be playable (Headliner Scarlett).
+                        if owner_knows {
+                            permit(&mut base.state, fd, owner);
+                        }
                         let d = |id: mtg_kernel::ids::ObjectId| base.state.objects.get(id).card_def;
-                        let other = unseen_slots(&base.state, me, owner, keep).into_iter().find(|&b| d(b) != d(fd));
+                        let land = |id| CARD_DEFS[d(id) as usize].is_playable_land();
+                        let slots = unseen_slots(&base.state, me, owner, keep);
+                        let other = slots
+                            .iter()
+                            .copied()
+                            .find(|&b| d(b) != d(fd) && land(b) != land(fd))
+                            .or_else(|| slots.iter().copied().find(|&b| d(b) != d(fd)));
                         if let Some(b) = other {
                             let mut t = base.clone();
                             let (da, db) = (d(fd), d(b));
                             set_card(&mut t.state, fd, db);
                             set_card(&mut t.state, b, da);
+                            if owner_knows {
+                                permit(&mut t.state, fd, owner);
+                            }
                             out.push((base, t, "face down"));
                         }
                     }

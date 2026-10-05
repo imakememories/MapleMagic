@@ -33,13 +33,15 @@ pub struct CommanderStateV1 {
     pub declined: [Option<u32>; 2],
 }
 
-/// A card exiled face down (406.3), hidden from both players unless
-/// `owner_knows`. Bound to one exile incarnation: once the card leaves exile
+/// A card exiled face down (406.3), hidden from every player not in
+/// `known_to`. Bound to one exile incarnation: once the card leaves exile
 /// the entry is stale and ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FaceDownV1 {
     pub card: ObjectLinkV4,
-    pub owner_knows: bool,
+    /// Per player: may look at it (406.3), or knew which card it was before
+    /// it went face down (a player remembers what it has seen).
+    pub known_to: [bool; 2],
     /// The permanent whose ability exiled it ("cards exiled with ~").
     pub exiled_with: Option<ObjectLinkV4>,
     /// The turn it was foretold (702.143), if it was.
@@ -1505,7 +1507,7 @@ impl GameState {
 
     /// Whether `viewer` can't tell which card the face-down `id` is.
     pub fn face_down_hidden_from(&self, id: ObjectId, viewer: PlayerId) -> bool {
-        self.face_down(id).is_some_and(|f| !f.owner_knows || self.objects.get(id).owner != viewer)
+        self.face_down(id).is_some_and(|f| !f.known_to[viewer.index()])
     }
 
     /// Records a revealed hand identity for exactly one observer. The entry

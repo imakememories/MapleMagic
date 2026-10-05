@@ -13577,7 +13577,8 @@ fn abort_cast(state: &mut GameState, pending: PendingCast, cast_method: CastMeth
                 .expect("an aborted public stack spell just returned to hand");
         }
     }
-    // A foretold card goes back face down, still foretold.
+    // A foretold card goes back face down, still foretold; both players saw
+    // it face up on the stack (406.3a).
     if let (Some(SpellCastRouteV4::Foretold { foretold_turn }), Zone::Exile) = (foretold_route, to_zone) {
         let card = crate::state::ObjectLinkV4 {
             object: pending.spell,
@@ -13585,7 +13586,7 @@ fn abort_cast(state: &mut GameState, pending: PendingCast, cast_method: CastMeth
         };
         state.face_down.push(crate::state::FaceDownV1 {
             card,
-            owner_knows: true,
+            known_to: [true, true],
             exiled_with: None,
             foretold_turn: Some(foretold_turn),
         });
