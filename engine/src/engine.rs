@@ -950,6 +950,9 @@ pub struct PendingOptionalCost {
     pub source: ObjectId,
     pub discard: u8,
     pub sacrifice_lands: u8,
+    /// See `EffectOp::MayPayCostThen::sacrifice_artifacts`.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub sacrifice_artifacts: u8,
     pub discard_payable: bool,
     pub sacrifice_payable: bool,
     pub then: EffectOp,
@@ -973,12 +976,19 @@ pub struct PendingOptionalCost {
 }
 
 /// Staged once `Action::ChooseOptionalCost(SacrificeLand)` is chosen --
+fn is_zero_u8(value: &u8) -> bool {
+    *value == 0
+}
+
 /// see `EngineState::pending_optional_cost_sacrifice`'s doc.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PendingOptionalCostSacrifice {
     pub player: PlayerId,
     pub source: ObjectId,
     pub remaining: u8,
+    /// Sacrificing artifacts rather than lands.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub artifacts: bool,
     pub chosen: Vec<ObjectId>,
     pub then: EffectOp,
     /// Carried over from `PendingOptionalCost::spell_resume` -- see that
@@ -1031,6 +1041,7 @@ pub struct PendingSpellCopy {
 pub enum OptionalCostChoice {
     Decline,
     Discard,
+    /// The sacrifice option: lands, or artifacts for Vision of Love.
     SacrificeLand,
 }
 
@@ -3366,7 +3377,7 @@ fn component_payment_shape_supported(components: &[CostComponent]) -> bool {
                 }
                 mana = Some(cost);
             }
-            CostComponent::CreatedTokenThisTurn => {}
+            CostComponent::CreatedTokenThisTurn | CostComponent::Celebrating => {}
             CostComponent::Tap => {
                 tap_count += 1;
                 saw_source_changing_component = true;
@@ -3672,6 +3683,7 @@ fn can_pay_components(
             CostComponent::ManaLessDuringYourTurn { .. } => activation_mana_cost_for(std::slice::from_ref(c), player, state)
                 .is_some_and(|cost| mana::can_pay(&cost, 0, player, state).is_some()),
             CostComponent::CreatedTokenThisTurn => state.tokens_created_this_turn[player.index()] > 0,
+            CostComponent::Celebrating => crate::statics::celebrating(state, player),
             CostComponent::PayLife(amount) => {
                 state.players[player.index()].life >= i32::from(*amount)
             }
@@ -3971,7 +3983,7 @@ fn pay_cost_components_with_x(
                     ProposedEvent::zone_change(object_cost_chosen[0], Zone::Hand),
                 );
             }
-            CostComponent::CreatedTokenThisTurn => {}
+            CostComponent::CreatedTokenThisTurn | CostComponent::Celebrating => {}
             CostComponent::Mana(_) | CostComponent::ManaLessDuringYourTurn { .. } => pay_plan(
                 state,
                 player,
@@ -5759,7 +5771,7 @@ fn legal_blockers_for(state: &GameState, attacker: ObjectId) -> Vec<ObjectId> {
             if !def.is_executable() || !object_has_type(state, id, CardType::Creature) {
                 return false;
             }
-            if cant_block(state, id) {
+            if cant_block(state, id) || crate::statics::coward_cant_block(state, id, attacker) {
                 return false;
             }
             if has_effective_keyword(state, attacker, Keywords::PROTECTION_FROM_MONOCOLORED)
@@ -6693,10 +6705,19 @@ fn drain_pending_effect_or_decide(state: &mut GameState) -> Option<Decision> {
 /// mirrors: ask unless this single pick's own candidate pool is `<= 1`).
 /// Once fully chosen, commits the sacrifice and runs `then` (Highway
 /// Robbery's "draw two cards").
+/// What an optional sacrifice cost may still take: lands, or artifacts.
+fn optional_sacrifice_candidates(pending: &PendingOptionalCostSacrifice, state: &GameState) -> Vec<ObjectId> {
+    if pending.artifacts {
+        sacrificeable_controlled_permanents(pending.player, PermanentFilter::Artifact, state, &pending.chosen)
+    } else {
+        sacrificeable_lands(pending.player, state, &pending.chosen)
+    }
+}
+
 fn drain_pending_optional_cost_sacrifice_or_decide(state: &mut GameState) -> Option<Decision> {
     let pending = state.engine.pending_optional_cost_sacrifice.clone()?;
     if (pending.chosen.len() as u8) < pending.remaining {
-        let candidates = sacrificeable_lands(pending.player, state, &pending.chosen);
+        let candidates = optional_sacrifice_candidates(&pending, state);
         let remaining = pending.remaining - pending.chosen.len() as u8;
         if candidates.len() < usize::from(remaining) {
             state.engine.halted = Some((
@@ -6721,7 +6742,7 @@ fn drain_pending_optional_cost_sacrifice_or_decide(state: &mut GameState) -> Opt
         return Some(Decision::ChooseCostTargets {
             player: pending.player,
             source: pending.source,
-            cost_kind: CostKind::SacrificeLands,
+            cost_kind: if pending.artifacts { CostKind::SacrificeArtifacts } else { CostKind::SacrificeLands },
             remaining,
             candidates,
         });
@@ -10023,6 +10044,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             state.players[1].draws_this_turn = 0;
             state.life_lost_this_turn = [0; 2];
             state.tokens_created_this_turn = [0; 2];
+            state.nonland_permanents_entered = [0; 2];
             state.players[0].spells_cast_this_turn = 0;
             state.players[1].spells_cast_this_turn = 0;
             for (_, object) in state.objects.iter_mut() {
@@ -10321,9 +10343,13 @@ pub fn damage_is_prevented_by_protection(
 pub fn effective_power(state: &GameState, id: ObjectId) -> i32 {
     let obj = state.objects.get(id);
     let def = &card_def::CARD_DEFS[obj.card_def as usize];
-    let mut power = def.power_for_face(obj.v4.face_index).unwrap_or(0) as i32
-        + obj.counters.plus1_plus1 as i32
-        - obj.counters.minus1_minus1 as i32;
+    let base = if crate::statics::celebrating_goddric(state, id) {
+        4
+    } else {
+        def.power_for_face(obj.v4.face_index).unwrap_or(0) as i32
+    };
+    let mut power = base + obj.counters.plus1_plus1 as i32 - obj.counters.minus1_minus1 as i32
+        + crate::statics::gornog_power_bonus(state, id);
     power += bestow_host_counter_bonus(state, id);
     if def.is_executable() {
         if let Some(boost) = static_self_boost_for(def.name) {
@@ -10368,7 +10394,11 @@ pub fn effective_power(state: &GameState, id: ObjectId) -> i32 {
 pub fn effective_toughness(state: &GameState, id: ObjectId) -> i32 {
     let obj = state.objects.get(id);
     let def = &card_def::CARD_DEFS[obj.card_def as usize];
-    let mut toughness = def.toughness_for_face(obj.v4.face_index).unwrap_or(0) as i32
+    let mut toughness = (if crate::statics::celebrating_goddric(state, id) {
+        4
+    } else {
+        def.toughness_for_face(obj.v4.face_index).unwrap_or(0) as i32
+    })
         + obj.counters.plus1_plus1 as i32
         - obj.counters.minus1_minus1 as i32
         - obj.counters.minus0_minus1 as i32;
@@ -10440,6 +10470,9 @@ pub fn has_effective_keyword(state: &GameState, id: ObjectId, kw: Keywords) -> b
         return true;
     }
     if crate::statics::grants_keyword(state, id, kw) {
+        return true;
+    }
+    if kw == Keywords::FLYING && crate::statics::celebrating_goddric(state, id) {
         return true;
     }
     if kw == Keywords::HASTE && crate::statics::has_riot_haste(state, id) {
@@ -10563,6 +10596,10 @@ pub fn effective_subtype_ids(state: &GameState, id: ObjectId) -> Vec<u16> {
             .filter_map(|(_, equipment)| equipment.add_subtype.map(|subtype| subtype.stable_id())),
     );
     subtype_ids.extend(subtypes_added_this_turn(state, id).map(card_def::Subtype::stable_id));
+    if let Some(only) = crate::statics::creature_type_override(state, id) {
+        subtype_ids.retain(|&s| !crate::statics::is_creature_type_id(s));
+        subtype_ids.push(only.stable_id());
+    }
     subtype_ids.sort_unstable();
     subtype_ids.dedup();
     subtype_ids
@@ -10572,6 +10609,11 @@ pub fn has_effective_subtype(state: &GameState, id: ObjectId, subtype: card_def:
     let Some(object) = state.objects.try_get(id) else {
         return false;
     };
+    if subtype.is_creature_type() {
+        if let Some(only) = crate::statics::creature_type_override(state, id) {
+            return subtype == only;
+        }
+    }
     if object
         .v4
         .effective_subtype_ids
@@ -12036,7 +12078,7 @@ fn apply_choose_cost_target(state: &mut GameState, id: ObjectId) -> Result<(), S
     }
     if let Some(pending) = state.engine.pending_optional_cost_sacrifice.as_ref() {
         if (pending.chosen.len() as u8) < pending.remaining {
-            let candidates = sacrificeable_lands(pending.player, state, &pending.chosen);
+            let candidates = optional_sacrifice_candidates(pending, state);
             let remaining = pending.remaining - pending.chosen.len() as u8;
             if candidates.len() < usize::from(remaining) {
                 return Err("optional sacrifice cost can no longer be completed".to_string());
@@ -12141,7 +12183,8 @@ fn apply_choose_optional_cost(
             state.engine.pending_optional_cost_sacrifice = Some(PendingOptionalCostSacrifice {
                 player: poc.player,
                 source: poc.source,
-                remaining: poc.sacrifice_lands,
+                remaining: poc.sacrifice_lands.max(poc.sacrifice_artifacts),
+                artifacts: poc.sacrifice_artifacts > 0,
                 chosen: vec![],
                 then: poc.then,
                 spell_resume: poc.spell_resume,

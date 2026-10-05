@@ -143,3 +143,72 @@ pub fn has_riot_haste(state: &GameState, id: ObjectId) -> bool {
     let o = state.objects.get(id);
     o.zone == Zone::Battlefield && state.riot_haste.iter().any(|l| l.object == id && l.zone_change_count == o.zone_change_count)
 }
+
+/// Celebration: two or more nonland permanents entered under `player`'s
+/// control this turn.
+pub fn celebrating(state: &GameState, player: PlayerId) -> bool {
+    state.nonland_permanents_entered[player.index()] >= 2
+}
+
+/// Goddric, Cloaked Reveler while celebrating: a 4/4 flying Dragon.
+pub fn celebrating_goddric(state: &GameState, id: ObjectId) -> bool {
+    let o = state.objects.get(id);
+    o.zone == Zone::Battlefield && CARD_DEFS[o.card_def as usize].name == "Goddric, Cloaked Reveler" && celebrating(state, o.controller)
+}
+
+static CREATURE_TYPE_IDS: LazyLock<Vec<u16>> = LazyLock::new(|| {
+    let mut ids: Vec<u16> = Subtype::CREATURE_TYPES.iter().map(|s| s.stable_id()).collect();
+    ids.sort_unstable();
+    ids
+});
+
+pub fn is_creature_type_id(id: u16) -> bool {
+    CREATURE_TYPE_IDS.binary_search(&id).is_ok()
+}
+
+/// The creature type that replaces all of `id`'s creature types (layer 4):
+/// an effect with no duration (Coward, newest wins), else Goddric's static
+/// Dragon while celebrating.
+pub fn creature_type_override(state: &GameState, id: ObjectId) -> Option<Subtype> {
+    let o = state.objects.get(id);
+    if o.zone != Zone::Battlefield {
+        return None;
+    }
+    state
+        .creature_type_overrides
+        .iter()
+        .rev()
+        .find(|(l, _)| l.object == id && l.zone_change_count == o.zone_change_count)
+        .map(|e| e.1)
+        .or_else(|| celebrating_goddric(state, id).then_some(Subtype::Dragon))
+}
+
+/// Gornog: "Attacking Warriors you control get +X/+0, where X is the number
+/// of Cowards your opponents control," per Gornog its controller controls.
+pub fn gornog_power_bonus(state: &GameState, id: ObjectId) -> i32 {
+    let o = state.objects.get(id);
+    if o.zone != Zone::Battlefield || !state.engine.combat.attackers.contains(&id) {
+        return 0;
+    }
+    let gornogs = state.players[o.controller.index()]
+        .battlefield
+        .iter()
+        .filter(|&&g| CARD_DEFS[state.objects.get(g).card_def as usize].name == "Gornog, the Red Reaper")
+        .count() as i32;
+    if gornogs == 0 || !crate::engine::has_effective_subtype(state, id, Subtype::Warrior) {
+        return 0;
+    }
+    let cowards = state.players[o.controller.opponent().index()]
+        .battlefield
+        .iter()
+        .filter(|&&c| crate::engine::has_effective_subtype(state, c, Subtype::Coward))
+        .count() as i32;
+    gornogs * cowards
+}
+
+/// Gornog: "Cowards can't block Warriors."
+pub fn coward_cant_block(state: &GameState, blocker: ObjectId, attacker: ObjectId) -> bool {
+    named_on_battlefield(state, None, "Gornog, the Red Reaper")
+        && crate::engine::has_effective_subtype(state, blocker, Subtype::Coward)
+        && crate::engine::has_effective_subtype(state, attacker, Subtype::Warrior)
+}

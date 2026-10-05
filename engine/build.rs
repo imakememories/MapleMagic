@@ -2735,6 +2735,7 @@ enum AbilityCostRecipe {
     DiscardHand,
     PayLifePerCommanderColor,
     CreatedTokenThisTurn,
+    Celebrating,
     ManaLessDuringYourTurn { generic: u8, less: u8 },
     SacrificeSelf,
     ReturnControlledLandWithSubtype(&'static str),
@@ -2800,6 +2801,7 @@ enum AbilityEffectRecipe {
     TapTarget,
     DrawPerOpponentTappedCreature,
     DamageFromChargeCounters,
+    PumpControlledDragons,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3425,6 +3427,15 @@ fn escape_for(name: &str) -> String {
 /// then resolve the reusable typed library search.
 fn activated_ability_recipes_for(name: &str) -> &'static [ActivatedAbilityRecipe] {
     match name {
+        "Goddric, Cloaked Reveler" => &[ActivatedAbilityRecipe {
+            cost: &[AbilityCostRecipe::ManaCost("{R}"), AbilityCostRecipe::Celebrating],
+            effect: AbilityEffectRecipe::PumpControlledDragons,
+            activation_zone: "Battlefield",
+            sorcery_speed_only: false,
+            target_spec: "None",
+            activation_target_filter: "TargetSpecOnly",
+            max_activations_per_turn: None,
+        }],
         "Dragonspark Reactor" => &[ActivatedAbilityRecipe {
             cost: &[AbilityCostRecipe::ManaCost("{4}"), AbilityCostRecipe::SacrificeSelf],
             effect: AbilityEffectRecipe::DamageFromChargeCounters,
@@ -4055,6 +4066,7 @@ fn ability_cost_src(cost: AbilityCostRecipe) -> String {
         AbilityCostRecipe::DiscardHand => "CostComponent::DiscardHand".to_string(),
         AbilityCostRecipe::PayLifePerCommanderColor => "CostComponent::PayLifePerCommanderColor".to_string(),
         AbilityCostRecipe::CreatedTokenThisTurn => "CostComponent::CreatedTokenThisTurn".to_string(),
+        AbilityCostRecipe::Celebrating => "CostComponent::Celebrating".to_string(),
         AbilityCostRecipe::ManaLessDuringYourTurn { generic, less } => format!(
             "CostComponent::ManaLessDuringYourTurn {{ cost: Cost {{ pips: &[], generic: {generic}, x_count: 0 }}, less: {less} }}"
         ),
@@ -4098,6 +4110,7 @@ fn ability_cost_token(cost: AbilityCostRecipe) -> String {
         AbilityCostRecipe::DiscardHand => "discard_hand".to_string(),
         AbilityCostRecipe::PayLifePerCommanderColor => "pay_life_per_commander_color".to_string(),
         AbilityCostRecipe::CreatedTokenThisTurn => "created_token_this_turn".to_string(),
+        AbilityCostRecipe::Celebrating => "celebrating".to_string(),
         AbilityCostRecipe::ManaLessDuringYourTurn { generic, less } => format!("mana_less_during_your_turn:{generic}:{less}"),
         AbilityCostRecipe::SacrificeSelf => "sacrifice_self".to_string(),
         AbilityCostRecipe::ReturnControlledLandWithSubtype(subtype) => {
@@ -4148,6 +4161,7 @@ fn ability_effect_token(effect: AbilityEffectRecipe) -> String {
         AbilityEffectRecipe::ExileAllGraveyards => "exile_all_graveyards".to_string(),
         AbilityEffectRecipe::TapTarget => "tap_target".to_string(),
         AbilityEffectRecipe::DamageFromChargeCounters => "damage_from_charge_counters".to_string(),
+        AbilityEffectRecipe::PumpControlledDragons => "pump_controlled_dragons".to_string(),
         AbilityEffectRecipe::DrawPerOpponentTappedCreature => "draw_per_opponent_tapped_creature".to_string(),
         AbilityEffectRecipe::DealDamageAnyTarget(amount) => {
             format!("deal_damage_any_target:{amount}")
@@ -4278,6 +4292,7 @@ fn ability_effect_fn_name(effect: AbilityEffectRecipe) -> String {
         AbilityEffectRecipe::ExileAllGraveyards => "ability_effect_exile_all_graveyards".to_string(),
         AbilityEffectRecipe::TapTarget => "ability_effect_tap_target".to_string(),
         AbilityEffectRecipe::DamageFromChargeCounters => "ability_effect_damage_from_charge_counters".to_string(),
+        AbilityEffectRecipe::PumpControlledDragons => "ability_effect_pump_controlled_dragons".to_string(),
         AbilityEffectRecipe::DrawPerOpponentTappedCreature => "ability_effect_draw_per_opponent_tapped_creature".to_string(),
         AbilityEffectRecipe::DealDamageAnyTarget(amount) => {
             format!("ability_effect_deal_damage_any_target_{amount}")
@@ -4459,6 +4474,7 @@ fn hand_written_spell(name: &str) -> Option<(&'static str, &'static str)> {
             "crate::commander_cards::delayed_blast_fireball",
         ),
         "Shivan Devastator" => ("TargetSpec::None", "crate::commander_cards::shivan_devastator"),
+        "Vision of Love" => ("TargetSpec::None", "crate::commander_cards::vision_of_love"),
         "Mass Mutiny" => (
             "TargetSpec::UpToOneOpponentControlledCreature",
             "crate::commander_cards::threaten_target",
@@ -5009,6 +5025,9 @@ fn codegen(cards: &[CardJson]) -> String {
             }
             AbilityEffectRecipe::DamageFromChargeCounters => {
                 writeln!(out, "    EffectOp::DamageFromChargeCounters").unwrap();
+            }
+            AbilityEffectRecipe::PumpControlledDragons => {
+                writeln!(out, "    EffectOp::PumpControlled {{ filter: CreatureFilter::ControlledWithSubtype(Subtype::Dragon), power: 1, toughness: 0, grant_haste: false }}").unwrap();
             }
             AbilityEffectRecipe::DrawPerOpponentTappedCreature => {
                 writeln!(out, "    EffectOp::DrawPerOpponentTappedCreature").unwrap();
@@ -5658,6 +5677,7 @@ fn codegen(cards: &[CardJson]) -> String {
         writeln!(out, "    Some(EffectOp::MayPayCostThen {{").unwrap();
         writeln!(out, "        discard: 1,").unwrap();
         writeln!(out, "        sacrifice_lands: 1,").unwrap();
+        writeln!(out, "        sacrifice_artifacts: 0,").unwrap();
         writeln!(out, "        then: Box::new(EffectOp::DrawCards {{ player: PlayerRef::Controller, count: 2 }}),").unwrap();
         writeln!(out, "    }})").unwrap();
         writeln!(out, "}}").unwrap();
@@ -7088,6 +7108,7 @@ fn subtype_variant(t: &str) -> &'static str {
         "Lesson" => "Subtype::Lesson",
         "Siege" => "Subtype::Siege",
         "Tyvar" => "Subtype::Tyvar",
+        "Coward" => "Subtype::Coward",
         other => panic!("cards_v1.json: unknown subtype {other:?}"),
     }
 }

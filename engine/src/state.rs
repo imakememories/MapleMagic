@@ -56,6 +56,10 @@ fn no_tokens_created(value: &[u16; 2]) -> bool {
     *value == [0, 0]
 }
 
+fn no_celebration(value: &[u8; 2]) -> bool {
+    *value == [0, 0]
+}
+
 fn nobody(value: &[bool; 2]) -> bool {
     *value == [false, false]
 }
@@ -1282,6 +1286,14 @@ pub struct GameState {
     /// Creatures that chose haste for riot; they keep it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub riot_haste: Vec<ObjectLinkV4>,
+    /// Nonland permanents that entered under each player's control this
+    /// turn, up to 2 (celebration); reset as each turn begins.
+    #[serde(default, skip_serializing_if = "no_celebration")]
+    pub nonland_permanents_entered: [u8; 2],
+    /// Creatures whose creature types an effect replaced, with no duration
+    /// (Gornog's "becomes a Coward"): until they leave the battlefield.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub creature_type_overrides: Vec<(ObjectLinkV4, crate::card_def::Subtype)>,
     /// Priority/stack/turn-structure bookkeeping and the propose-commit
     /// event log, all owned by the `engine`/`event`/`trigger` modules. See
     /// `engine::EngineState`.
@@ -1336,6 +1348,12 @@ impl Hash for GameState {
             if !list.is_empty() {
                 list.hash(state);
             }
+        }
+        if !no_celebration(&self.nonland_permanents_entered) {
+            self.nonland_permanents_entered.hash(state);
+        }
+        if !self.creature_type_overrides.is_empty() {
+            self.creature_type_overrides.hash(state);
         }
         if !self.last_known_charge.is_empty() {
             self.last_known_charge.iter().map(|e| e.1).collect::<Vec<_>>().hash(state);
@@ -1492,6 +1510,8 @@ impl GameState {
             last_known_charge: Vec::new(),
             pending_riot: Vec::new(),
             riot_haste: Vec::new(),
+            nonland_permanents_entered: [0; 2],
+            creature_type_overrides: Vec::new(),
             engine: crate::engine::EngineState::default(),
         }
     }

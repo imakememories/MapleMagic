@@ -247,6 +247,8 @@ pub enum Subtype {
     Lesson,
     Siege,
     Tyvar,
+    /// A creature type no printed card has; Gornog makes creatures Cowards.
+    Coward,
 }
 
 impl Subtype {
@@ -341,6 +343,7 @@ impl Subtype {
         Subtype::Villain,
         Subtype::Warlock,
         Subtype::Wurm,
+        Subtype::Coward,
     ];
 
     /// Schema-v4 observation id. Existing discriminants are append-only:
@@ -411,6 +414,7 @@ impl Subtype {
                 | Subtype::Phyrexian
                 | Subtype::Horror
                 | Subtype::Nightmare
+                | Subtype::Coward
         )
     }
 }
@@ -731,6 +735,9 @@ pub enum CostComponent {
     /// "Activate only if you created a token this turn" (Idol of Oblivion);
     /// pays nothing.
     CreatedTokenThisTurn,
+    /// Celebration (Goddric's ability exists only while celebrating); pays
+    /// nothing.
+    Celebrating,
     /// A mana cost that costs `less` generic less during its payer's turn
     /// (Hylda's Crown of Winter).
     ManaLessDuringYourTurn { cost: Cost, less: u8 },
@@ -1577,7 +1584,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0x9929_d9d5_8bb6_a81a);
+        assert_eq!(KERNEL_CARDDB_HASH, 0xab8a_c749_ec41_fff9);
     }
 
     #[test]

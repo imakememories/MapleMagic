@@ -834,6 +834,13 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
         CommittedEvent::ZoneChange { object, to: Zone::Battlefield, .. } | CommittedEvent::CreateToken { object, .. } => Some(*object),
         _ => None,
     };
+    if let Some(object) = entered {
+        let o = state.objects.get(object);
+        if o.zone == Zone::Battlefield && !crate::engine::object_has_type(state, object, crate::card_def::CardType::Land) {
+            let n = &mut state.nonland_permanents_entered[o.controller.index()];
+            *n = (*n + 1).min(2);
+        }
+    }
     if let Some(object) = entered.filter(|&o| crate::statics::has_riot(state, o)) {
         let link = crate::state::ObjectLinkV4 { object, zone_change_count: state.objects.get(object).zone_change_count };
         state.pending_riot.push(link);

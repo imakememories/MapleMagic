@@ -7967,7 +7967,7 @@
     },
     {
       "name": "Goddric, Cloaked Reveler",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{1}{R}{R}",
       "mana_value": 3,
       "colors": [
@@ -7994,7 +7994,6 @@
       "complexity": "commander",
       "mechanics": [],
       "keywords": [
-        "flying",
         "haste"
       ],
       "oracle": "Haste\nCelebration \u2014 As long as two or more nonland permanents entered the battlefield under your control this turn, Goddric is a Dragon with base power and toughness 4/4, flying, and \"{R}: Dragons you control get +1/+0 until end of turn.\" (He loses all other creature types.)",
@@ -8094,7 +8093,7 @@
     },
     {
       "name": "Gornog, the Red Reaper",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}{R}",
       "mana_value": 3,
       "colors": [
@@ -8932,10 +8931,7 @@
       "sideboard_only": false,
       "complexity": "commander",
       "mechanics": [],
-      "keywords": [
-        "haste",
-        "vigilance"
-      ],
+      "keywords": [],
       "oracle": "(As a Siege enters, choose an opponent to protect it. You and others can attack it. When it's defeated, exile it, then cast it transformed.)\nWhen this Siege enters, search your library for up to two basic land cards, put them onto the battlefield tapped, then shuffle. // Vigilance, haste\nAs long as this creature is on the battlefield, it's a land in addition to its other types.\n{T}: Add one mana of any color.",
       "layout": "transform",
       "java_file": "Mage.Sets/src/mage/cards/i/InvasionOfZendikar.java"
@@ -13056,7 +13052,7 @@
     },
     {
       "name": "Vision of Love",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{1}{R}",
       "mana_value": 2,
       "colors": [

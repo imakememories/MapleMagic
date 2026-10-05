@@ -345,6 +345,9 @@ pub enum EffectOp {
     MayPayCostThen {
         discard: u8,
         sacrifice_lands: u8,
+        /// Artifacts to sacrifice instead of lands (Vision of Love); at most
+        /// one of the two sacrifice counts is nonzero.
+        sacrifice_artifacts: u8,
         then: Box<EffectOp>,
     },
     /// "Deals `amount` damage to each opponent and each creature they
@@ -880,6 +883,11 @@ pub enum EffectOp {
     DrawPerOpponentTappedCreature,
     /// Put a charge counter on the source if it is on the battlefield.
     AddChargeCounterToSource,
+    /// The object's creature types become exactly Coward, with no duration
+    /// (Gornog, the Red Reaper).
+    BecomeCoward {
+        object: ObjectRef,
+    },
     /// The source deals damage equal to its charge counters (last known if
     /// it left the battlefield) to target 0 and to target 1 if chosen
     /// (Dragonspark Reactor).
@@ -9598,12 +9606,13 @@ fn commit_zone_change_batch(
 fn creature_matches_filter(state: &GameState, object: ObjectId, filter: &CreatureFilter) -> bool {
     let live = state.objects.get(object);
     let def = &crate::card_def::CARD_DEFS[live.card_def as usize];
-    if live.zone != Zone::Battlefield || !def.has_type(CardType::Creature) {
+    let _ = def;
+    if live.zone != Zone::Battlefield || !crate::engine::object_has_type(state, object, CardType::Creature) {
         return false;
     }
     match filter {
         CreatureFilter::AnyControlled => true,
-        CreatureFilter::ControlledWithSubtype(subtype) => def.subtypes.contains(subtype),
+        CreatureFilter::ControlledWithSubtype(subtype) => crate::engine::has_effective_subtype(state, object, *subtype),
         CreatureFilter::WithoutKeyword(keyword) => {
             !crate::engine::has_effective_keyword(state, object, *keyword)
         }
@@ -10359,6 +10368,16 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 event::propose_and_commit(state, event::ProposedEvent::draw(ctx.controller));
             }
         }
+        EffectOp::BecomeCoward { object } => {
+            if ctx.target_incarnation_matches(0, state) {
+                let id = ctx.resolve_object(*object);
+                let o = state.objects.get(id);
+                if o.zone == Zone::Battlefield {
+                    let link = crate::state::ObjectLinkV4 { object: id, zone_change_count: o.zone_change_count };
+                    state.creature_type_overrides.push((link, crate::card_def::Subtype::Coward));
+                }
+            }
+        }
         EffectOp::AddChargeCounterToSource => {
             if state.objects.get(ctx.source).zone == Zone::Battlefield {
                 state.objects.get_mut(ctx.source).counters.charge += 1;
@@ -10429,13 +10448,16 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         EffectOp::MayPayCostThen {
             discard,
             sacrifice_lands,
+            sacrifice_artifacts,
             then,
         } => {
             let discard_payable = *discard > 0
                 && state.players[ctx.controller.index()].hand.len() >= *discard as usize;
-            let sacrifice_payable = *sacrifice_lands > 0
+            let sacrifice_payable = (*sacrifice_lands > 0
                 && crate::engine::count_controlled_lands(ctx.controller, state)
-                    >= *sacrifice_lands as u32;
+                    >= *sacrifice_lands as u32)
+                || (*sacrifice_artifacts > 0
+                    && crate::effect::controlled_artifact_count(state, ctx.controller) >= *sacrifice_artifacts as usize);
             if !discard_payable && !sacrifice_payable {
                 // Nothing payable: DoIfCostPaid's own `cost.canPay(...)`
                 // gate is false too, so the reference never even offers the
@@ -10447,6 +10469,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 source: ctx.source,
                 discard: *discard,
                 sacrifice_lands: *sacrifice_lands,
+                sacrifice_artifacts: *sacrifice_artifacts,
                 discard_payable,
                 sacrifice_payable,
                 then: (**then).clone(),

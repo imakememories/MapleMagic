@@ -3,6 +3,19 @@
 
 use crate::effect::{EffectOp, ObjectRef, ThreatenFilter};
 
+/// "You may sacrifice an artifact or discard a card. If you do, draw two cards."
+pub fn vision_of_love() -> Option<EffectOp> {
+    Some(EffectOp::MayPayCostThen {
+        discard: 1,
+        sacrifice_lands: 0,
+        sacrifice_artifacts: 1,
+        then: Box::new(EffectOp::DrawCards {
+            player: crate::effect::PlayerRef::Controller,
+            count: 2,
+        }),
+    })
+}
+
 pub fn shivan_devastator() -> Option<EffectOp> {
     Some(EffectOp::PutSourceOntoBattlefieldWithXPlusOneCounters)
 }

@@ -1027,3 +1027,76 @@ fn with_spider_punk_out_counterspell_counters_nothing() {
     assert!(countered);
     assert_eq!(state.players[1].life, 37, "the Bolt resolved");
 }
+
+#[test]
+fn vision_of_love_draws_two_after_sacrificing_an_artifact_or_discarding() {
+    use mtg_kernel::engine::OptionalCostChoice;
+    for (choice, hand_after, treasure_left) in [
+        (OptionalCostChoice::SacrificeLand, 3, false),
+        (OptionalCostChoice::Discard, 2, true),
+        (OptionalCostChoice::Decline, 1, true),
+    ] {
+        let mut state = game();
+        lands(&mut state, P0, 2);
+        put(&mut state, P0, "Treasure Token");
+        put(&mut state, P0, "Sol Ring");
+        put_in(&mut state, P0, "Mountain", Zone::Hand);
+        let vision = put_in(&mut state, P0, "Vision of Love", Zone::Hand);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::CastSpell(vision)).unwrap();
+        loop {
+            let a = match engine::advance_until_decision(&mut state) {
+                Decision::ChooseOptionalCost { .. } => Action::ChooseOptionalCost(choice),
+                Decision::ChooseCostTargets { candidates, .. } => {
+                    assert_eq!(candidates.len(), 2, "two artifacts to choose from");
+                    let treasure = *candidates.iter().find(|&&c| state.objects.get(c).name == "Treasure Token").unwrap();
+                    Action::ChooseCostTarget(treasure)
+                }
+                Decision::Discard { choices, .. } => Action::Discard(vec![choices[0]]),
+                Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+                Decision::CastSpellOrPass { .. } => break,
+                other => panic!("unhandled decision {other:?}"),
+            };
+            engine::step(&mut state, a).unwrap();
+        }
+        assert_eq!(state.players[0].hand.len(), hand_after, "{choice:?}");
+        assert_eq!(!named(&state, P0, "Treasure Token").is_empty(), treasure_left, "{choice:?}");
+    }
+}
+
+#[test]
+fn gornog_makes_a_coward_that_cant_block_warriors_and_pumps_attacking_warriors() {
+    use mtg_kernel::card_def::Subtype;
+    let mut state = game();
+    let gornog = put(&mut state, P0, "Gornog, the Red Reaper");
+    let theirs = put(&mut state, P1, "Guttersnipe");
+    let base = effective_power(&state, gornog);
+    let blocks = attack_and_see_blocks(&mut state, vec![gornog], Target::Object(theirs));
+    assert!(engine::has_effective_subtype(&state, theirs, Subtype::Coward));
+    assert!(!engine::has_effective_subtype(&state, theirs, Subtype::Goblin), "its other creature types are gone");
+    assert!(blocks.iter().all(|b| !b.1.contains(&theirs)), "Cowards can't block Warriors");
+    assert_eq!(effective_power(&state, gornog), base + 1, "one Coward");
+    end_turn(&mut state);
+    assert!(engine::has_effective_subtype(&state, theirs, Subtype::Coward), "no duration");
+}
+
+#[test]
+fn goddric_is_a_four_four_flying_dragon_while_celebrating() {
+    use mtg_kernel::card_def::{Keywords, Subtype};
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    lands(&mut state, P0, 1);
+    let goddric = put(&mut state, P0, "Goddric, Cloaked Reveler");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert!(engine::has_effective_subtype(&state, goddric, Subtype::Human));
+    assert!(!engine::has_effective_keyword(&state, goddric, Keywords::FLYING));
+    assert!(!offered_ability(&mut state, goddric, 0), "the ability exists only while celebrating");
+    propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P0));
+    propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P0));
+    assert_eq!((effective_power(&state, goddric), engine::effective_toughness(&state, goddric)), (4, 4));
+    assert!(engine::has_effective_keyword(&state, goddric, Keywords::FLYING));
+    assert!(engine::has_effective_subtype(&state, goddric, Subtype::Dragon));
+    assert!(!engine::has_effective_subtype(&state, goddric, Subtype::Human), "he loses his other creature types");
+    activate(&mut state, goddric, 0, None);
+    assert_eq!(effective_power(&state, goddric), 5, "{{R}}: Dragons you control get +1/+0");
+}

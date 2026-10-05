@@ -97,6 +97,9 @@ pub enum TriggerCondition {
     ThisOrAnotherControlledArtifactEnters,
     /// "At the beginning of each opponent's upkeep".
     BeginningOfOpponentsUpkeep,
+    /// "Whenever one or more Warriors you control attack a player": once
+    /// per declaration.
+    OneOrMoreControlledWarriorsAttack,
     /// "Whenever this creature is dealt damage": once per batch, for the
     /// batch's total (damage from several sources at once triggers once).
     IsDealtDamage,
@@ -117,6 +120,7 @@ impl TriggerCondition {
                 | TriggerCondition::OneOrMoreControlledCreaturesDealCombatDamageToPlayer
                 | TriggerCondition::CardsExiledFromYourLibraryOrGraveyard
                 | TriggerCondition::IsDealtDamage
+                | TriggerCondition::OneOrMoreControlledWarriorsAttack
         )
     }
 }
@@ -486,6 +490,15 @@ fn add_charge_counter_effect() -> EffectOp {
 fn opponents_next_draw_exiles_effect() -> EffectOp {
     EffectOp::OpponentsNextDrawExilesTop
 }
+
+fn become_coward_effect() -> EffectOp {
+    EffectOp::BecomeCoward {
+        object: ObjectRef::Target(0),
+    }
+}
+
+const GORNOG_TRIGGERS: [TriggeredAbilityDef; 1] =
+    [trigger(TriggerCondition::OneOrMoreControlledWarriorsAttack, become_coward_effect)];
 
 const DRAGONSPARK_REACTOR_TRIGGERS: [TriggeredAbilityDef; 1] =
     [trigger(TriggerCondition::ThisOrAnotherControlledArtifactEnters, add_charge_counter_effect)];
@@ -1251,6 +1264,7 @@ pub fn triggers_for(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Amulet of Vigor" => &AMULET_OF_VIGOR_TRIGGERS,
         "Goldspan Dragon" => &GOLDSPAN_DRAGON_TRIGGERS,
         "Dragonspark Reactor" => &DRAGONSPARK_REACTOR_TRIGGERS,
+        "Gornog, the Red Reaper" => &GORNOG_TRIGGERS,
         "Urabrask, Heretic Praetor" => &URABRASK_TRIGGERS,
         "Cavern-Hoard Dragon" => &CAVERN_HOARD_DRAGON_TRIGGERS,
         "Screaming Nemesis" => &SCREAMING_NEMESIS_TRIGGERS,
@@ -1284,6 +1298,7 @@ pub fn trigger_target_spec(card_def: u16) -> TargetSpec {
         "Spider-Man, Web-Spinner" => TargetSpec::Creature,
         "Whirlwind, Killer Cyclone" => TargetSpec::OpponentControlledCreature,
         "Screaming Nemesis" => TargetSpec::AnyTargetOtherThanSource,
+        "Gornog, the Red Reaper" => TargetSpec::OpponentControlledCreature,
         _ => TargetSpec::None,
     }
 }
@@ -2321,6 +2336,18 @@ fn trigger_matches(
                 && crate::engine::object_has_type(state, *object, crate::card_def::CardType::Artifact)
         }
         (TriggerCondition::BeginningOfOpponentsUpkeep, CommittedEvent::UpkeepBegan { player }) => *player != controller,
+        (
+            TriggerCondition::OneOrMoreControlledWarriorsAttack,
+            CommittedEvent::DeclaredAttacker {
+                source: attacker,
+                source_zone_change_count,
+                controller: attacker_controller,
+            },
+        ) => {
+            *attacker_controller == controller
+                && state.objects.get(*attacker).zone_change_count == *source_zone_change_count
+                && crate::engine::has_effective_subtype(state, *attacker, Subtype::Warrior)
+        }
         (
             TriggerCondition::IsDealtDamage,
             CommittedEvent::Damage {
