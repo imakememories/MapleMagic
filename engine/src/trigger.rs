@@ -100,6 +100,9 @@ pub enum TriggerCondition {
     /// "Whenever one or more Warriors you control attack a player": once
     /// per declaration.
     OneOrMoreControlledWarriorsAttack,
+    /// An artifact creature you control attacks (melee granted by
+    /// Depthshaker Titan, one instance per Titan).
+    ControlledArtifactCreatureAttacks,
     /// "Whenever this creature is dealt damage": once per batch, for the
     /// batch's total (damage from several sources at once triggers once).
     IsDealtDamage,
@@ -496,6 +499,15 @@ fn become_coward_effect() -> EffectOp {
         object: ObjectRef::Target(0),
     }
 }
+
+fn animate_artifacts_effect() -> EffectOp {
+    EffectOp::AnimateTargetArtifacts
+}
+
+const DEPTHSHAKER_TITAN_TRIGGERS: [TriggeredAbilityDef; 2] = [
+    trigger(TriggerCondition::Etb, animate_artifacts_effect),
+    trigger(TriggerCondition::ControlledArtifactCreatureAttacks, bound_at_trigger_effect),
+];
 
 const GORNOG_TRIGGERS: [TriggeredAbilityDef; 1] =
     [trigger(TriggerCondition::OneOrMoreControlledWarriorsAttack, become_coward_effect)];
@@ -1265,6 +1277,7 @@ pub fn triggers_for(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Goldspan Dragon" => &GOLDSPAN_DRAGON_TRIGGERS,
         "Dragonspark Reactor" => &DRAGONSPARK_REACTOR_TRIGGERS,
         "Gornog, the Red Reaper" => &GORNOG_TRIGGERS,
+        "Depthshaker Titan" => &DEPTHSHAKER_TITAN_TRIGGERS,
         "Urabrask, Heretic Praetor" => &URABRASK_TRIGGERS,
         "Cavern-Hoard Dragon" => &CAVERN_HOARD_DRAGON_TRIGGERS,
         "Screaming Nemesis" => &SCREAMING_NEMESIS_TRIGGERS,
@@ -1348,6 +1361,11 @@ pub fn trigger_effect_matches(card_def: u16, effect: &EffectOp) -> bool {
     if card.name == "Amulet of Vigor" && matches!(effect, EffectOp::UntapBoundObject { .. }) {
         return true;
     }
+    if card.name == "Depthshaker Titan"
+        && matches!(effect, EffectOp::SacrificeBound { .. } | EffectOp::PumpBoundUntilEndOfTurn { .. })
+    {
+        return true;
+    }
     if card.name == "Cavern-Hoard Dragon" && matches!(effect, EffectOp::CreateTreasurePerArtifactOf { .. }) {
         return true;
     }
@@ -1378,6 +1396,12 @@ pub fn target_spec_for_trigger(card_def: u16, effect: &EffectOp) -> Option<Targe
             TargetSpec::TargetOpponent
         } else if card.name == "Journey to Nowhere" && *effect == journey_to_nowhere_etb_effect() {
             TargetSpec::CreatureOtherThanSource
+        } else if card.name == "Depthshaker Titan" {
+            if *effect == animate_artifacts_effect() {
+                TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl
+            } else {
+                TargetSpec::None
+            }
         } else if card.name == "Headliner Scarlett" {
             if *effect == target_players_creatures_cant_block_effect() {
                 TargetSpec::AnyPlayer
@@ -1592,8 +1616,7 @@ fn sba_fixed_point_with_protected_triggers(
                     state.objects.try_get(link.object).is_some_and(|host| {
                         host.zone == Zone::Battlefield
                             && host.zone_change_count == link.zone_change_count
-                            && crate::card_def::CARD_DEFS[host.card_def as usize]
-                                .has_type(crate::card_def::CardType::Creature)
+                            && crate::engine::object_has_type(state, link.object, crate::card_def::CardType::Creature)
                             && host.attachments.contains(&id)
                     })
                 });
@@ -1842,6 +1865,20 @@ fn triggers_from_events(
                         (def.condition, ev, card.name)
                     {
                         EffectOp::CreateTreasurePerArtifactOf { player: *player }
+                    } else if let (TriggerCondition::ControlledArtifactCreatureAttacks, CommittedEvent::DeclaredAttacker { source: attacker, .. }) =
+                        (def.condition, ev)
+                    {
+                        // Melee: +1/+1 for each opponent attacked this combat.
+                        let a = state.objects.get(*attacker);
+                        EffectOp::PumpBoundUntilEndOfTurn {
+                            object: EffectObjectBinding {
+                                object: *attacker,
+                                expected_zone: a.zone,
+                                expected_zone_change_count: a.zone_change_count,
+                            },
+                            power: 1,
+                            toughness: 1,
+                        }
                     } else if def.condition == TriggerCondition::IsDealtDamage {
                         let amount = events
                             .iter()
@@ -2004,8 +2041,7 @@ fn triggers_from_events(
         for (host, host_live) in state.objects.iter() {
             if host_live.controller != *caster
                 || host_live.zone != Zone::Battlefield
-                || !crate::card_def::CARD_DEFS[host_live.card_def as usize]
-                    .has_type(CardType::Creature)
+                || !crate::engine::object_has_type(state, host, CardType::Creature)
             {
                 continue;
             }
@@ -2336,6 +2372,19 @@ fn trigger_matches(
                 && crate::engine::object_has_type(state, *object, crate::card_def::CardType::Artifact)
         }
         (TriggerCondition::BeginningOfOpponentsUpkeep, CommittedEvent::UpkeepBegan { player }) => *player != controller,
+        (
+            TriggerCondition::ControlledArtifactCreatureAttacks,
+            CommittedEvent::DeclaredAttacker {
+                source: attacker,
+                source_zone_change_count,
+                controller: attacker_controller,
+            },
+        ) => {
+            *attacker_controller == controller
+                && state.objects.get(*attacker).zone_change_count == *source_zone_change_count
+                && crate::engine::object_has_type(state, *attacker, CardType::Artifact)
+                && crate::engine::object_has_type(state, *attacker, CardType::Creature)
+        }
         (
             TriggerCondition::OneOrMoreControlledWarriorsAttack,
             CommittedEvent::DeclaredAttacker {

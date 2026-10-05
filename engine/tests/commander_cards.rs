@@ -1100,3 +1100,62 @@ fn goddric_is_a_four_four_flying_dragon_while_celebrating() {
     activate(&mut state, goddric, 0, None);
     assert_eq!(effective_power(&state, goddric), 5, "{{R}}: Dragons you control get +1/+0");
 }
+
+#[test]
+fn liquimetal_torque_makes_a_permanent_an_artifact_until_end_of_turn() {
+    use mtg_kernel::card_def::CardType;
+    let mut state = game();
+    let torque = put(&mut state, P0, "Liquimetal Torque");
+    let theirs = put(&mut state, P1, "Guttersnipe");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert_eq!(engine::available_mana_ability_choices(P0, torque, &state), vec![ManaColor::C]);
+    activate(&mut state, torque, 0, Some(Target::Object(theirs)));
+    assert!(engine::object_has_type(&state, theirs, CardType::Artifact));
+    assert!(engine::object_has_type(&state, theirs, CardType::Creature), "in addition to its other types");
+    end_turn(&mut state);
+    assert!(!engine::object_has_type(&state, theirs, CardType::Artifact));
+}
+
+#[test]
+fn depthshaker_titan_animates_artifacts_that_attack_with_melee_then_are_sacrificed() {
+    use mtg_kernel::card_def::{CardType, Keywords};
+    let mut state = game();
+    lands(&mut state, P0, 7);
+    let ring = put(&mut state, P0, "Sol Ring");
+    let treasure = put(&mut state, P0, "Treasure Token");
+    let titan = put_in(&mut state, P0, "Depthshaker Titan", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(titan)).unwrap();
+    let mut chosen = false;
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseTargets { legal_targets, can_finish, .. } => {
+                assert!(can_finish, "any number, zero included");
+                if chosen {
+                    Action::FinishEffectSelection
+                } else {
+                    assert!(legal_targets.contains(&Target::Object(ring)) && legal_targets.contains(&Target::Object(treasure)));
+                    chosen = true;
+                    Action::ChooseTarget(Target::Object(ring))
+                }
+            }
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert!(engine::object_has_type(&state, ring, CardType::Creature) && engine::object_has_type(&state, ring, CardType::Artifact));
+    assert!(!engine::object_has_type(&state, treasure, CardType::Creature), "only the targets");
+    assert_eq!((effective_power(&state, ring), engine::effective_toughness(&state, ring)), (3, 3));
+    for kw in [Keywords::HASTE, Keywords::TRAMPLE] {
+        assert!(engine::has_effective_keyword(&state, ring, kw));
+        assert!(engine::has_effective_keyword(&state, titan, kw), "the Titan is an artifact creature too");
+    }
+    attack_with(&mut state, vec![ring]);
+    assert_eq!(effective_power(&state, ring), 4, "melee");
+    end_turn(&mut state);
+    assert_eq!(state.objects.get(ring).zone, Zone::Graveyard, "sacrificed at the end step");
+    assert_eq!(state.objects.get(treasure).zone, Zone::Battlefield);
+    assert_eq!(state.objects.get(titan).zone, Zone::Battlefield);
+}

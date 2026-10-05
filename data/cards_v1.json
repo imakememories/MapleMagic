@@ -6624,7 +6624,7 @@
     },
     {
       "name": "Depthshaker Titan",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{5}{R}{R}",
       "mana_value": 7,
       "colors": [
@@ -9536,7 +9536,7 @@
     },
     {
       "name": "Liquimetal Torque",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}",
       "mana_value": 2,
       "colors": [],
@@ -9548,13 +9548,17 @@
       "power": null,
       "toughness": null,
       "is_land": false,
-      "produces_mana": [],
+      "produces_mana": [
+        "C"
+      ],
       "decks": [
         "Commander - Ognis"
       ],
       "sideboard_only": false,
       "complexity": "commander",
-      "mechanics": [],
+      "mechanics": [
+        "mana_ability"
+      ],
       "keywords": [],
       "oracle": "{T}: Add {C}.\n{T}: Target nonland permanent becomes an artifact in addition to its other types until end of turn.",
       "layout": "normal",

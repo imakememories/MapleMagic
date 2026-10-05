@@ -33,6 +33,26 @@ pub struct CommanderStateV1 {
     pub declined: [Option<u32>; 2],
 }
 
+/// An effect giving a permanent more card types (layer 4) and possibly a
+/// base power and toughness (layer 7b): Liquimetal Torque, Depthshaker Titan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TypeAdditionV1 {
+    pub object: ObjectLinkV4,
+    pub artifact: bool,
+    pub creature: bool,
+    pub base_power_toughness: Option<(i32, i32)>,
+    pub until_end_of_turn: bool,
+}
+
+/// "Sacrifice them at the beginning of the next end step" (Depthshaker
+/// Titan): a delayed triggered ability waiting for that end step (603.7).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DelayedSacrificeV1 {
+    pub source: ObjectId,
+    pub controller: PlayerId,
+    pub objects: Vec<ObjectLinkV4>,
+}
+
 /// A card exiled face down (406.3), hidden from every player not in
 /// `known_to`. Bound to one exile incarnation: once the card leaves exile
 /// the entry is stale and ignored.
@@ -800,6 +820,13 @@ pub fn stack_target_contract_is_structurally_valid(
             0 | 1,
             StackTargetContractV4::Player(_),
         ) | (
+            TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl,
+            _,
+            StackTargetContractV4::Object {
+                zone: Zone::Battlefield,
+                ..
+            },
+        ) | (
             TargetSpec::PlayerThenTheirCreature | TargetSpec::PlayerThenUpToOneCreature,
             1,
             StackTargetContractV4::Object {
@@ -1294,6 +1321,12 @@ pub struct GameState {
     /// (Gornog's "becomes a Coward"): until they leave the battlefield.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub creature_type_overrides: Vec<(ObjectLinkV4, crate::card_def::Subtype)>,
+    /// See [`TypeAdditionV1`]; end-of-turn ones are dropped at cleanup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_additions: Vec<TypeAdditionV1>,
+    /// See [`DelayedSacrificeV1`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delayed_sacrifices: Vec<DelayedSacrificeV1>,
     /// Priority/stack/turn-structure bookkeeping and the propose-commit
     /// event log, all owned by the `engine`/`event`/`trigger` modules. See
     /// `engine::EngineState`.
@@ -1354,6 +1387,12 @@ impl Hash for GameState {
         }
         if !self.creature_type_overrides.is_empty() {
             self.creature_type_overrides.hash(state);
+        }
+        if !self.type_additions.is_empty() {
+            self.type_additions.hash(state);
+        }
+        if !self.delayed_sacrifices.is_empty() {
+            self.delayed_sacrifices.hash(state);
         }
         if !self.last_known_charge.is_empty() {
             self.last_known_charge.iter().map(|e| e.1).collect::<Vec<_>>().hash(state);
@@ -1512,6 +1551,8 @@ impl GameState {
             riot_haste: Vec::new(),
             nonland_permanents_entered: [0; 2],
             creature_type_overrides: Vec::new(),
+            type_additions: Vec::new(),
+            delayed_sacrifices: Vec::new(),
             engine: crate::engine::EngineState::default(),
         }
     }

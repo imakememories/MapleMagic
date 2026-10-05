@@ -19,8 +19,21 @@ fn creature_keywords_for(name: &str) -> Keywords {
 static GRANTS: LazyLock<Vec<Keywords>> =
     LazyLock::new(|| CARD_DEFS.iter().map(|def| creature_keywords_for(def.name)).collect());
 
+/// Keywords a permanent gives the artifact creatures its controller controls.
+fn artifact_creature_keywords_for(name: &str) -> Keywords {
+    match name {
+        "Depthshaker Titan" => Keywords(Keywords::TRAMPLE.0 | Keywords::HASTE.0),
+        _ => Keywords::NONE,
+    }
+}
+
+static ARTIFACT_GRANTS: LazyLock<Vec<Keywords>> =
+    LazyLock::new(|| CARD_DEFS.iter().map(|def| artifact_creature_keywords_for(def.name)).collect());
+
 /// Every keyword some card grants: other queries skip the battlefield scan.
-static ANY_GRANT: LazyLock<Keywords> = LazyLock::new(|| Keywords(GRANTS.iter().fold(0, |m, k| m | k.0)));
+static ANY_GRANT: LazyLock<Keywords> = LazyLock::new(|| {
+    Keywords(GRANTS.iter().chain(ARTIFACT_GRANTS.iter()).fold(0, |m, k| m | k.0))
+});
 
 /// Whether another permanent's static ability gives `id` keyword `kw`.
 pub fn grants_keyword(state: &GameState, id: ObjectId, kw: Keywords) -> bool {
@@ -28,12 +41,16 @@ pub fn grants_keyword(state: &GameState, id: ObjectId, kw: Keywords) -> bool {
         return false;
     }
     let o = state.objects.get(id);
-    o.zone == Zone::Battlefield
-        && state.players[o.controller.index()]
-            .battlefield
-            .iter()
-            .any(|&source| GRANTS[state.objects.get(source).card_def as usize].0 & kw.0 != 0)
-        && crate::engine::object_has_type(state, id, CardType::Creature)
+    if o.zone != Zone::Battlefield {
+        return false;
+    }
+    let mut artifact = None;
+    state.players[o.controller.index()].battlefield.iter().any(|&source| {
+        let def = state.objects.get(source).card_def as usize;
+        GRANTS[def].0 & kw.0 != 0
+            || ARTIFACT_GRANTS[def].0 & kw.0 != 0
+                && *artifact.get_or_insert_with(|| crate::engine::object_has_type(state, id, CardType::Artifact))
+    }) && crate::engine::object_has_type(state, id, CardType::Creature)
 }
 
 /// Spells of this color its controller casts cost {1} less.
@@ -211,4 +228,33 @@ pub fn coward_cant_block(state: &GameState, blocker: ObjectId, attacker: ObjectI
     named_on_battlefield(state, None, "Gornog, the Red Reaper")
         && crate::engine::has_effective_subtype(state, blocker, Subtype::Coward)
         && crate::engine::has_effective_subtype(state, attacker, Subtype::Warrior)
+}
+
+fn live_additions<'a>(state: &'a GameState, id: ObjectId) -> impl Iterator<Item = &'a crate::state::TypeAdditionV1> + 'a {
+    let o = state.objects.get(id);
+    let (zone, generation) = (o.zone, o.zone_change_count);
+    state
+        .type_additions
+        .iter()
+        .filter(move |a| zone == Zone::Battlefield && a.object.object == id && a.object.zone_change_count == generation)
+}
+
+/// Whether an effect made `id` an artifact or a creature (layer 4).
+pub fn added_type(state: &GameState, id: ObjectId, card_type: CardType) -> bool {
+    if state.type_additions.is_empty() {
+        return false;
+    }
+    live_additions(state, id).any(|a| match card_type {
+        CardType::Artifact => a.artifact,
+        CardType::Creature => a.creature,
+        _ => false,
+    })
+}
+
+/// A base power and toughness an effect set (layer 7b), the newest.
+pub fn set_base_power_toughness(state: &GameState, id: ObjectId) -> Option<(i32, i32)> {
+    if state.type_additions.is_empty() {
+        return None;
+    }
+    live_additions(state, id).filter_map(|a| a.base_power_toughness).last()
 }

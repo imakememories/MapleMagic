@@ -561,6 +561,9 @@ pub enum TargetSpec {
     AnyTargetOtherThanSource,
     /// A player, then up to one creature (Dragonspark Reactor).
     PlayerThenUpToOneCreature,
+    /// Any number (up to 16) of noncreature artifacts the controller
+    /// controls (Depthshaker Titan).
+    AnyNumberOfNoncreatureArtifactsYouControl,
 }
 
 impl TargetSpec {
@@ -608,6 +611,7 @@ impl TargetSpec {
             TargetSpec::UpToOneOpponentControlledCreature => 36,
             TargetSpec::AnyTargetOtherThanSource => 37,
             TargetSpec::PlayerThenUpToOneCreature => 38,
+            TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl => 39,
         }
     }
 }
@@ -1565,6 +1569,7 @@ mod tests {
             (TargetSpec::UpToOneOpponentControlledCreature, 36),
             (TargetSpec::AnyTargetOtherThanSource, 37),
             (TargetSpec::PlayerThenUpToOneCreature, 38),
+            (TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl, 39),
         ];
         for (target_spec, ordinal) in stable_ordinals {
             assert_eq!(target_spec.stable_id(), ordinal);
@@ -1584,7 +1589,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0xab8a_c749_ec41_fff9);
+        assert_eq!(KERNEL_CARDDB_HASH, 0xa854_e7cd_451a_cec4);
     }
 
     #[test]

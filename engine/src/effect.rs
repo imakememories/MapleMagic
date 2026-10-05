@@ -883,6 +883,26 @@ pub enum EffectOp {
     DrawPerOpponentTappedCreature,
     /// Put a charge counter on the source if it is on the battlefield.
     AddChargeCounterToSource,
+    /// Each still-legal target becomes a 3/3 artifact creature (no
+    /// duration); they're sacrificed at the beginning of the next end step
+    /// (Depthshaker Titan).
+    AnimateTargetArtifacts,
+    /// The controller sacrifices each of these that it still controls.
+    SacrificeBound {
+        objects: Vec<crate::state::ObjectLinkV4>,
+    },
+    /// The object becomes an artifact in addition to its other types until
+    /// end of turn (Liquimetal Torque).
+    BecomeArtifactUntilEndOfTurn {
+        object: ObjectRef,
+    },
+    /// The bound creature gets +`power`/+`toughness` until end of turn
+    /// (melee, bound to the attacker).
+    PumpBoundUntilEndOfTurn {
+        object: EffectObjectBinding,
+        power: i32,
+        toughness: i32,
+    },
     /// The object's creature types become exactly Coward, with no duration
     /// (Gornog, the Red Reaper).
     BecomeCoward {
@@ -1680,10 +1700,7 @@ pub(crate) fn controlled_artifact_count(state: &GameState, player: PlayerId) -> 
     state.players[player.index()]
         .battlefield
         .iter()
-        .filter(|&&id| {
-            let def = &crate::card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
-            def.has_type(crate::card_def::CardType::Artifact)
-        })
+        .filter(|&&id| crate::engine::object_has_type(state, id, crate::card_def::CardType::Artifact))
         .count()
 }
 
@@ -3982,8 +3999,7 @@ fn validate_undercity_throne_metadata(
         .iter()
         .copied()
         .filter(|candidate| {
-            crate::card_def::CARD_DEFS[state.objects.get(candidate.object).card_def as usize]
-                .has_type(CardType::Creature)
+            crate::engine::object_has_type(state, candidate.object, CardType::Creature)
         })
         .collect::<Vec<_>>();
     if candidates != expected_candidates {
@@ -4273,8 +4289,7 @@ fn stage_or_apply_undercity_throne(
         .iter()
         .copied()
         .filter(|candidate| {
-            crate::card_def::CARD_DEFS[state.objects.get(candidate.object).card_def as usize]
-                .has_type(CardType::Creature)
+            crate::engine::object_has_type(state, candidate.object, CardType::Creature)
         })
         .collect::<Vec<_>>();
     validate_undercity_throne_metadata(
@@ -8755,7 +8770,8 @@ fn creature_sacrifice_bindings(
         let def = crate::card_def::CARD_DEFS
             .get(object.card_def as usize)
             .ok_or_else(|| "creature-sacrifice card definition is missing".to_string())?;
-        if def.has_type(CardType::Creature) {
+        let _ = def;
+        if crate::engine::object_has_type(state, object_id, CardType::Creature) {
             bindings.push(EffectObjectBinding {
                 object: object_id,
                 expected_zone: Zone::Battlefield,
@@ -9667,8 +9683,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             };
             if target_index.is_some_and(|index| !ctx.target_incarnation_matches(index, state))
                 || state.objects.get(object_id).zone != Zone::Battlefield
-                || !crate::card_def::CARD_DEFS[state.objects.get(object_id).card_def as usize]
-                    .has_type(CardType::Creature)
+                || !crate::engine::object_has_type(state, object_id, CardType::Creature)
             {
                 return;
             }
@@ -9695,8 +9710,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             };
             if target_index.is_some_and(|index| !ctx.target_incarnation_matches(index, state))
                 || state.objects.get(object_id).zone != Zone::Battlefield
-                || !crate::card_def::CARD_DEFS[state.objects.get(object_id).card_def as usize]
-                    .has_type(CardType::Creature)
+                || !crate::engine::object_has_type(state, object_id, CardType::Creature)
             {
                 return;
             }
@@ -9846,8 +9860,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let source_is_stack = state.objects.get(ctx.source).zone == Zone::Stack;
             let target_is_creature = ctx.target_incarnation_matches(target_index, state)
                 && state.objects.get(target).zone == Zone::Battlefield
-                && crate::card_def::CARD_DEFS[state.objects.get(target).card_def as usize]
-                    .has_type(CardType::Creature);
+                && crate::engine::object_has_type(state, target, CardType::Creature);
             if !source_is_stack || !target_is_creature {
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
@@ -9890,8 +9903,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             };
             if attached.zone != Zone::Battlefield
                 || attached.zone_change_count != link.zone_change_count
-                || !crate::card_def::CARD_DEFS[attached.card_def as usize]
-                    .has_type(CardType::Creature)
+                || !crate::engine::object_has_type(state, link.object, CardType::Creature)
                 || (source_is_same_battlefield_incarnation
                     && !attached.attachments.contains(&ctx.source))
             {
@@ -10002,8 +10014,8 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 .flat_map(|player| state.players[player.index()].battlefield.iter().copied())
                 .filter_map(|id| {
                     let object = state.objects.get(id);
-                    let def = &crate::card_def::CARD_DEFS[object.card_def as usize];
-                    (def.has_type(crate::card_def::CardType::Creature)
+                    let _ = object;
+                    (crate::engine::object_has_type(state, id, crate::card_def::CardType::Creature)
                         && crate::engine::effective_subtype_ids(state, id)
                             .binary_search(&excluded_subtype.stable_id())
                             .is_err())
@@ -10071,8 +10083,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let target_live = state.objects.get(target);
             let target_zone_change_count = target_live.zone_change_count;
             let target_is_creature = target_live.zone == Zone::Battlefield
-                && crate::card_def::CARD_DEFS[target_live.card_def as usize]
-                    .has_type(CardType::Creature);
+                && crate::engine::object_has_type(state, target, CardType::Creature);
             let source_is_equipment = state.objects.try_get(ctx.source).is_some_and(|live| {
                 live.card_def == source.card_def
                     && live.owner == source.owner
@@ -10122,7 +10133,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             }
             let live = state.objects.get(object);
             if live.zone != Zone::Battlefield
-                || !crate::card_def::CARD_DEFS[live.card_def as usize].has_type(CardType::Creature)
+                || !crate::engine::object_has_type(state, object, CardType::Creature)
                 || *plus1_plus1 < 0
                 || *lifelink < 0
                 || *stun < 0
@@ -10368,6 +10379,79 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 event::propose_and_commit(state, event::ProposedEvent::draw(ctx.controller));
             }
         }
+        EffectOp::AnimateTargetArtifacts => {
+            let mut animated = Vec::new();
+            for index in 0..ctx.targets.len() {
+                if !ctx.target_incarnation_matches(index, state) {
+                    continue;
+                }
+                let Target::Object(id) = ctx.targets[index] else {
+                    continue;
+                };
+                let o = state.objects.get(id);
+                let link = crate::state::ObjectLinkV4 { object: id, zone_change_count: o.zone_change_count };
+                state.type_additions.push(crate::state::TypeAdditionV1 {
+                    object: link,
+                    artifact: true,
+                    creature: true,
+                    base_power_toughness: Some((3, 3)),
+                    until_end_of_turn: false,
+                });
+                animated.push(link);
+            }
+            if !animated.is_empty() {
+                state.delayed_sacrifices.push(crate::state::DelayedSacrificeV1 {
+                    source: ctx.source,
+                    controller: ctx.controller,
+                    objects: animated,
+                });
+            }
+        }
+        EffectOp::SacrificeBound { objects } => {
+            let doomed: Vec<ObjectId> = objects
+                .iter()
+                .filter(|l| {
+                    let o = state.objects.get(l.object);
+                    o.zone == Zone::Battlefield && o.zone_change_count == l.zone_change_count && o.controller == ctx.controller
+                })
+                .map(|l| l.object)
+                .collect();
+            for id in doomed {
+                event::log_sacrifice(state, id);
+                event::propose_and_commit(state, event::ProposedEvent::zone_change(id, Zone::Graveyard));
+            }
+        }
+        EffectOp::BecomeArtifactUntilEndOfTurn { object } => {
+            if ctx.target_incarnation_matches(0, state) {
+                let id = ctx.resolve_object(*object);
+                let o = state.objects.get(id);
+                if o.zone == Zone::Battlefield {
+                    state.type_additions.push(crate::state::TypeAdditionV1 {
+                        object: crate::state::ObjectLinkV4 { object: id, zone_change_count: o.zone_change_count },
+                        artifact: true,
+                        creature: false,
+                        base_power_toughness: None,
+                        until_end_of_turn: true,
+                    });
+                }
+            }
+        }
+        EffectOp::PumpBoundUntilEndOfTurn { object, power, toughness } => {
+            let live = state.objects.get(object.object);
+            if live.zone == object.expected_zone && live.zone_change_count == object.expected_zone_change_count {
+                let timestamp = crate::engine::next_timestamp(state);
+                state.engine.until_end_of_turn.push(crate::engine::UntilEndOfTurnEffect::ResolvedObjectEffect {
+                    object_id: object.object,
+                    object_zone_change_count: object.expected_zone_change_count,
+                    layer: crate::engine::Layers::POWER_TOUGHNESS,
+                    timestamp,
+                    duration: crate::engine::EffectDuration::EndOfTurn,
+                    power: *power,
+                    toughness: *toughness,
+                    grant_haste: false,
+                });
+            }
+        }
         EffectOp::BecomeCoward { object } => {
             if ctx.target_incarnation_matches(0, state) {
                 let id = ctx.resolve_object(*object);
@@ -10498,9 +10582,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                     .iter()
                     .copied()
                     .filter_map(|id| {
-                        let def =
-                            &crate::card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
-                        def.has_type(crate::card_def::CardType::Creature).then(|| {
+                        crate::engine::object_has_type(state, id, crate::card_def::CardType::Creature).then(|| {
                             event::ProposedEvent::damage(ctx.source, Target::Object(id), *amount)
                         })
                     }),
@@ -10549,8 +10631,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                     let live = state.objects.try_get(object)?;
                     (ctx.target_incarnation_matches(index, state)
                         && live.zone == Zone::Battlefield
-                        && crate::card_def::CARD_DEFS[live.card_def as usize]
-                            .has_type(crate::card_def::CardType::Creature))
+                        && crate::engine::object_has_type(state, object, crate::card_def::CardType::Creature))
                     .then(|| event::ProposedEvent::damage(ctx.source, target, *amount))
                 })
                 .collect();
@@ -10569,8 +10650,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                     let live = state.objects.try_get(object)?;
                     (ctx.target_incarnation_matches(index, state)
                         && live.zone == Zone::Battlefield
-                        && crate::card_def::CARD_DEFS[live.card_def as usize]
-                            .has_type(crate::card_def::CardType::Artifact))
+                        && crate::engine::object_has_type(state, object, crate::card_def::CardType::Artifact))
                     .then(|| {
                         event::ProposedEvent::zone_change_preserving_known_identity(
                             object,
@@ -10585,10 +10665,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let amount = state.players[ctx.controller.index()]
                 .battlefield
                 .iter()
-                .filter(|&&object| {
-                    crate::card_def::CARD_DEFS[state.objects.get(object).card_def as usize]
-                        .has_type(crate::card_def::CardType::Creature)
-                })
+                .filter(|&&object| crate::engine::object_has_type(state, object, crate::card_def::CardType::Creature))
                 .count()
                 .try_into()
                 .unwrap_or(i32::MAX);
@@ -10627,8 +10704,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 .iter()
                 .copied()
                 .filter(|&id| {
-                    let def = &crate::card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
-                    if !def.has_type(crate::card_def::CardType::Creature) {
+                    if !crate::engine::object_has_type(state, id, crate::card_def::CardType::Creature) {
                         return false;
                     }
                     creature_matches_filter(state, id, filter)
@@ -10702,9 +10778,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         EffectOp::PumpTargetByControlledSubtypeCount { target, subtype } => {
             let target = ctx.resolve_object(*target);
             let target_is_creature = state.objects.try_get(target).is_some_and(|object| {
-                object.zone == Zone::Battlefield
-                    && crate::card_def::CARD_DEFS[object.card_def as usize]
-                        .has_type(crate::card_def::CardType::Creature)
+                object.zone == Zone::Battlefield && crate::engine::object_has_type(state, target, crate::card_def::CardType::Creature)
             });
             if target_is_creature {
                 let amount = state.players[ctx.controller.index()]
