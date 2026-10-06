@@ -714,6 +714,21 @@ pub enum UnsupportedMechanic {
     AuraEntersWithoutBeingCast,
 }
 
+thread_local! {
+    static HALT_SITE: std::cell::Cell<Option<(&'static str, u32)>> = const { std::cell::Cell::new(None) };
+}
+
+/// Records where the engine last halted a game, for diagnostics only (not
+/// game state).
+pub(crate) fn note_halt(file: &'static str, line: u32) {
+    HALT_SITE.with(|site| site.set(Some((file, line))));
+}
+
+/// The source location of this thread's most recent halt.
+pub fn last_halt_site() -> Option<(&'static str, u32)> {
+    HALT_SITE.with(|site| site.get())
+}
+
 /// Issues the next 613.7 timestamp for a newly-created
 /// `UntilEndOfTurnEffect::ResolvedSetEffect`. `pub(crate)` since only
 /// `effect::execute` (`EffectOp::PumpControlled`) needs to call it.
@@ -6124,6 +6139,7 @@ fn check_game_over(state: &GameState) -> Option<Decision> {
 pub fn advance_until_decision(state: &mut GameState) -> Decision {
     loop {
         if let Err(source) = state.validate_attachment_relations() {
+            crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, source));
         }
         if let Some(d) = check_game_over(state) {
@@ -6135,6 +6151,7 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
 
         if let Some(pending) = state.engine.pending_land_play.as_ref() {
             if validate_pending_land_play(state, pending).is_err() {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     UnsupportedMechanic::InvalidEffectContinuation,
                     pending.source,
@@ -6417,8 +6434,8 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
                             return Decision::ChooseMadnessCast { player, card };
                         }
                         Err(_) => {
-                            state.engine.halted =
-                                Some((UnsupportedMechanic::InvalidEffectContinuation, source));
+                            crate::engine::note_halt(file!(), line!());
+                            state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, source));
                             return Decision::Halted {
                                 mechanic: UnsupportedMechanic::InvalidEffectContinuation,
                                 source,
@@ -6642,6 +6659,7 @@ pub(crate) fn validate_pending_discard_binding(
 fn drain_pending_discard_or_decide(state: &mut GameState) -> Option<Decision> {
     let pd = state.engine.pending_discard.clone()?;
     if let Err((source, _message)) = validate_pending_discard_binding(state, &pd) {
+        crate::engine::note_halt(file!(), line!());
         state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, source));
         return Some(Decision::Halted {
             mechanic: UnsupportedMechanic::InvalidEffectContinuation,
@@ -6673,6 +6691,7 @@ fn drain_pending_discard_or_decide(state: &mut GameState) -> Option<Decision> {
 
 fn apply_discard(state: &mut GameState, chosen: Vec<ObjectId>, pending_discard: PendingDiscard) {
     if let Err((source, _message)) = validate_pending_discard_binding(state, &pending_discard) {
+        crate::engine::note_halt(file!(), line!());
         state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, source));
         return;
     }
@@ -6699,6 +6718,7 @@ fn apply_discard(state: &mut GameState, chosen: Vec<ObjectId>, pending_discard: 
                 .iter()
                 .all(|object| hand.contains(object) && Some(*object) != exclude)
         {
+            crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, source));
             return;
         }
@@ -6768,8 +6788,8 @@ fn apply_discard(state: &mut GameState, chosen: Vec<ObjectId>, pending_discard: 
                 owned_cast.expect("validated FinishCast owns its removed pending cast");
             let source = pending.spell;
             if finalize_owned_cast(state, pending, cast_method, chosen).is_err() {
-                state.engine.halted =
-                    Some((UnsupportedMechanic::InvalidEffectContinuation, source));
+                crate::engine::note_halt(file!(), line!());
+                state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, source));
             }
         }
         DiscardResume::FinishActivation { .. } => {
@@ -6816,8 +6836,8 @@ fn apply_discard(state: &mut GameState, chosen: Vec<ObjectId>, pending_discard: 
             );
             if !paid {
                 state.engine.pending_activation = None;
-                state.engine.halted =
-                    Some((UnsupportedMechanic::InvalidEffectContinuation, p.source));
+                crate::engine::note_halt(file!(), line!());
+                state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, p.source));
                 return;
             }
             // 111.8/704.5d: paying `SacrificeSelf` here (a token's own
@@ -6882,6 +6902,7 @@ fn drain_pending_optional_cost_or_decide(state: &mut GameState) -> Option<Decisi
 fn drain_pending_spell_copy_or_decide(state: &mut GameState) -> Option<Decision> {
     let pending = state.engine.pending_spell_copy.clone()?;
     if validate_pending_spell_copy(state, &pending).is_err() {
+        crate::engine::note_halt(file!(), line!());
         state.engine.halted = Some((
             UnsupportedMechanic::InvalidEffectContinuation,
             pending.resolving_source,
@@ -6937,6 +6958,7 @@ fn drain_pending_effect_or_decide(state: &mut GameState) -> Option<Decision> {
             .unwrap()
             .resolving_item
             .source;
+        crate::engine::note_halt(file!(), line!());
         state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, source));
         return None;
     }
@@ -6998,13 +7020,13 @@ fn drain_pending_effect_or_decide(state: &mut GameState) -> Option<Decision> {
         Some(public_item) if public_item == item => {}
         Some(public_item) => {
             state.stack.push(public_item);
-            state.engine.halted =
-                Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
+            crate::engine::note_halt(file!(), line!());
+            state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
             return None;
         }
         None => {
-            state.engine.halted =
-                Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
+            crate::engine::note_halt(file!(), line!());
+            state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
             return None;
         }
     }
@@ -7012,13 +7034,13 @@ fn drain_pending_effect_or_decide(state: &mut GameState) -> Option<Decision> {
     match effect::resume_resumable_resolution(state) {
         Ok(effect::ResumableProgress::Complete(completed)) => {
             if *completed != item {
-                state.engine.halted =
-                    Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
+                crate::engine::note_halt(file!(), line!());
+                state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
                 return None;
             }
             if finish_resolved_stack_item(state, completed.as_ref()).is_err() {
-                state.engine.halted =
-                    Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
+                crate::engine::note_halt(file!(), line!());
+                state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
                 return None;
             }
             collect_and_queue_triggers(state);
@@ -7029,8 +7051,8 @@ fn drain_pending_effect_or_decide(state: &mut GameState) -> Option<Decision> {
         }
         Err(_) => {
             state.stack.push(item.clone());
-            state.engine.halted =
-                Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
+            crate::engine::note_halt(file!(), line!());
+            state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
         }
     }
     None
@@ -7058,6 +7080,7 @@ fn drain_pending_optional_cost_sacrifice_or_decide(state: &mut GameState) -> Opt
         let candidates = optional_sacrifice_candidates(&pending, state);
         let remaining = pending.remaining - pending.chosen.len() as u8;
         if candidates.len() < usize::from(remaining) {
+            crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((
                 UnsupportedMechanic::InvalidEffectContinuation,
                 pending.source,
@@ -7831,6 +7854,7 @@ pub(crate) fn validate_pending_cast(
 fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
     let pending = state.engine.pending_cast.clone()?;
     if validate_pending_cast(state, &pending).is_err() {
+        crate::engine::note_halt(file!(), line!());
         state.engine.halted = Some((
             UnsupportedMechanic::InvalidEffectContinuation,
             pending.spell,
@@ -7912,6 +7936,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
                     return drain_pending_cast_or_decide(state);
                 }
                 Err(_) => {
+                    crate::engine::note_halt(file!(), line!());
                     state.engine.halted = Some((
                         UnsupportedMechanic::InvalidEffectContinuation,
                         pending.spell,
@@ -8192,6 +8217,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
                     let candidates = match collect_evidence_candidates(pending.controller, state) {
                         Ok(candidates) => candidates,
                         Err(_) => {
+                            crate::engine::note_halt(file!(), line!());
                             state.engine.halted = Some((
                                 UnsupportedMechanic::InvalidEffectContinuation,
                                 pending.spell,
@@ -8212,6 +8238,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
                     ) {
                         Ok(sum) => sum,
                         Err(_) => {
+                            crate::engine::note_halt(file!(), line!());
                             state.engine.halted = Some((
                                 UnsupportedMechanic::InvalidEffectContinuation,
                                 pending.spell,
@@ -8230,6 +8257,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
                         return drain_pending_cast_or_decide(state);
                     }
                     if remaining.is_empty() && selected_sum < u32::from(minimum_mana_value) {
+                        crate::engine::note_halt(file!(), line!());
                         state.engine.halted = Some((
                             UnsupportedMechanic::InvalidEffectContinuation,
                             pending.spell,
@@ -8239,6 +8267,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
                     let max_targets = match u16::try_from(candidates.len()) {
                         Ok(count) => count,
                         Err(_) => {
+                            crate::engine::note_halt(file!(), line!());
                             state.engine.halted = Some((
                                 UnsupportedMechanic::InvalidEffectContinuation,
                                 pending.spell,
@@ -8265,6 +8294,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
                     let candidates = match bargain_candidates(pending.controller, state) {
                         Ok(candidates) => candidates,
                         Err(_) => {
+                            crate::engine::note_halt(file!(), line!());
                             state.engine.halted = Some((
                                 UnsupportedMechanic::InvalidEffectContinuation,
                                 pending.spell,
@@ -8274,6 +8304,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
                     };
                     match candidates.as_slice() {
                         [] => {
+                            crate::engine::note_halt(file!(), line!());
                             state.engine.halted = Some((
                                 UnsupportedMechanic::InvalidEffectContinuation,
                                 pending.spell,
@@ -8388,6 +8419,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
 
     if pending.x_value.is_none() {
         let Some(cost) = pending_cast_selected_mana_cost(def, &pending, state) else {
+            crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((
                 UnsupportedMechanic::InvalidEffectContinuation,
                 pending.spell,
@@ -8441,6 +8473,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
     }
 
     if finalize_cast(state, Vec::new()).is_err() {
+        crate::engine::note_halt(file!(), line!());
         state.engine.halted = Some((
             UnsupportedMechanic::InvalidEffectContinuation,
             pending.spell,
@@ -8452,6 +8485,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
 fn drain_pending_activation_or_decide(state: &mut GameState) -> Option<Decision> {
     let pending = state.engine.pending_activation.clone()?;
     if validate_pending_activation(state, &pending).is_err() {
+        crate::engine::note_halt(file!(), line!());
         state.engine.halted = Some((
             UnsupportedMechanic::InvalidEffectContinuation,
             pending.source,
@@ -8504,6 +8538,7 @@ fn drain_pending_activation_or_decide(state: &mut GameState) -> Option<Decision>
                 &pending.object_cost_chosen,
             );
             if candidates.is_empty() {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     UnsupportedMechanic::InvalidEffectContinuation,
                     pending.source,
@@ -8575,6 +8610,7 @@ fn drain_pending_activation_or_decide(state: &mut GameState) -> Option<Decision>
             &pending.object_cost_chosen,
         );
         if candidates.is_empty() {
+            crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((
                 UnsupportedMechanic::InvalidEffectContinuation,
                 pending.source,
@@ -8616,6 +8652,7 @@ fn drain_pending_activation_or_decide(state: &mut GameState) -> Option<Decision>
             state,
         );
         if candidates.is_empty() {
+            crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((
                 UnsupportedMechanic::InvalidEffectContinuation,
                 pending.source,
@@ -9018,6 +9055,7 @@ fn drain_pending_triggers_or_decide(state: &mut GameState) -> Option<Decision> {
 
         let pending = state.engine.pending_triggers[0].clone();
         if validate_pending_trigger(state, &pending).is_err() {
+            crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((
                 UnsupportedMechanic::InvalidEffectContinuation,
                 pending.source,
@@ -9059,6 +9097,7 @@ fn drain_pending_triggers_or_decide(state: &mut GameState) -> Option<Decision> {
 
         let pending = state.engine.pending_triggers.remove(0);
         if push_trigger_onto_stack(state, pending.clone()).is_err() {
+            crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((
                 UnsupportedMechanic::InvalidEffectContinuation,
                 pending.source,
@@ -10144,8 +10183,8 @@ fn execute_resolving_program(
         }
         Ok(effect::ResumableProgress::Complete(_)) | Err(_) => {
             state.stack.push(item.clone());
-            state.engine.halted =
-                Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
+            crate::engine::note_halt(file!(), line!());
+            state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
             ResolutionProgress::Suspended
         }
     }
@@ -10160,6 +10199,7 @@ fn resolve_top_of_stack(state: &mut GameState) -> ResolutionProgress {
     let targets_legal = match stack_targets_still_legal(item, state) {
         Ok(legal) => legal,
         Err(_) => {
+            crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((
                 UnsupportedMechanic::InvalidEffectContinuation,
                 resolving_source,
@@ -10205,8 +10245,8 @@ fn resolve_top_of_stack(state: &mut GameState) -> ResolutionProgress {
             return ResolutionProgress::Complete;
         }
         if finish_failed_stack_item(state, &item).is_err() {
-            state.engine.halted =
-                Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
+            crate::engine::note_halt(file!(), line!());
+            state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
             return ResolutionProgress::Suspended;
         }
         return ResolutionProgress::Complete;
@@ -10277,8 +10317,8 @@ fn resolve_top_of_stack(state: &mut GameState) -> ResolutionProgress {
     // battlefield themselves, via their own MoveObject effect.
     if item.v4.cast_method == Some(CastMethodV4::Omen) {
         if finish_resolved_stack_item(state, &item).is_err() {
-            state.engine.halted =
-                Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
+            crate::engine::note_halt(file!(), line!());
+            state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
             return ResolutionProgress::Suspended;
         }
     } else if def.has_type(CardType::Instant) || def.has_type(CardType::Sorcery) {
@@ -10289,15 +10329,15 @@ fn resolve_top_of_stack(state: &mut GameState) -> ResolutionProgress {
                     && state.engine.pending_optional_cost.is_none() =>
             {
                 if finish_resolved_stack_item(state, &item).is_err() {
-                    state.engine.halted =
-                        Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
+                    crate::engine::note_halt(file!(), line!());
+                    state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
                     return ResolutionProgress::Suspended;
                 }
                 return ResolutionProgress::Complete;
             }
             Ok(SpellDeparture::Cease { .. }) | Err(_) => {
-                state.engine.halted =
-                    Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
+                crate::engine::note_halt(file!(), line!());
+                state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
                 return ResolutionProgress::Suspended;
             }
         };
@@ -10332,8 +10372,8 @@ fn resolve_top_of_stack(state: &mut GameState) -> ResolutionProgress {
             poc.spell_resume = Some((item.source, to_zone));
         } else {
             if finish_resolved_stack_item(state, &item).is_err() {
-                state.engine.halted =
-                    Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
+                crate::engine::note_halt(file!(), line!());
+                state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, item.source));
                 return ResolutionProgress::Suspended;
             }
         }
@@ -10536,8 +10576,8 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             event::log_upkeep_began(state, p);
             if state.initiative == Some(p) {
                 let Some(source) = state.engine.initiative_source else {
-                    state.engine.halted =
-                        Some((UnsupportedMechanic::InvalidEffectContinuation, ObjectId(0)));
+                    crate::engine::note_halt(file!(), line!());
+                    state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, ObjectId(0)));
                     return;
                 };
                 if event::log_initiative_trigger(
@@ -10548,6 +10588,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
                 )
                 .is_err()
                 {
+                    crate::engine::note_halt(file!(), line!());
                     state.engine.halted = Some((
                         UnsupportedMechanic::InvalidEffectContinuation,
                         source.source,
@@ -11276,8 +11317,8 @@ fn combat_damage_wave(state: &mut GameState, first_strike_wave: bool) {
             });
         if let Some(player) = transfer_player {
             let Some(source) = state.engine.initiative_source else {
-                state.engine.halted =
-                    Some((UnsupportedMechanic::InvalidEffectContinuation, ObjectId(0)));
+                crate::engine::note_halt(file!(), line!());
+                state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, ObjectId(0)));
                 return;
             };
             if event::log_initiative_trigger(
@@ -11288,6 +11329,7 @@ fn combat_damage_wave(state: &mut GameState, first_strike_wave: bool) {
             )
             .is_err()
             {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     UnsupportedMechanic::InvalidEffectContinuation,
                     source.source,
@@ -13343,6 +13385,7 @@ fn finish_cascade(state: &mut GameState) {
         .map(|link| link.object)
         .collect();
     if state.random_order(cascade.player, &mut rest).is_err() {
+        crate::engine::note_halt(file!(), line!());
         state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, rest.first().copied().unwrap_or(ObjectId(0))));
         return;
     }
@@ -14444,6 +14487,7 @@ fn finalize_activation(state: &mut GameState) {
     if validate_pending_activation(state, staged).is_err()
         || !target_cardinality_is_complete(staged.target_spec, staged.targets_chosen.len())
     {
+        crate::engine::note_halt(file!(), line!());
         state.engine.halted = Some((
             UnsupportedMechanic::InvalidEffectContinuation,
             staged.source,
@@ -14475,6 +14519,7 @@ fn finalize_activation(state: &mut GameState) {
     let x_value = match activation_x_value(ability, &pending.targets_chosen, state) {
         Ok(value) => value,
         Err(_) => {
+            crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((
                 UnsupportedMechanic::InvalidEffectContinuation,
                 pending.source,
@@ -14493,6 +14538,7 @@ fn finalize_activation(state: &mut GameState) {
     if !paid {
         // Fail closed for a malformed/restored pending activation rather
         // than granting its effect without collecting the full cost.
+        crate::engine::note_halt(file!(), line!());
         state.engine.halted = Some((
             UnsupportedMechanic::InvalidEffectContinuation,
             pending.source,
@@ -14556,6 +14602,7 @@ fn push_paid_activation(
                 .reveal_hand_card(observer, owner, pending.source)
                 .is_err()
             {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     UnsupportedMechanic::InvalidEffectContinuation,
                     pending.source,
@@ -14601,6 +14648,7 @@ fn push_paid_activation(
         },
     });
     if log_final_targeting_events(state, stack_item_id).is_err() {
+        crate::engine::note_halt(file!(), line!());
         state.engine.halted = Some((
             UnsupportedMechanic::InvalidEffectContinuation,
             pending.source,

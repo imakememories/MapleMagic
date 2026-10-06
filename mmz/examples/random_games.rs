@@ -4,7 +4,9 @@
 //! `--check`, every decision also checks that resampling hidden cards leaves
 //! the acting player's observation unchanged.
 //!
-//! usage: random_games <deck a> <deck b> [games] [first seed] [--check]
+//! `--replay` plays only the first seed and prints its last decisions.
+//!
+//! usage: random_games <deck a> <deck b> [games] [first seed] [--check] [--replay]
 use mmz::commander::CommanderDeck;
 use mmz::features::observe;
 use mmz::game::{Game, Kind, Outcome};
@@ -64,6 +66,35 @@ fn play(a: &CommanderDeck, b: &CommanderDeck, seed: u64, check: bool, t: &mut Ta
     }
 }
 
+/// Replays one game exactly as `play` does and prints how it ended.
+fn replay(a: &CommanderDeck, b: &CommanderDeck, seed: u64, check: bool) {
+    let mut g = Game::new_commander(a, b, seed);
+    let mut rng = SplitMix64::seed(seed ^ 0x5eed);
+    let mut log = Vec::new();
+    while !g.is_over() {
+        let me = g.to_act();
+        if check {
+            let mut w = g.clone();
+            w.determinize(me, rng.next_u64());
+            if observe(&w, me) != observe(&g, me) {
+                log.push("observation changed when hidden cards were resampled".to_string());
+                break;
+            }
+        }
+        let i = (rng.next_u64() % g.choices().len() as u64) as usize;
+        let f = g.choices()[i].feat;
+        let card = if f.src == u16::MAX { "-" } else { CARD_DEFS[f.src as usize].name };
+        let st = &g.state;
+        let stack: Vec<&str> = st.stack.iter().map(|it| st.objects.get(it.source).name.as_str()).collect();
+        log.push(format!("turn {} {:?} {me:?}: {:?} {card} (arg {}) | stack {stack:?}", st.turn, st.step, f.kind, f.arg));
+        g.apply(i);
+    }
+    for line in &log[log.len().saturating_sub(15)..] {
+        println!("{line}");
+    }
+    println!("outcome {:?} {}", g.outcome(), g.abort_reason.unwrap_or_default());
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let check = args.iter().any(|a| a == "--check");
@@ -73,6 +104,9 @@ fn main() {
     let first: u64 = pos.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
     let deck = |n: &str| CommanderDeck::named_with_stand_in(n, Some("Mountain")).expect("a Commander list");
     let (a, b) = (deck(da), deck(db));
+    if args.iter().any(|a| a == "--replay") {
+        return replay(&a, &b, first, check);
+    }
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()) as u64;
     let parts: Vec<Tally> = std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads)

@@ -9919,6 +9919,7 @@ fn controlled_creature_bindings(state: &GameState, player: PlayerId) -> Vec<Effe
 fn put_library_card_onto_battlefield(state: &mut GameState, ctx: &ExecCtx, card: ObjectId) {
     let def = &crate::card_def::CARD_DEFS[state.objects.get(card).card_def as usize];
     if def.subtypes.contains(&Subtype::Aura) {
+        crate::engine::note_halt(file!(), line!());
         state.engine.halted = Some((crate::engine::UnsupportedMechanic::AuraEntersWithoutBeingCast, ctx.source));
         return;
     }
@@ -9947,6 +9948,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             }
             // 701.24c: shuffled even if the permanent didn't go there.
             if state.shuffle_library(owner).is_err() {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((crate::engine::UnsupportedMechanic::InvalidEffectContinuation, ctx.source));
                 return;
             }
@@ -10062,6 +10064,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             }
             // Revealed, so both players know which cards went to the bottom.
             if state.move_library_cards_to_bottom_in_random_order(player, &revealed, [true, true]).is_err() {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((crate::engine::UnsupportedMechanic::InvalidEffectContinuation, ctx.source));
             }
         }
@@ -10122,6 +10125,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 .minus1_minus1
                 .checked_add(1)
             else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10149,6 +10153,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 .plus1_plus1
                 .checked_add(1)
             else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10158,12 +10163,14 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             state.objects.get_mut(object_id).counters.plus1_plus1 = next;
         }
         EffectOp::BindPlusOnePlusOneCounterToTriggerSource => {
+            crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((
                 crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                 ctx.source,
             ));
         }
         EffectOp::MaterializeStormCopies => {
+            crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((
                 crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                 ctx.source,
@@ -10171,6 +10178,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         }
         EffectOp::CreateStormCopies { binding } => {
             if crate::engine::create_storm_spell_copies(state, ctx, *binding).is_err() {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10185,6 +10193,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             }
             let counters = &mut state.objects.get_mut(object.object).counters.plus1_plus1;
             let Some(next) = counters.checked_add(1) else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10211,6 +10220,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 total.checked_add(mana_value)
             });
             let Some(amount) = amount else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10263,6 +10273,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                     Ok(true) => return,
                     Ok(false) => {}
                     Err(_) => {
+                        crate::engine::note_halt(file!(), line!());
                         state.engine.halted = Some((
                             crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                             object,
@@ -10277,6 +10288,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let target_index = match target {
                 ObjectRef::Target(index) => usize::from(*index),
                 ObjectRef::ThisSource => {
+                    crate::engine::note_halt(file!(), line!());
                     state.engine.halted = Some((
                         crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                         ctx.source,
@@ -10290,6 +10302,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 && state.objects.get(target).zone == Zone::Battlefield
                 && crate::engine::object_has_type(state, target, CardType::Creature);
             if !source_is_stack || !target_is_creature {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10364,6 +10377,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             }
             let counters = &mut state.objects.get_mut(target).counters.plus1_plus1;
             let Some(updated) = counters.checked_add(1) else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10394,6 +10408,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             )
             .is_err()
             {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10461,6 +10476,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             preserve_known_identity,
         } => {
             if validate_effect_object_binding(state, *object).is_err() {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10490,6 +10506,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         }
         EffectOp::AttachSourceToTarget { object } => {
             let Some(source) = ctx.ability_source_contract else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10497,6 +10514,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 return;
             };
             let ObjectRef::Target(target_index) = object else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10533,6 +10551,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 )
                 .is_err()
             {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10549,6 +10568,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let index = usize::from(*target_index);
             let Some(Target::Object(object)) = ctx.targets.get(index).copied() else {
                 if !*optional {
+                    crate::engine::note_halt(file!(), line!());
                     state.engine.halted = Some((
                         crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                         ctx.source,
@@ -10566,6 +10586,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 || *lifelink < 0
                 || *stun < 0
             {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10578,6 +10599,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 live.counters.stun.checked_add(*stun),
             );
             let (Some(next_plus), Some(next_lifelink), Some(next_stun)) = next else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10591,6 +10613,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         }
         EffectOp::CreateTokenAndAttachSource { token_def } => {
             let Some(token) = crate::card_def::CARD_DEFS.get(*token_def as usize) else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10598,6 +10621,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 return;
             };
             if !token.is_token || !token.has_full_support() {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10611,6 +10635,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let Some(crate::event::CommittedEvent::CreateToken { object, .. }) =
                 state.engine.event_log.last().cloned()
             else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10618,6 +10643,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 return;
             };
             let Some(source) = ctx.ability_source_contract else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -10646,6 +10672,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 )
                 .is_err()
             {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11377,6 +11404,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         }
         EffectOp::ShuffleTriggerSourceIntoOwnersLibrary => {
             let Some(source) = ctx.ability_source_contract else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11384,6 +11412,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 return;
             };
             let Some(expected_generation) = source.zone_change_count.checked_add(1) else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11394,6 +11423,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 return;
             };
             if live.card_def != source.card_def || live.owner != source.owner {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11405,6 +11435,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             }
             let mut staged = state.clone();
             let Ok(shuffle_token) = staged.preflight_library_shuffle(source.owner) else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11422,6 +11453,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 .commit_library_shuffle(source.owner, shuffle_token)
                 .is_err()
             {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11437,6 +11469,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             };
             let object = ctx.resolve_object(*object);
             let Some(target_index) = target_index else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11449,6 +11482,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 return;
             }
             let Some(source_contract) = ctx.ability_source_contract else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11478,6 +11512,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                         || (record.exiled == object
                             && record.exiled_zone_change_count == exiled_zone_change_count)
                 }) {
+                    crate::engine::note_halt(file!(), line!());
                     state.engine.halted = Some((
                         crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                         ctx.source,
@@ -11496,6 +11531,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         }
         EffectOp::ReturnObjectsExiledBySource => {
             let Some(source_contract) = ctx.ability_source_contract else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11527,6 +11563,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                     })
             });
             if !structurally_valid {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11552,6 +11589,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             if *player != ctx.controller
                 || event::install_color_damage_prevention(state, ctx.source, *color).is_err()
             {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11560,6 +11598,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         }
         EffectOp::TransformSagaSource => {
             let Some(source_contract) = ctx.ability_source_contract else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11578,6 +11617,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             }
             let def = &crate::card_def::CARD_DEFS[source.card_def as usize];
             if source.v4.face_index != 0 || def.saga.is_none() || def.transform_face.is_none() {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11595,6 +11635,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         }
         EffectOp::PutSourceOntoBattlefieldWithXPlusOneCounters => {
             if state.objects.get(ctx.source).zone != Zone::Stack {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11606,6 +11647,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 event::ProposedEvent::zone_change(ctx.source, Zone::Battlefield),
             );
             let Ok(amount) = i16::try_from(ctx.x_value) else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11616,6 +11658,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         }
         EffectOp::PutSourceOntoBattlefieldAttachedToTargetWithXPlusOneCounters { target } => {
             let ObjectRef::Target(target_index) = target else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11628,6 +11671,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 || state.objects.get(target).zone != Zone::Battlefield
                 || !crate::engine::object_has_type(state, target, CardType::Creature)
             {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11639,6 +11683,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 event::ProposedEvent::zone_change(ctx.source, Zone::Battlefield),
             );
             let Ok(amount) = i16::try_from(ctx.x_value) else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11659,6 +11704,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         }
         EffectOp::DealDamageToTargetEqualToChosenCostCreaturePower { target } => {
             let [reference] = ctx.paid_cost_refs.as_slice() else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11666,6 +11712,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 return;
             };
             let Some(last_known_power) = reference.power_lki else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11674,6 +11721,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             };
             let Some(definition) = crate::card_def::CARD_DEFS.get(reference.card_def as usize)
             else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11681,6 +11729,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 return;
             };
             if !definition.has_type(CardType::Creature) {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11711,6 +11760,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                     last_known_power
                 }
                 _ => {
+                    crate::engine::note_halt(file!(), line!());
                     state.engine.halted = Some((
                         crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                         ctx.source,
@@ -11728,6 +11778,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         EffectOp::TakeInitiative { player } => {
             let player = ctx.resolve_player(*player, state);
             let Some(source) = ctx.ability_source_contract else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11735,6 +11786,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 return;
             };
             if take_initiative(state, player, source).is_err() {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11749,6 +11801,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                         || !crate::engine::object_has_type(state, object, CardType::Creature)
                 })
             {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11758,6 +11811,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let count = i16::from(*count);
             let counters = &mut state.objects.get_mut(object).counters.plus1_plus1;
             let Some(total) = counters.checked_add(count) else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11772,6 +11826,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 live.zone != Zone::Battlefield
                     || !crate::engine::object_has_type(state, object, CardType::Creature)
             }) {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,
@@ -11779,6 +11834,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 return;
             }
             let Ok(expires_at_turn) = until_players_next_turn_expiry(state, ctx.controller) else {
+                crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
                     ctx.source,

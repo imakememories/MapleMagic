@@ -495,7 +495,8 @@ impl Game {
                     return;
                 }
                 Decision::Halted { mechanic, source } => {
-                    self.abort(format!("halted {mechanic:?} source {}", CARD_DEFS[def_of(&self.state, source) as usize].name));
+                    let site = engine::last_halt_site().map_or(String::new(), |(file, line)| format!(" at {file}:{line}"));
+                    self.abort(format!("halted {mechanic:?} source {}{site}", CARD_DEFS[def_of(&self.state, source) as usize].name));
                     return;
                 }
                 _ => {}
