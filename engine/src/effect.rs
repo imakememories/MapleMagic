@@ -988,6 +988,11 @@ pub enum EffectOp {
     /// Destroys each artifact the controller doesn't control, at once
     /// (overloaded Vandalblast).
     DestroyEachArtifactYouDontControl,
+    /// The card gains flashback until end of turn, its mana cost as the
+    /// flashback cost (Flashback).
+    GrantFlashbackUntilEndOfTurn {
+        object: ObjectRef,
+    },
 }
 
 /// Which creatures a `ThreatenAll` takes.
@@ -10004,6 +10009,14 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 event::propose_and_commit_batch(state, events);
             }
         }
+        EffectOp::GrantFlashbackUntilEndOfTurn { object } => {
+            let id = ctx.resolve_object(*object);
+            let o = state.objects.get(id);
+            if o.zone == Zone::Graveyard {
+                let link = crate::state::ObjectLinkV4 { object: id, zone_change_count: o.zone_change_count };
+                state.granted_flashback.push(link);
+            }
+        }
         EffectOp::DestroyEachArtifactYouDontControl => {
             let events = [PlayerId::P0, PlayerId::P1]
                 .into_iter()
@@ -10649,6 +10662,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         EffectOp::DiscardCards { player, count } => {
             let player = ctx.resolve_player(*player, state);
             state.engine.pending_discard = Some(crate::engine::PendingDiscard {
+                land_only: false,
                 player,
                 count: *count,
                 resume: crate::engine::DiscardResume::None,

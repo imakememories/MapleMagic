@@ -72,6 +72,7 @@ fn kind_of(d: &Decision) -> Kind {
         | Decision::ChooseCommanderZone { .. }
         | Decision::ChooseRiot { .. }
         | Decision::ChooseCascadeCast { .. }
+        | Decision::ChooseCastMethod { .. }
         | Decision::ChooseEffectTargets { .. }
         | Decision::ChooseOptionalCost { .. }
         | Decision::ChooseSpellCopyPayment { .. }
@@ -331,6 +332,7 @@ fn run_combat_game(state: &mut GameState) -> (Vec<Kind>, u32, Vec<CommittedEvent
             | Decision::ChooseCommanderZone { .. }
             | Decision::ChooseRiot { .. }
         | Decision::ChooseCascadeCast { .. }
+        | Decision::ChooseCastMethod { .. }
             | Decision::ChooseEffectTargets { .. }
             | Decision::ChooseOptionalCost { .. }
             | Decision::ChooseSpellCopyPayment { .. }

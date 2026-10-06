@@ -573,6 +573,9 @@ pub enum CastMethodV4 {
     Foretold,
     /// Cast from exile by cascade, without paying its mana cost (702.85a).
     Cascade,
+    /// Cast from the graveyard by retrace (702.81): its mana cost plus
+    /// discarding a land card.
+    Retrace,
 }
 
 /// Independently frozen route by which a physical spell's immediately
@@ -601,6 +604,8 @@ pub enum SpellCastRouteV4 {
     },
     /// Exiled by its owner's cascade ability.
     Cascade,
+    /// From its owner's graveyard by retrace.
+    GraveyardRetrace,
 }
 
 /// Incarnation-local cast provenance stored on the physical source object
@@ -921,7 +926,8 @@ pub fn stack_target_contract_is_structurally_valid(
         ) | (
             TargetSpec::CreatureOrLandCardInGraveyard
                 | TargetSpec::CreatureCardInOwnGraveyard
-                | TargetSpec::UpToOneHistoricCardInYourGraveyard,
+                | TargetSpec::UpToOneHistoricCardInYourGraveyard
+                | TargetSpec::InstantOrSorceryCardInYourGraveyard,
             0,
             StackTargetContractV4::Object {
                 zone: Zone::Graveyard,
@@ -1402,6 +1408,10 @@ pub struct GameState {
     /// See [`PendingCascadeV1`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_cascade: Option<PendingCascadeV1>,
+    /// Graveyard cards that have flashback until end of turn, with their
+    /// mana cost as its cost (Flashback, the card).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub granted_flashback: Vec<ObjectLinkV4>,
     /// Total mana value of the spells each player has cast this turn, as
     /// they were cast (X included). Call Forth the Tempest.
     #[serde(default, skip_serializing_if = "no_tokens_created")]
@@ -1490,6 +1500,9 @@ impl Hash for GameState {
         }
         if self.pending_cascade.is_some() {
             self.pending_cascade.hash(state);
+        }
+        if !self.granted_flashback.is_empty() {
+            self.granted_flashback.hash(state);
         }
         if !no_tokens_created(&self.spell_mana_values_this_turn) {
             self.spell_mana_values_this_turn.hash(state);
@@ -1659,6 +1672,7 @@ impl GameState {
             event_history_base: 0,
             library_groups: Vec::new(),
             pending_cascade: None,
+            granted_flashback: Vec::new(),
             spell_mana_values_this_turn: [0; 2],
             engine: crate::engine::EngineState::default(),
         }

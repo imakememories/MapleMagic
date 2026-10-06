@@ -2904,7 +2904,9 @@ fn special_for(name: &str) -> Special {
         "End the Festivities" => Special::EndTheFestivities,
         "Galvanic Blast" => Special::GalvanicBlast,
         "Rally at the Hornburg" => Special::RallyAtTheHornburg,
-        "Reckless Impulse" | "Wrenn's Resolve" | "Light Up the Stage" => Special::RecklessImpulse,
+        "Reckless Impulse" | "Wrenn's Resolve" | "Light Up the Stage" | "Embrace the Unknown" => {
+            Special::RecklessImpulse
+        }
         "Winding Way" => Special::WindingWay,
         "Lead the Stampede" => Special::LookTopSelectByTypeToHandBottomRest {
             look: 5,
@@ -4577,6 +4579,7 @@ fn hand_written_spell(name: &str) -> Option<(&'static str, &'static str)> {
         "Demand Answers" => ("TargetSpec::None", "crate::commander_cards::demand_answers"),
         "Seize the Spotlight" => ("TargetSpec::None", "crate::commander_cards::seize_the_spotlight"),
         "Vandalblast" => ("TargetSpec::ArtifactYouDontControl", "crate::commander_cards::vandalblast"),
+        "Flashback" => ("TargetSpec::InstantOrSorceryCardInYourGraveyard", "crate::commander_cards::flashback"),
         "Call Forth the Tempest" => ("TargetSpec::None", "crate::commander_cards::call_forth_the_tempest"),
         "Wild Magic Surge" => ("TargetSpec::OpponentPermanent", "crate::commander_cards::wild_magic_surge"),
         "Mass Mutiny" => (
@@ -6694,6 +6697,7 @@ fn codegen(cards: &[CardJson]) -> String {
         )
         .unwrap();
         writeln!(out, "        additional_cost_or: {},", additional_cost_or_for(&c.name)).unwrap();
+        writeln!(out, "        retrace: {},", c.name == "Embrace the Unknown").unwrap();
         writeln!(out, "        flashback: {},", flashback_for(&c.name)).unwrap();
         writeln!(
             out,
@@ -7015,6 +7019,9 @@ fn codegen(cards: &[CardJson]) -> String {
         if additional_cost_or_for(&c.name) != "None" {
             canon.push_str(" or ");
             canon.push_str(additional_cost_or_for(&c.name));
+        }
+        if c.name == "Embrace the Unknown" {
+            canon.push_str(" retrace");
         }
         canon.push('|');
         canon.push_str(&flashback_for(&c.name));

@@ -12,7 +12,7 @@ use mtg_kernel::event::{self, ProposedEvent};
 use mtg_kernel::ids::{ObjectId, PlayerId};
 use mtg_kernel::mana::ManaColor;
 use mtg_kernel::runtime_decks::{runtime_deck_by_id, RUNTIME_DECKS};
-use mtg_kernel::state::{GameState, ObjectStateV4, SplitMix64, Target, Zone};
+use mtg_kernel::state::{CastMethodV4, GameState, ObjectStateV4, SplitMix64, Target, Zone};
 
 /// Hard stop for runaway games (loops the engine cannot detect).
 pub const MAX_TURNS: u32 = 60;
@@ -773,6 +773,19 @@ impl Game {
             Decision::ChooseEffectBoolean { player, source, .. } => {
                 self.actor = player;
                 yes_no(&mut out, def_of(st, source), 4, Action::ChooseEffectBoolean);
+            }
+            Decision::ChooseCastMethod { player, spell, methods } => {
+                self.actor = player;
+                let d = def_of(st, spell);
+                for m in methods {
+                    let arg = match m {
+                        CastMethodV4::Flashback => 2,
+                        CastMethodV4::Escape => 3,
+                        CastMethodV4::Retrace => 4,
+                        _ => 9,
+                    };
+                    out.push(mk(ActFeat::new(Kind::CastMode, d, 0, arg), Exec::Engine(Action::ChooseCastMethod(m))));
+                }
             }
             Decision::ChooseCascadeCast { player, card } => {
                 self.actor = player;

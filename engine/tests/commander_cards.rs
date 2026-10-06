@@ -1874,3 +1874,108 @@ fn vandalblast_destroys_one_artifact_or_overloaded_each_you_dont_control() {
     assert_eq!(zone(&state, mine), Zone::Battlefield);
     assert_eq!(zone(&state, spell), Zone::Graveyard, "not shuffled away like an Omen");
 }
+
+/// Casts graveyard card `card`, answering a method choice with `method`, a
+/// target with player 1, and a discard with the first offer (whose choices are
+/// returned).
+fn cast_from_graveyard(state: &mut GameState, card: ObjectId, method: Option<mtg_kernel::state::CastMethodV4>) -> Vec<ObjectId> {
+    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(state, Action::CastSpell(card)).unwrap();
+    let mut discard_choices = Vec::new();
+    loop {
+        let a = match engine::advance_until_decision(state) {
+            Decision::ChooseCastMethod { methods, .. } => {
+                let m = method.expect("a method choice");
+                assert!(methods.contains(&m), "{methods:?}");
+                Action::ChooseCastMethod(m)
+            }
+            Decision::ChooseTargets { .. } => Action::ChooseTarget(Target::Player(P1)),
+            Decision::Discard { choices, .. } => {
+                discard_choices = choices.clone();
+                Action::Discard(vec![choices[0]])
+            }
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => return discard_choices,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(state, a).unwrap();
+    }
+}
+
+fn castable(state: &mut GameState, card: ObjectId) -> bool {
+    matches!(advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. })), Decision::CastSpellOrPass { castable_spells, .. } if castable_spells.contains(&card))
+}
+
+#[test]
+fn flashback_lets_a_graveyard_spell_be_cast_once_for_its_mana_cost_this_turn() {
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+    assert!(!castable(&mut state, bolt));
+    cast(&mut state, "Flashback", Some(Target::Object(bolt)), 0);
+    assert!(castable(&mut state, bolt));
+    cast_from_graveyard(&mut state, bolt, None);
+    assert_eq!(state.players[1].life, 37);
+    assert_eq!(zone(&state, bolt), Zone::Exile, "a flashback spell is exiled");
+
+    // The grant lasts only this turn.
+    let mut state = game();
+    lands(&mut state, P0, 1);
+    let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+    cast(&mut state, "Flashback", Some(Target::Object(bolt)), 0);
+    end_turn(&mut state);
+    end_turn(&mut state);
+    lands(&mut state, P0, 1);
+    assert!(!castable(&mut state, bolt));
+}
+
+#[test]
+fn embrace_the_unknown_retraces_by_discarding_a_land() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let embrace = put_in(&mut state, P0, "Embrace the Unknown", Zone::Graveyard);
+    let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+    assert!(!castable(&mut state, embrace), "no land card to discard");
+    let lands_in_hand = [put_in(&mut state, P0, "Mountain", Zone::Hand), put_in(&mut state, P0, "Mountain", Zone::Hand)];
+    let offered = cast_from_graveyard(&mut state, embrace, None);
+    assert_eq!(offered, lands_in_hand.to_vec(), "only land cards");
+    assert_eq!(zone(&state, bolt), Zone::Hand);
+    assert_eq!(zone(&state, embrace), Zone::Graveyard, "retrace returns it to the graveyard");
+    assert_eq!(state.engine.exile_play_permissions.len(), 2, "two cards to play");
+}
+
+#[test]
+fn a_retrace_card_with_flashback_asks_which_way_to_cast_it() {
+    use mtg_kernel::state::CastMethodV4;
+    let mut state = game();
+    lands(&mut state, P0, 4);
+    let embrace = put_in(&mut state, P0, "Embrace the Unknown", Zone::Graveyard);
+    put_in(&mut state, P0, "Mountain", Zone::Hand);
+    cast(&mut state, "Flashback", Some(Target::Object(embrace)), 0);
+    cast_from_graveyard(&mut state, embrace, Some(CastMethodV4::Flashback));
+    assert_eq!(zone(&state, embrace), Zone::Exile);
+    assert_eq!(state.players[0].hand.len(), 1, "no land was discarded");
+}
+
+#[test]
+fn a_flashback_vandalblast_cannot_be_overloaded() {
+    let mut state = game();
+    lands(&mut state, P0, 7);
+    let theirs = [put(&mut state, P1, "Sol Ring"), put(&mut state, P1, "Arcane Signet")];
+    let blast = put_in(&mut state, P0, "Vandalblast", Zone::Graveyard);
+    cast(&mut state, "Flashback", Some(Target::Object(blast)), 0);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(blast)).unwrap();
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseSpellMode { legal_modes, .. } => panic!("overload offered: {legal_modes:?}"),
+            Decision::ChooseTargets { .. } => Action::ChooseTarget(Target::Object(theirs[0])),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!((zone(&state, theirs[0]), zone(&state, theirs[1])), (Zone::Graveyard, Zone::Battlefield));
+    assert_eq!(zone(&state, blast), Zone::Exile);
+}

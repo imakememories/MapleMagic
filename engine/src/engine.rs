@@ -151,6 +151,9 @@ pub struct EngineState {
     /// `GameState::event_history_base` so history indices stay absolute.
     /// Tests that need the whole game record it after each step.
     pub event_history: Vec<CommittedEvent>,
+    /// A graveyard card the player chose to cast, waiting for which way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_cast_method_choice: Option<ObjectId>,
     pub active_replacements: Vec<ActiveReplacement>,
     pub next_replacement_id: u32,
     /// Exact historical links created by effects such as Mesmeric Fiend.
@@ -963,6 +966,9 @@ pub struct PendingDiscard {
     pub player: PlayerId,
     pub count: u32,
     pub resume: DiscardResume,
+    /// Only land cards may be discarded (retrace).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub land_only: bool,
 }
 
 /// A resolution-time optional cost (`effect::EffectOp::MayPayCostThen`),
@@ -1332,6 +1338,13 @@ pub enum Decision {
         player: PlayerId,
         card: ObjectId,
     },
+    /// A graveyard card castable more than one way (flashback, retrace,
+    /// escape): which (601.2b).
+    ChooseCastMethod {
+        player: PlayerId,
+        spell: ObjectId,
+        methods: Vec<CastMethodV4>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1419,6 +1432,8 @@ pub enum Action {
     ChooseRiot(bool),
     /// Answers `Decision::ChooseCascadeCast`.
     ChooseCascadeCast(bool),
+    /// Answers `Decision::ChooseCastMethod`.
+    ChooseCastMethod(CastMethodV4),
 }
 
 const CHAIN_COPY_COST: Cost = Cost {
@@ -1498,6 +1513,7 @@ fn target_count(spec: TargetSpec) -> u8 {
         | TargetSpec::OpponentNonbasicLand
         | TargetSpec::OpponentPermanent
         | TargetSpec::ArtifactYouDontControl
+        | TargetSpec::InstantOrSorceryCardInYourGraveyard
         | TargetSpec::SpellManaValueAtMostControlledSubtypes { .. }
         | TargetSpec::UpToOneTappedCreature
         | TargetSpec::NoncreatureArtifactPermanent
@@ -1750,8 +1766,14 @@ fn validate_physical_spell_cast_origin(
             origin.origin_zone == Zone::Graveyard
                 && source.owner == item.controller
                 && cast_method == CastMethodV4::Flashback
-                && def.flashback.is_some()
+                && flashback_cost(state, item.source, origin.origin_zone_change_count).is_some()
                 && def.escape.is_none()
+        }
+        SpellCastRouteV4::GraveyardRetrace => {
+            origin.origin_zone == Zone::Graveyard
+                && source.owner == item.controller
+                && cast_method == CastMethodV4::Retrace
+                && def.retrace
         }
         SpellCastRouteV4::ExilePermission {
             holder,
@@ -1933,7 +1955,11 @@ fn validate_spell_source_contract_fields(
     match cast_method {
         CastMethodV4::Normal => {}
         CastMethodV4::Alternative if def.alt_cost.is_some() => {}
-        CastMethodV4::Flashback if def.flashback.is_some() => {}
+        CastMethodV4::Flashback
+            if state.objects.get(item.source).v4.spell_cast_origin.is_some_and(|origin| {
+                flashback_cost(state, item.source, origin.origin_zone_change_count).is_some()
+            }) => {}
+        CastMethodV4::Retrace if def.retrace => {}
         CastMethodV4::Madness if def.madness_cost.is_some() => {}
         CastMethodV4::Escape if def.escape.is_some() => {}
         CastMethodV4::Omen if supported_omen(def).is_some() => {}
@@ -1951,7 +1977,8 @@ fn validate_spell_source_contract_fields(
         | CastMethodV4::Plotted
         | CastMethodV4::Foretold
         | CastMethodV4::Escape
-        | CastMethodV4::Omen => {
+        | CastMethodV4::Omen
+        | CastMethodV4::Retrace => {
             return Err("spell cast method is unsupported by its source definition".to_string())
         }
         CastMethodV4::Bestow => {
@@ -2084,7 +2111,8 @@ fn storm_source_contract_is_structurally_valid(
         | SpellCastRouteV4::GraveyardEscape
         | SpellCastRouteV4::CommandZone
         | SpellCastRouteV4::Foretold { .. }
-        | SpellCastRouteV4::Cascade => false,
+        | SpellCastRouteV4::Cascade
+        | SpellCastRouteV4::GraveyardRetrace => false,
     };
     definition.name == "Weather the Storm"
         && definition.is_executable()
@@ -2604,6 +2632,20 @@ fn legal_targets_for_controller_from_source(
         }
         TargetSpec::UpToOneArtifact => battlefield_objects(state)
             .filter(|&id| object_has_type(state, id, CardType::Artifact))
+            .map(Target::Object)
+            .collect(),
+        TargetSpec::InstantOrSorceryCardInYourGraveyard => state.players[controller.index()]
+            .graveyard
+            .iter()
+            .copied()
+            .filter(|&id| {
+                let object = state.objects.get(id);
+                let def = &card_def::CARD_DEFS[object.card_def as usize];
+                object.owner == controller
+                    && object.zone == Zone::Graveyard
+                    && !object.v4.is_token
+                    && (def.has_type(CardType::Instant) || def.has_type(CardType::Sorcery))
+            })
             .map(Target::Object)
             .collect(),
         TargetSpec::ArtifactYouDontControl => battlefield_objects(state)
@@ -3213,8 +3255,48 @@ fn viable_printed_spell_modes(
 fn discard_count_in(components: &[CostComponent]) -> Option<u8> {
     components.iter().find_map(|c| match c {
         CostComponent::DiscardCards(n) => Some(*n),
+        CostComponent::DiscardLandCard => Some(1),
         _ => None,
     })
+}
+
+fn is_land_card(state: &GameState, id: ObjectId) -> bool {
+    card_def::CARD_DEFS[state.objects.get(id).card_def as usize].has_type(CardType::Land)
+}
+
+/// Retrace's additional cost (702.81a).
+const RETRACE_COST: &[CostComponent] = &[CostComponent::DiscardLandCard];
+
+/// Every card's mana cost as a flashback cost, for flashback granted until
+/// end of turn ("the flashback cost is equal to its mana cost").
+static GRANTED_FLASHBACK_COSTS: std::sync::LazyLock<Vec<[CostComponent; 1]>> =
+    std::sync::LazyLock::new(|| card_def::CARD_DEFS.iter().map(|def| [CostComponent::Mana(def.cost)]).collect());
+
+/// The flashback cost of `id`'s graveyard incarnation `generation`: printed,
+/// or granted until end of turn.
+fn flashback_cost(state: &GameState, id: ObjectId, generation: u32) -> Option<&'static [CostComponent]> {
+    let card_def = state.objects.get(id).card_def;
+    let def = &card_def::CARD_DEFS[card_def as usize];
+    def.flashback.as_ref().map(|flashback| flashback.cost).or_else(|| {
+        state
+            .granted_flashback
+            .iter()
+            .any(|link| link.object == id && link.zone_change_count == generation)
+            .then(|| &GRANTED_FLASHBACK_COSTS[card_def as usize][..])
+    })
+}
+
+/// The graveyard incarnation a pending cast came from.
+fn pending_origin_generation(pending: &PendingCast) -> u32 {
+    pending.source_contract.spell_cast_origin.map_or(0, |origin| origin.origin_zone_change_count)
+}
+
+/// The ways `player` could cast graveyard card `id` right now.
+fn castable_graveyard_methods(player: PlayerId, id: ObjectId, state: &GameState) -> Vec<CastMethodV4> {
+    [CastMethodV4::Flashback, CastMethodV4::Escape, CastMethodV4::Retrace]
+        .into_iter()
+        .filter(|&method| is_castable_now(player, id, method, state))
+        .collect()
 }
 
 /// `pub(crate)`: also read by `effect::execute`'s `MayPayCostThen` handler
@@ -3547,7 +3629,7 @@ fn component_payment_shape_supported(components: &[CostComponent]) -> bool {
                 }
                 discard_count += 1;
             }
-            CostComponent::DiscardHand => discard_count += 1,
+            CostComponent::DiscardHand | CostComponent::DiscardLandCard => discard_count += 1,
             CostComponent::OpponentLostLifeThisTurn => {}
             CostComponent::PayLifePerCommanderColor => pay_life_count += 1,
             CostComponent::SacrificeLands(amount) => {
@@ -3818,6 +3900,9 @@ fn can_pay_components(
                     .count();
                 hand_other >= *n as usize
             }
+            CostComponent::DiscardLandCard => state.players[player.index()].hand.iter().any(|&id| {
+                id != source && card_def::CARD_DEFS[state.objects.get(id).card_def as usize].has_type(CardType::Land)
+            }),
             CostComponent::SacrificeLands(n) => count_controlled_lands(player, state) >= *n as u32,
             CostComponent::SacrificeControlled { count, filter } => {
                 sacrificeable_controlled_permanents(player, *filter, state, &[]).len()
@@ -4157,7 +4242,7 @@ fn pay_cost_components_with_x(
                 state,
                 ProposedEvent::life_loss(player, i32::from(*amount)),
             ),
-            CostComponent::DiscardCards(_) => {}
+            CostComponent::DiscardCards(_) | CostComponent::DiscardLandCard => {}
             CostComponent::OpponentLostLifeThisTurn => {}
             CostComponent::PayLifePerCommanderColor => {
                 let n = crate::commander::color_identity(state, player).len() as i32;
@@ -4643,7 +4728,9 @@ fn controlled_permanent_sacrifice_needed(
 
 /// The additional cost this cast pays: A, or B of an "A or B" cost once chosen.
 fn chosen_additional_cost(def: &card_def::CardDef, pending: &PendingCast) -> Option<&'static [CostComponent]> {
-    if pending.additional_cost_or_chosen == Some(true) {
+    if pending.source_contract.cast_method == CastMethodV4::Retrace {
+        Some(RETRACE_COST)
+    } else if pending.additional_cost_or_chosen == Some(true) {
         def.additional_cost_or
     } else {
         def.additional_cost
@@ -5032,9 +5119,10 @@ fn viable_pending_spell_forms(
     let Some(omen) = supported_omen(def) else {
         return viable_printed_spell_modes(def, pending.spell, pending.controller, state);
     };
-    // Cast without paying its mana cost: no mana to check, and an overload
-    // cost, an alternative cost, can't be used (118.9a).
-    if pending.source_contract.cast_method == CastMethodV4::Cascade {
+    // Cast some other way (without paying its mana cost, or by flashback):
+    // the mana is checked elsewhere, and an overload cost, an alternative
+    // cost, can't be added (118.9a).
+    if pending.source_contract.cast_method != CastMethodV4::Normal {
         let completable = |spec| {
             target_prefix_can_complete_for_controller_and_source(
                 spec,
@@ -5188,10 +5276,21 @@ fn is_castable_now(
     }
 
     match cast_method {
-        CastMethodV4::Flashback => def.flashback.as_ref().is_some_and(|flashback| {
-            can_pay_components(flashback.cost, player, id, state)
-                && some_additional_cost_payable(def, player, id, state)
-        }),
+        CastMethodV4::Flashback => state.objects.get(id).zone == Zone::Graveyard
+            && flashback_cost(state, id, state.objects.get(id).zone_change_count).is_some_and(|cost| {
+                can_pay_components(cost, player, id, state) && some_additional_cost_payable(def, player, id, state)
+            }),
+        CastMethodV4::Retrace => {
+            let cost = crate::statics::reduce_spell_cost(
+                effective_normal_cast_cost(def, player, state),
+                crate::statics::spell_cost_reduction(state, player, def),
+            );
+            def.retrace
+                && state.objects.get(id).zone == Zone::Graveyard
+                && !viable_printed_spell_modes(def, id, player, state).is_empty()
+                && mana::can_pay(&cost, 0, player, state).is_some()
+                && can_pay_components(RETRACE_COST, player, id, state)
+        }
         CastMethodV4::Escape => def.escape.as_ref().is_some_and(|escape| {
             def.additional_cost.is_none()
                 && def.kicker_cost.is_none()
@@ -5266,10 +5365,7 @@ pub fn castable_spells(player: PlayerId, state: &GameState) -> Vec<ObjectId> {
         }
     }
     for &id in &state.players[player.index()].graveyard {
-        let def = &card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
-        if unambiguous_graveyard_cast_method(def)
-            .is_some_and(|method| is_castable_now(player, id, method, state))
-        {
+        if !castable_graveyard_methods(player, id, state).is_empty() {
             out.push(id);
         }
     }
@@ -6126,6 +6222,15 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
             continue;
         }
 
+        if let Some(spell) = state.engine.pending_cast_method_choice {
+            let player = state.priority_player;
+            let methods = castable_graveyard_methods(player, spell, state);
+            if methods.len() >= 2 {
+                return Decision::ChooseCastMethod { player, spell, methods };
+            }
+            state.engine.pending_cast_method_choice = None;
+        }
+
         // Cascade: offer the hit, then bottom the cards not cast once any
         // cast of it is over.
         if let Some(cascade) = state.pending_cascade.as_ref() {
@@ -6384,9 +6489,12 @@ fn remaining_cast_payment_is_payable(
         CastMethodV4::Alternative => def.alt_cost.is_some_and(|components| {
             can_pay_components(components, pending.controller, pending.spell, state)
         }),
-        CastMethodV4::Flashback => def.flashback.as_ref().is_some_and(|flashback| {
-            can_pay_components(flashback.cost, pending.controller, pending.spell, state)
-        }),
+        CastMethodV4::Flashback => flashback_cost(state, pending.spell, pending_origin_generation(pending))
+            .is_some_and(|cost| can_pay_components(cost, pending.controller, pending.spell, state)),
+        CastMethodV4::Retrace => {
+            let x = x_value.saturating_sub(pending_x_discount(def, pending, state));
+            mana::can_pay(&pending_normal_cast_cost(def, pending, state), x, pending.controller, state).is_some()
+        }
         CastMethodV4::Escape => def.escape.as_ref().is_some_and(|escape| {
             can_pay_components(escape.cost, pending.controller, pending.spell, state)
         }),
@@ -6549,7 +6657,7 @@ fn drain_pending_discard_or_decide(state: &mut GameState) -> Option<Decision> {
         .hand
         .iter()
         .copied()
-        .filter(|&id| Some(id) != exclude)
+        .filter(|&id| Some(id) != exclude && (!pd.land_only || is_land_card(state, id)))
         .collect();
 
     if choices.len() <= pd.count as usize {
@@ -7179,10 +7287,19 @@ pub(crate) fn validate_pending_cast(
                 "pending cast stamped its selected cast method before finalization".to_string(),
             );
         }
+        CastMethodV4::Retrace => {
+            if pending.origin_zone != Zone::Graveyard
+                || source.owner != pending.controller
+                || !def.retrace
+                || pending.cast_mode != Some(CastMode::Normal)
+            {
+                return Err("retrace cast has a noncanonical origin".to_string());
+            }
+        }
         CastMethodV4::Flashback => {
             if pending.origin_zone != Zone::Graveyard
                 || source.owner != pending.controller
-                || def.flashback.is_none()
+                || flashback_cost(state, pending.spell, pending_origin_generation(pending)).is_none()
                 || def.escape.is_some()
                 || pending.cast_mode != Some(CastMode::Normal)
             {
@@ -8301,6 +8418,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
         match discard_count_in(add) {
             Some(n) => {
                 state.engine.pending_discard = Some(PendingDiscard {
+                    land_only: add.contains(&CostComponent::DiscardLandCard),
                     player: pending.controller,
                     count: n as u32,
                     resume: DiscardResume::FinishCast {
@@ -8562,6 +8680,7 @@ fn drain_pending_activation_or_decide(state: &mut GameState) -> Option<Decision>
             "cost_discard_paid is None only when begin_activation saw a DiscardCards component",
         );
         state.engine.pending_discard = Some(PendingDiscard {
+            land_only: false,
             player: pending.controller,
             count: n as u32,
             resume: DiscardResume::FinishActivation {
@@ -10528,6 +10647,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             state.last_known_charge.clear();
             state.type_additions.retain(|a| !a.until_end_of_turn);
             state.extra_combats = 0;
+            state.granted_flashback.clear();
             let returns: Vec<(ObjectId, u32, PlayerId)> = state
                 .engine
                 .until_end_of_turn
@@ -10575,6 +10695,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             let hand_size = state.players[p.index()].hand.len();
             if hand_size > 7 {
                 state.engine.pending_discard = Some(PendingDiscard {
+                    land_only: false,
                     player: p,
                     count: (hand_size - 7) as u32,
                     resume: DiscardResume::None,
@@ -11618,6 +11739,13 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
             if !castable_spells(p, state).contains(&id) {
                 return Err(format!("{id} is not castable by {p:?} right now"));
             }
+            if state.objects.get(id).zone == Zone::Graveyard {
+                match castable_graveyard_methods(p, id, state).as_slice() {
+                    [method] => begin_cast_ex(state, p, id, Some(*method)),
+                    _ => state.engine.pending_cast_method_choice = Some(id),
+                }
+                return Ok(());
+            }
             begin_cast(state, p, id);
             Ok(())
         }
@@ -11755,6 +11883,16 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
                 return Err(format!("{id} is not a legal Plot action for {p:?}"));
             }
             plot_spell(state, p, id);
+            Ok(())
+        }
+        Action::ChooseCastMethod(method) => {
+            let id = state.engine.pending_cast_method_choice.ok_or("no cast method choice is pending")?;
+            let p = state.priority_player;
+            if !castable_graveyard_methods(p, id, state).contains(&method) {
+                return Err(format!("{method:?} is not a way to cast {id} now"));
+            }
+            state.engine.pending_cast_method_choice = None;
+            begin_cast_ex(state, p, id, Some(method));
             Ok(())
         }
         Action::ChooseCascadeCast(cast) => {
@@ -12561,7 +12699,7 @@ fn apply_discard_action(state: &mut GameState, chosen: Vec<ObjectId>) -> Result<
     let hand = &state.players[pd.player.index()].hand;
     if !chosen
         .iter()
-        .all(|id| hand.contains(id) && Some(*id) != exclude)
+        .all(|id| hand.contains(id) && Some(*id) != exclude && (!pd.land_only || is_land_card(state, *id)))
     {
         return Err("illegal discard selection".to_string());
     }
@@ -12596,6 +12734,7 @@ fn apply_choose_optional_cost(
                 );
             }
             state.engine.pending_discard = Some(PendingDiscard {
+                land_only: false,
                 player: poc.player,
                 count: poc.discard as u32,
                 resume: DiscardResume::FinishOptionalCost {
@@ -13611,7 +13750,13 @@ fn begin_cast_ex(
     let plotted_turn = state.objects.get(spell_id).plotted_turn;
     debug_assert!(matches!(
         forced_cast_method,
-        None | Some(CastMethodV4::Madness | CastMethodV4::Cascade)
+        None | Some(
+            CastMethodV4::Madness
+                | CastMethodV4::Cascade
+                | CastMethodV4::Flashback
+                | CastMethodV4::Escape
+                | CastMethodV4::Retrace
+        )
     ));
     // A card sitting in Exile isn't necessarily Plotted any more: an
     // impulse-draw effect (`effect::EffectOp::ImpulseDraw`) also exiles
@@ -13660,6 +13805,7 @@ fn begin_cast_ex(
         },
         CastMethodV4::Madness => SpellCastRouteV4::Madness,
         CastMethodV4::Cascade => SpellCastRouteV4::Cascade,
+        CastMethodV4::Retrace => SpellCastRouteV4::GraveyardRetrace,
         CastMethodV4::Foretold => SpellCastRouteV4::Foretold {
             foretold_turn: foretold_turn.expect("a foretold cast was derived from a foretell record"),
         },
@@ -13687,7 +13833,7 @@ fn begin_cast_ex(
     } else {
         None
     };
-    let additional_cost_discarded = if def.additional_cost.is_none() {
+    let additional_cost_discarded = if def.additional_cost.is_none() && cast_method != CastMethodV4::Retrace {
         Some(vec![])
     } else {
         None
@@ -13876,6 +14022,15 @@ fn finalize_owned_cast(
 
     match cast_method {
         CastMethodV4::Plotted | CastMethodV4::Cascade => {}
+        CastMethodV4::Retrace => {
+            let x = x_value.saturating_sub(pending_x_discount(def, &pending, state));
+            let normal_cost = pending_normal_cast_cost(def, &pending, state);
+            let Some(plan) = mana::can_pay(&normal_cost, x, pending.controller, state) else {
+                abort_cast(state, pending, cast_method);
+                return Ok(());
+            };
+            pay_spell_plan(state, pending.controller, &plan);
+        }
         CastMethodV4::Foretold => {
             let cost = reduced_foretell_cost(def, pending.controller, state)
                 .expect("validated foretold cast has a definition-owned cost");
@@ -13896,21 +14051,20 @@ fn finalize_owned_cast(
             pay_spell_plan(state, pending.controller, &plan);
         }
         CastMethodV4::Flashback => {
-            let fb = def
-                .flashback
-                .as_ref()
-                .expect("validated Flashback cast has a definition-owned cost");
-            if !pay_cost_components(
+            let cost = flashback_cost(state, pending.spell, pending_origin_generation(&pending))
+                .expect("validated Flashback cast has a flashback cost");
+            if !pay_cost_components_with_x(
                 state,
                 pending.controller,
                 pending.spell,
-                fb.cost,
+                cost,
                 base_object_cost_chosen,
+                x_value,
             ) {
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             }
-            record_spell_mana(state, pending.controller, components_mana(fb.cost));
+            record_spell_mana(state, pending.controller, components_mana(cost));
         }
         CastMethodV4::Escape => {
             let escape = def
@@ -15669,7 +15823,11 @@ mod tests {
             CastMethodV4::Normal | CastMethodV4::Alternative => {
                 (Zone::Hand, SpellCastRouteV4::Hand, None)
             }
-            CastMethodV4::Bestow | CastMethodV4::Omen | CastMethodV4::Foretold | CastMethodV4::Cascade => {
+            CastMethodV4::Bestow
+            | CastMethodV4::Omen
+            | CastMethodV4::Foretold
+            | CastMethodV4::Cascade
+            | CastMethodV4::Retrace => {
                 panic!("test helper cannot fabricate an unsupported cast method")
             }
         };
@@ -15728,6 +15886,7 @@ mod tests {
     fn stage_madness_offer(state: &mut GameState, player: PlayerId) -> ObjectId {
         let temper = put_in_hand(state, player, "Fiery Temper");
         state.engine.pending_discard = Some(PendingDiscard {
+            land_only: false,
             player,
             count: 1,
             resume: DiscardResume::None,
@@ -16274,6 +16433,7 @@ mod tests {
         let mut state = ready_game_in_main1(1);
         let temper = put_in_hand(&mut state, PlayerId::P0, "Fiery Temper");
         state.engine.pending_discard = Some(PendingDiscard {
+            land_only: false,
             player: PlayerId::P0,
             count: 1,
             resume: DiscardResume::None,
@@ -16361,6 +16521,7 @@ mod tests {
         state.active_player = PlayerId::P0;
         let temper = put_in_hand(&mut state, PlayerId::P0, "Fiery Temper");
         state.engine.pending_discard = Some(PendingDiscard {
+            land_only: false,
             player: PlayerId::P0,
             count: 1,
             resume: DiscardResume::None,

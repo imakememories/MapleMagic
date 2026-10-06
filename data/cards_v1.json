@@ -7067,7 +7067,7 @@
     },
     {
       "name": "Embrace the Unknown",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}{R}",
       "mana_value": 3,
       "colors": [
@@ -7276,7 +7276,7 @@
     },
     {
       "name": "Flashback",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{R}",
       "mana_value": 1,
       "colors": [

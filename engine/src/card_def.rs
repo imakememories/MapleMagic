@@ -575,6 +575,8 @@ pub enum TargetSpec {
     OpponentPermanent,
     /// An artifact you don't control (Vandalblast).
     ArtifactYouDontControl,
+    /// An instant or sorcery card in the controller's graveyard (Flashback).
+    InstantOrSorceryCardInYourGraveyard,
 }
 
 impl TargetSpec {
@@ -628,6 +630,7 @@ impl TargetSpec {
             TargetSpec::OpponentNonbasicLand => 42,
             TargetSpec::OpponentPermanent => 43,
             TargetSpec::ArtifactYouDontControl => 44,
+            TargetSpec::InstantOrSorceryCardInYourGraveyard => 45,
         }
     }
 }
@@ -800,6 +803,8 @@ pub enum CostComponent {
     /// "Tap X untapped artifacts you control" (Secluded Starforge): any
     /// number, chosen one at a time during activation; the count is X.
     TapUntappedControlledArtifactsX,
+    /// Discard a land card (retrace's additional cost).
+    DiscardLandCard,
     /// Reveal the payer's complete hand, but only if it contains no card of
     /// the named type. The reveal itself is the cost, so it happens during
     /// payment after the spell has left hand for the stack. Land Grant is
@@ -1145,6 +1150,9 @@ pub struct CardDef {
     /// The other choice of an "A or B" additional cost, with `additional_cost`
     /// as A (Demand Answers: sacrifice an artifact or discard a card).
     pub additional_cost_or: Option<&'static [CostComponent]>,
+    /// Retrace (702.81): castable from the graveyard by also discarding a
+    /// land card.
+    pub retrace: bool,
     /// `Some` iff this card can be cast from the graveyard for its
     /// flashback cost (Faithless Looting, Lava Dart, Deep Analysis).
     pub flashback: Option<FlashbackDef>,
@@ -1626,6 +1634,7 @@ mod tests {
             (TargetSpec::OpponentNonbasicLand, 42),
             (TargetSpec::OpponentPermanent, 43),
             (TargetSpec::ArtifactYouDontControl, 44),
+            (TargetSpec::InstantOrSorceryCardInYourGraveyard, 45),
         ];
         for (target_spec, ordinal) in stable_ordinals {
             assert_eq!(target_spec.stable_id(), ordinal);
@@ -1645,7 +1654,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0x5266_3da5_42aa_fe24);
+        assert_eq!(KERNEL_CARDDB_HASH, 0x6de4_a843_5d35_c825);
     }
 
     #[test]

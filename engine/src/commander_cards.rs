@@ -91,6 +91,10 @@ pub fn seize_the_spotlight() -> Option<EffectOp> {
     })
 }
 
+pub fn flashback() -> Option<EffectOp> {
+    Some(EffectOp::GrantFlashbackUntilEndOfTurn { object: ObjectRef::Target(0) })
+}
+
 pub fn vandalblast() -> Option<EffectOp> {
     Some(EffectOp::DestroyObject { object: ObjectRef::Target(0) })
 }
