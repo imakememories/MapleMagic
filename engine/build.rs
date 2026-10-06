@@ -3309,6 +3309,14 @@ fn enters_battlefield_tapped_unless_for(name: &str) -> &'static str {
 /// `Some` Kicker cost source text (`CardDef::kicker_cost`), verified against
 /// Java (`KickerAbility`). Only Goblin Bushwhacker has one this increment
 /// ("Kicker {R}").
+/// `Some` replicate cost (`CardDef::replicate_cost`).
+fn replicate_cost_for(name: &str) -> String {
+    match name {
+        "Shattering Spree" => cost_src("{R}"),
+        _ => "None".to_string(),
+    }
+}
+
 fn kicker_cost_for(name: &str) -> String {
     match name {
         "Goblin Bushwhacker" => cost_src("{R}"),
@@ -4580,6 +4588,7 @@ fn hand_written_spell(name: &str) -> Option<(&'static str, &'static str)> {
         "Seize the Spotlight" => ("TargetSpec::None", "crate::commander_cards::seize_the_spotlight"),
         "Vandalblast" => ("TargetSpec::ArtifactYouDontControl", "crate::commander_cards::vandalblast"),
         "Flashback" => ("TargetSpec::InstantOrSorceryCardInYourGraveyard", "crate::commander_cards::flashback"),
+        "Shattering Spree" => ("TargetSpec::ArtifactPermanent", "crate::commander_cards::shattering_spree"),
         "Call Forth the Tempest" => ("TargetSpec::None", "crate::commander_cards::call_forth_the_tempest"),
         "Wild Magic Surge" => ("TargetSpec::OpponentPermanent", "crate::commander_cards::wild_magic_surge"),
         "Mass Mutiny" => (
@@ -6698,6 +6707,7 @@ fn codegen(cards: &[CardJson]) -> String {
         .unwrap();
         writeln!(out, "        additional_cost_or: {},", additional_cost_or_for(&c.name)).unwrap();
         writeln!(out, "        retrace: {},", c.name == "Embrace the Unknown").unwrap();
+        writeln!(out, "        replicate_cost: {},", replicate_cost_for(&c.name)).unwrap();
         writeln!(out, "        flashback: {},", flashback_for(&c.name)).unwrap();
         writeln!(
             out,
@@ -7022,6 +7032,10 @@ fn codegen(cards: &[CardJson]) -> String {
         }
         if c.name == "Embrace the Unknown" {
             canon.push_str(" retrace");
+        }
+        if replicate_cost_for(&c.name) != "None" {
+            canon.push_str(" replicate ");
+            canon.push_str(&replicate_cost_for(&c.name));
         }
         canon.push('|');
         canon.push_str(&flashback_for(&c.name));

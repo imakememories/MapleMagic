@@ -1054,6 +1054,9 @@ pub struct StackStateV4 {
     /// physical payments through `paid_cost_refs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optional_additional_cost_paid: Option<crate::card_def::OptionalAdditionalCostDef>,
+    /// Times this spell's replicate cost was paid.
+    #[serde(default, skip_serializing_if = "u8_is_zero")]
+    pub replicate_count: u8,
 }
 
 impl StackStateV4 {
@@ -3839,6 +3842,7 @@ mod tests {
             chosen_creature_cost_zone: None,
             chosen_creature_cost: None,
             additional_cost_or_chosen: None,
+            replicate_count: None,
         });
         let ordinary_contract = state.diagnostic_state_hash();
         state

@@ -993,6 +993,19 @@ pub enum EffectOp {
     GrantFlashbackUntilEndOfTurn {
         object: ObjectRef,
     },
+    /// Placeholder for a replicate trigger; `trigger::materialize_trigger_effect`
+    /// binds it to the spell as cast.
+    MaterializeReplicateCopies,
+    /// Replicate (702.56a): `count` copies of the spell `parent`. Each copy
+    /// starts with the spell's target, which its controller may change.
+    ReplicateCopies {
+        parent: crate::state::ObjectLinkV4,
+        card_def: u16,
+        count: u8,
+        target_spec: crate::card_def::TargetSpec,
+        target: Option<Target>,
+        target_contract: Option<StackTargetContractV4>,
+    },
 }
 
 /// Which creatures a `ThreatenAll` takes.
@@ -1289,6 +1302,12 @@ pub enum EffectFrame {
         player: PlayerId,
         selected: EffectObjectBinding,
     },
+    /// Puts replicate copy number `copy` on the stack with `target`.
+    ReplicateCopy {
+        copy: u8,
+        target: Target,
+        canonical_path: Vec<u16>,
+    },
 }
 
 /// Completed private scry stages. A subset is canonicalized into original
@@ -1508,6 +1527,11 @@ pub enum EffectTargetSelectionPurpose {
     /// The creature chosen for `ThreatenChosenCreature`.
     ThreatenChosenCreature {
         player: PlayerId,
+        canonical_path: Vec<u16>,
+    },
+    /// The target of replicate copy number `copy` (from 1).
+    ReplicateCopyTarget {
+        copy: u8,
         canonical_path: Vec<u16>,
     },
 }
@@ -1881,6 +1905,7 @@ pub fn contains_player_choice(op: &EffectOp) -> bool {
         | EffectOp::SearchLibraryToBattlefield { .. }
         | EffectOp::LookTopPutOneInHandRestBottomRandom { .. }
         | EffectOp::ThreatenChosenCreature { .. }
+        | EffectOp::ReplicateCopies { .. }
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand
@@ -2819,6 +2844,13 @@ fn complete_resumable_target_selection(
                     canonical_path,
                 });
         }
+        EffectTargetSelectionPurpose::ReplicateCopyTarget { copy, canonical_path } => {
+            if path != canonical_path || objects.len() > 1 {
+                return Err("replicate target choice changed shape".to_string());
+            }
+            let target = objects.first().map(|binding| Target::Object(binding.object)).ok_or("replicate copy needs a target")?;
+            continuation.frames.push(EffectFrame::ReplicateCopy { copy, target, canonical_path });
+        }
         EffectTargetSelectionPurpose::ThreatenChosenCreature { player, canonical_path } => {
             if path != canonical_path || objects.len() != 1 {
                 return Err("threaten choice changed shape".to_string());
@@ -3562,7 +3594,8 @@ fn validated_definition_owned_root_effect(
             .try_get(pending.resolving_item.source)
             .ok_or("answered trigger frame lost its source object")?
             .card_def;
-        if !crate::trigger::triggers_for(card_def)
+        if !crate::trigger::trigger_effect_matches(card_def, &root)
+            && !crate::trigger::triggers_for(card_def)
             .iter()
             .any(|trigger| {
                 crate::trigger::materialize_trigger_effect(
@@ -5107,6 +5140,26 @@ pub fn validate_pending_effect_choice(state: &GameState) -> Result<(), String> {
                         return Err(
                             "Duress legal targets changed from the revealed hand".to_string()
                         );
+                    }
+                }
+                EffectTargetSelectionPurpose::ReplicateCopyTarget { copy, canonical_path } => {
+                    let root = validated_definition_owned_root_effect(state, pending)?;
+                    let Some(EffectOp::ReplicateCopies { parent, card_def, count, target_spec, target, .. }) =
+                        effect_op_at_path(root.as_ref(), canonical_path)
+                    else {
+                        return Err("replicate choice lost its originating operation".to_string());
+                    };
+                    let expected = replicate_copy_candidates(state, pending, *parent, *card_def, *target_spec, *target);
+                    let offered: Vec<Target> = legal.iter().map(|candidate| candidate.target).collect();
+                    if *chooser != pending.ctx.controller
+                        || path != canonical_path
+                        || *copy == 0
+                        || *copy > *count
+                        || (*min_targets, *max_targets, *ordered) != (1, 1, false)
+                        || !selected.is_empty()
+                        || offered != expected
+                    {
+                        return Err("replicate choice has a noncanonical shape".to_string());
                     }
                 }
                 EffectTargetSelectionPurpose::ThreatenChosenCreature { player: owner, canonical_path } => {
@@ -6826,6 +6879,41 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                     state.engine.pending_effect = Some(continuation);
                     return Ok(ResumableProgress::Suspended);
                 }
+                EffectFrame::ReplicateCopy { copy, target, canonical_path } => {
+                    let root = validated_definition_owned_root_effect(state, &continuation)?;
+                    let Some(EffectOp::ReplicateCopies {
+                        parent,
+                        card_def,
+                        count,
+                        target_spec,
+                        target: original,
+                        target_contract,
+                    }) = effect_op_at_path(root.as_ref(), &canonical_path).cloned()
+                    else {
+                        return Err("replicate copy lost its originating operation".to_string());
+                    };
+                    if !replicate_copy_candidates(state, &continuation, parent, card_def, target_spec, original).contains(&target) {
+                        return Err("replicate copy target is not a legal choice".to_string());
+                    }
+                    // An unchanged target keeps the spell's own target contract.
+                    let contract = match (original == Some(target), target_contract) {
+                        (true, Some(contract)) => contract,
+                        _ => StackTargetContractV4::capture(state, target),
+                    };
+                    crate::engine::create_replicate_copy(
+                        state,
+                        parent,
+                        card_def,
+                        continuation.ctx.controller,
+                        target_spec,
+                        Some((target, contract)),
+                    )?;
+                    if copy < count {
+                        stage_replicate_copy_target(&mut continuation, state, copy + 1, canonical_path);
+                        state.engine.pending_effect = Some(continuation);
+                        return Ok(ResumableProgress::Suspended);
+                    }
+                }
                 EffectFrame::ThreatenChosenCreature { player, selected } => {
                     if !controlled_creature_bindings(state, player).contains(&selected) {
                         return Err("the chosen creature changed before it was taken".to_string());
@@ -8017,6 +8105,21 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                 });
                 state.engine.pending_effect = Some(continuation);
                 return Ok(ResumableProgress::Suspended);
+            }
+            EffectOp::ReplicateCopies { parent, card_def, count, target_spec, target, .. } => {
+                match target {
+                    None => {
+                        for _ in 0..count {
+                            crate::engine::create_replicate_copy(state, parent, card_def, continuation.ctx.controller, target_spec, None)?;
+                        }
+                    }
+                    Some(_) if count > 0 => {
+                        stage_replicate_copy_target(&mut continuation, state, 1, path);
+                        state.engine.pending_effect = Some(continuation);
+                        return Ok(ResumableProgress::Suspended);
+                    }
+                    Some(_) => {}
+                }
             }
             EffectOp::ThreatenChosenCreature { player } => {
                 let player = continuation.ctx.resolve_player(player, state);
@@ -9898,6 +10001,59 @@ fn dynamic_value(ctx: &ExecCtx, state: &GameState, value: DynamicValueDef) -> i3
     }
 }
 
+/// Targets a replicate copy may take: any legal target, or the spell's own
+/// target even if it has become illegal (leaving it unchanged).
+fn replicate_copy_candidates(
+    state: &GameState,
+    pending: &EffectContinuation,
+    parent: crate::state::ObjectLinkV4,
+    card_def: u16,
+    spec: crate::card_def::TargetSpec,
+    original: Option<Target>,
+) -> Vec<Target> {
+    let mut candidates =
+        crate::engine::spell_copy_target_candidates(state, spec, pending.ctx.controller, parent.object, card_def);
+    if let Some(original) = original {
+        if !candidates.contains(&original) {
+            candidates.push(original);
+        }
+    }
+    candidates
+}
+
+fn stage_replicate_copy_target(continuation: &mut EffectContinuation, state: &GameState, copy: u8, canonical_path: Vec<u16>) {
+    let root = continuation.resolving_item.inline_effect.clone();
+    let Some(EffectOp::ReplicateCopies { parent, card_def, target_spec, target, .. }) =
+        root.as_ref().and_then(|root| effect_op_at_path(root, &canonical_path)).cloned()
+    else {
+        return;
+    };
+    let legal = replicate_copy_candidates(state, continuation, parent, card_def, target_spec, target)
+        .into_iter()
+        .map(|target| EffectTargetCandidate {
+            target,
+            expected_object: match target {
+                Target::Object(object) => Some(EffectObjectBinding {
+                    object,
+                    expected_zone: state.objects.get(object).zone,
+                    expected_zone_change_count: state.objects.get(object).zone_change_count,
+                }),
+                Target::Player(_) => None,
+            },
+        })
+        .collect();
+    continuation.choice = Some(PendingEffectChoice::SelectTargets {
+        player: continuation.ctx.controller,
+        path: canonical_path.clone(),
+        selected: Vec::new(),
+        legal,
+        min_targets: 1,
+        max_targets: 1,
+        ordered: false,
+        purpose: EffectTargetSelectionPurpose::ReplicateCopyTarget { copy, canonical_path },
+    });
+}
+
 /// Creatures `player` controls, in battlefield order.
 fn controlled_creature_bindings(state: &GameState, player: PlayerId) -> Vec<EffectObjectBinding> {
     [PlayerId::P0, PlayerId::P1]
@@ -10169,7 +10325,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 ctx.source,
             ));
         }
-        EffectOp::MaterializeStormCopies => {
+        EffectOp::MaterializeStormCopies | EffectOp::MaterializeReplicateCopies => {
             crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((
                 crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
@@ -11876,6 +12032,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         | EffectOp::SearchLibraryToBattlefield { .. }
         | EffectOp::LookTopPutOneInHandRestBottomRandom { .. }
         | EffectOp::ThreatenChosenCreature { .. }
+        | EffectOp::ReplicateCopies { .. }
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand

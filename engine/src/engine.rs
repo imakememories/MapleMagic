@@ -873,6 +873,10 @@ pub struct PendingCast {
     /// chosen (always `None` for other spells, which pay A).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additional_cost_or_chosen: Option<bool>,
+    /// Times the replicate cost will be paid; `None` until chosen (always
+    /// `None` for spells without replicate).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replicate_count: Option<u8>,
     /// Exact chosen creature incarnation for that additional cost.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chosen_creature_cost: Option<EffectObjectBinding>,
@@ -3277,6 +3281,74 @@ fn discard_count_in(components: &[CostComponent]) -> Option<u8> {
 
 fn is_land_card(state: &GameState, id: ObjectId) -> bool {
     card_def::CARD_DEFS[state.objects.get(id).card_def as usize].has_type(CardType::Land)
+}
+
+/// The most replicate payments one cast can make.
+const MAX_REPLICATE: u8 = 20;
+
+/// Each card's replicate pips repeated `MAX_REPLICATE` times, so any number
+/// of payments is one cost (the mana solver is exponential in cost parts).
+static REPLICATE_PIPS: std::sync::LazyLock<Vec<Vec<mana::Pip>>> = std::sync::LazyLock::new(|| {
+    card_def::CARD_DEFS
+        .iter()
+        .map(|def| {
+            def.replicate_cost.map_or(Vec::new(), |cost| {
+                cost.pips.iter().copied().cycle().take(cost.pips.len() * usize::from(MAX_REPLICATE)).collect()
+            })
+        })
+        .collect()
+});
+
+/// `n` replicate payments for the spell `card_def`, as one cost.
+fn replicate_total(card_def: u16, n: u8) -> Option<Cost> {
+    let cost = card_def::CARD_DEFS[card_def as usize].replicate_cost?;
+    (n > 0).then(|| Cost {
+        pips: &REPLICATE_PIPS[card_def as usize][..cost.pips.len() * usize::from(n)],
+        generic: cost.generic.saturating_mul(n),
+        x_count: 0,
+    })
+}
+
+/// The replicate payments chosen for `pending`, as at most one cost.
+fn replicate_parts(_def: &card_def::CardDef, pending: &PendingCast) -> Vec<Cost> {
+    replicate_total(pending.source_contract.card_def, pending.replicate_count.unwrap_or(0)).into_iter().collect()
+}
+
+/// The mana `pending` pays besides replicate, when that is plain mana.
+fn replicate_base_cost(def: &card_def::CardDef, pending: &PendingCast, state: &GameState) -> Option<Cost> {
+    match pending.source_contract.cast_method {
+        CastMethodV4::Normal | CastMethodV4::Retrace => Some(pending_normal_cast_cost(def, pending, state)),
+        CastMethodV4::Flashback => flashback_cost(state, pending.spell, pending_origin_generation(pending))
+            .and_then(|components| components.iter().find_map(|c| match c {
+                CostComponent::Mana(cost) => Some(*cost),
+                _ => None,
+            })),
+        _ => None,
+    }
+}
+
+/// The most times `pending` could pay its replicate cost on top of the rest.
+fn maximum_replicate_count(def: &card_def::CardDef, pending: &PendingCast, state: &GameState) -> u8 {
+    if def.replicate_cost.is_none() {
+        return 0;
+    }
+    let base = replicate_base_cost(def, pending, state);
+    let payable = |n: u8| {
+        let total = replicate_total(pending.source_contract.card_def, n);
+        let parts: Vec<&Cost> = base.iter().chain(total.iter()).collect();
+        parts.is_empty() || mana::can_pay_combined(&parts, 0, pending.controller, state).is_some()
+    };
+    // Payability only falls as `n` grows: binary search.
+    let (mut lo, mut hi) = (0u8, MAX_REPLICATE);
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if payable(mid) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    lo
 }
 
 /// Retrace's additional cost (702.81a).
@@ -7685,6 +7757,9 @@ pub(crate) fn validate_pending_cast(
         }
     }
 
+    if def.replicate_cost.is_none() && pending.replicate_count.is_some() {
+        return Err("only a replicate spell records a replicate count".to_string());
+    }
     if def.additional_cost_or.is_none() && pending.additional_cost_or_chosen.is_some() {
         return Err("only an \"A or B\" additional cost records a choice".to_string());
     }
@@ -8434,6 +8509,19 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
         };
         if maximum == 0 {
             state.engine.pending_cast.as_mut().unwrap().x_value = Some(0);
+            return drain_pending_cast_or_decide(state);
+        }
+        return Some(Decision::ChooseEffectOption {
+            player: pending.controller,
+            source: pending.spell,
+            option_count: u16::from(maximum) + 1,
+        });
+    }
+
+    if def.replicate_cost.is_some() && pending.replicate_count.is_none() {
+        let maximum = maximum_replicate_count(def, &pending, state);
+        if maximum == 0 {
+            state.engine.pending_cast.as_mut().unwrap().replicate_count = Some(0);
             return drain_pending_cast_or_decide(state);
         }
         return Some(Decision::ChooseEffectOption {
@@ -11461,6 +11549,7 @@ enum PendingCastActionStage {
     ChooseAdditionalCostZone,
     ChooseAdditionalCostOption,
     ChooseXValue,
+    ChooseReplicateCount,
     Discard,
     AwaitEngineAdvance,
 }
@@ -11565,6 +11654,9 @@ fn pending_cast_action_stage(
     if pending.x_value.is_none() {
         return Ok(PendingCastActionStage::ChooseXValue);
     }
+    if def.replicate_cost.is_some() && pending.replicate_count.is_none() {
+        return Ok(PendingCastActionStage::ChooseReplicateCount);
+    }
     Ok(PendingCastActionStage::AwaitEngineAdvance)
 }
 
@@ -11602,7 +11694,7 @@ fn action_matches_pending_cast_stage(action: &Action, stage: PendingCastActionSt
             PendingCastActionStage::ChooseAdditionalCostZone | PendingCastActionStage::ChooseAdditionalCostOption,
             Action::ChooseEffectOption(_)
         ) | (
-            PendingCastActionStage::ChooseXValue,
+            PendingCastActionStage::ChooseXValue | PendingCastActionStage::ChooseReplicateCount,
             Action::ChooseEffectOption(_)
         ) | (PendingCastActionStage::Discard, Action::Discard(_))
     )
@@ -12884,6 +12976,80 @@ fn create_spell_copy(state: &mut GameState, pending: &PendingSpellCopy) -> (Obje
     (copy_source, copy_stack_item)
 }
 
+/// Legal targets for a copy of the spell `parent` (a `card_def`) controlled by
+/// `controller`.
+pub(crate) fn spell_copy_target_candidates(
+    state: &GameState,
+    spec: TargetSpec,
+    controller: PlayerId,
+    parent: ObjectId,
+    card_def: u16,
+) -> Vec<Target> {
+    legal_targets_for_controller_from_source(spec, &[], controller, Some(TargetingSource { object: parent, card_def }), state)
+}
+
+/// Puts one replicate copy of the spell `parent` on the stack (702.56a): a
+/// virtual copy, not cast.
+pub(crate) fn create_replicate_copy(
+    state: &mut GameState,
+    parent: crate::state::ObjectLinkV4,
+    card_def: u16,
+    controller: PlayerId,
+    spec: TargetSpec,
+    target: Option<(Target, StackTargetContractV4)>,
+) -> Result<(), String> {
+    let owner = state.objects.get(parent.object).owner;
+    let copy_source = state.objects.push(crate::state::GameObject {
+        card_def,
+        name: card_def::CARD_DEFS[card_def as usize].name.to_string(),
+        owner,
+        controller,
+        zone: Zone::Stack,
+        tapped: false,
+        summoning_sick: false,
+        damage: 0,
+        counters: Default::default(),
+        attachments: Vec::new(),
+        v4: ObjectStateV4::from_card_def(card_def),
+        spell_copy_origin: Some(SpellCopyOriginV4 {
+            parent: parent.object,
+            parent_card_def: card_def,
+            parent_owner: owner,
+            parent_controller: controller,
+            parent_stack_zone_change_count: parent.zone_change_count,
+            parent_was_copy: false,
+        }),
+        plotted_turn: None,
+        zone_change_count: 0,
+    });
+    let stack_item_id = next_stack_item_id(state);
+    let source_contract = StackSourceContractV4::capture(state, copy_source, CastMethodV4::Normal);
+    let (targets, target_contracts) = target.map_or((Vec::new(), Vec::new()), |(t, c)| (vec![t], vec![c]));
+    let copy = StackItem {
+        kind: StackItemKind::Spell,
+        source: copy_source,
+        controller,
+        targets,
+        is_copy: true,
+        inline_effect: None,
+        discarded: Vec::new(),
+        is_flashback: false,
+        mode_chosen: 0,
+        madness_offer: false,
+        kicked: false,
+        v4: StackStateV4 {
+            stack_item_id,
+            cast_method: Some(CastMethodV4::Normal),
+            source_contract: Some(source_contract),
+            target_spec: Some(spec),
+            target_contracts,
+            ..StackStateV4::default()
+        },
+    };
+    state.stack.push(copy.clone());
+    validate_spell_stack_source(state, &copy)
+}
+
 /// Materializes an already-authenticated Storm trigger as independent
 /// virtual copies of Weather the Storm. This is transactional: either every
 /// copy receives valid source/stack ancestry, or the caller's state is left
@@ -13698,6 +13864,14 @@ fn apply_pending_cast_effect_option(
                 .chosen_creature_cost_zone = Some(zone);
             Ok(())
         }
+        PendingCastActionStage::ChooseReplicateCount => {
+            let count = u8::try_from(option_index).map_err(|_| "replicate count out of range".to_string())?;
+            if count > maximum_replicate_count(def, &pending, state) {
+                return Err(format!("replicate can't be paid {count} times"));
+            }
+            state.engine.pending_cast.as_mut().expect("validated cast remains pending").replicate_count = Some(count);
+            Ok(())
+        }
         PendingCastActionStage::ChooseXValue => {
             let cost = pending_cast_selected_mana_cost(def, &pending, state)
                 .ok_or("pending X choice lost its selected spell form")?;
@@ -13963,6 +14137,7 @@ fn begin_cast_ex(
         chosen_creature_cost_zone: None,
         chosen_creature_cost: None,
         additional_cost_or_chosen: None,
+        replicate_count: None,
     });
 }
 
@@ -14064,11 +14239,24 @@ fn finalize_owned_cast(
     };
 
     match cast_method {
-        CastMethodV4::Plotted | CastMethodV4::Cascade => {}
+        CastMethodV4::Plotted | CastMethodV4::Cascade => {
+            let replicate = replicate_parts(def, &pending);
+            if !replicate.is_empty() {
+                let parts: Vec<&Cost> = replicate.iter().collect();
+                let Some(plan) = mana::can_pay_combined(&parts, 0, pending.controller, state) else {
+                    abort_cast(state, pending, cast_method);
+                    return Ok(());
+                };
+                pay_spell_plan(state, pending.controller, &plan);
+            }
+        }
         CastMethodV4::Retrace => {
             let x = x_value.saturating_sub(pending_x_discount(def, &pending, state));
             let normal_cost = pending_normal_cast_cost(def, &pending, state);
-            let Some(plan) = mana::can_pay(&normal_cost, x, pending.controller, state) else {
+            let replicate = replicate_parts(def, &pending);
+            let mut parts = vec![&normal_cost];
+            parts.extend(replicate.iter());
+            let Some(plan) = mana::can_pay_combined(&parts, x, pending.controller, state) else {
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             };
@@ -14108,6 +14296,15 @@ fn finalize_owned_cast(
                 return Ok(());
             }
             record_spell_mana(state, pending.controller, components_mana(cost));
+            let replicate = replicate_parts(def, &pending);
+            if !replicate.is_empty() {
+                let parts: Vec<&Cost> = replicate.iter().collect();
+                let Some(plan) = mana::can_pay_combined(&parts, 0, pending.controller, state) else {
+                    abort_cast(state, pending, cast_method);
+                    return Ok(());
+                };
+                pay_spell_plan(state, pending.controller, &plan);
+            }
         }
         CastMethodV4::Escape => {
             let escape = def
@@ -14129,6 +14326,7 @@ fn finalize_owned_cast(
         CastMethodV4::Normal => {
             let kicked = pending.kicked == Some(true);
             let normal_cost = pending_normal_cast_cost(def, &pending, state);
+            let replicate = replicate_parts(def, &pending);
             let plan = if kicked {
                 let kicker_cost = def
                     .kicker_cost
@@ -14139,6 +14337,10 @@ fn finalize_owned_cast(
                     pending.controller,
                     state,
                 )
+            } else if !replicate.is_empty() {
+                let mut parts = vec![&normal_cost];
+                parts.extend(replicate.iter());
+                mana::can_pay_combined(&parts, x_value, pending.controller, state)
             } else {
                 let x = x_value.saturating_sub(pending_x_discount(def, &pending, state));
                 mana::can_pay(&normal_cost, x, pending.controller, state)
@@ -14333,6 +14535,7 @@ fn finalize_owned_cast(
     item.v4.paid_cost_refs = paid_cost_refs;
     item.v4.optional_additional_cost_paid = paid_optional_additional_cost;
     item.v4.x_value = u16::from(x_value);
+    item.v4.replicate_count = pending.replicate_count.unwrap_or(0);
     item.v4.cast_method = Some(cast_method);
     item.v4.source_contract = Some(finalized_source_contract);
     let stack_item_id = item.v4.stack_item_id;

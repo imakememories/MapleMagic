@@ -1153,6 +1153,9 @@ pub struct CardDef {
     /// Retrace (702.81): castable from the graveyard by also discarding a
     /// land card.
     pub retrace: bool,
+    /// Replicate (702.56): an additional cost payable any number of times;
+    /// the spell is copied once for each payment.
+    pub replicate_cost: Option<Cost>,
     /// `Some` iff this card can be cast from the graveyard for its
     /// flashback cost (Faithless Looting, Lava Dart, Deep Analysis).
     pub flashback: Option<FlashbackDef>,
@@ -1654,7 +1657,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0x6de4_a843_5d35_c825);
+        assert_eq!(KERNEL_CARDDB_HASH, 0xd0dc_a7b1_f57c_2527);
     }
 
     #[test]

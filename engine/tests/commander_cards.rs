@@ -1979,3 +1979,45 @@ fn a_flashback_vandalblast_cannot_be_overloaded() {
     assert_eq!((zone(&state, theirs[0]), zone(&state, theirs[1])), (Zone::Graveyard, Zone::Battlefield));
     assert_eq!(zone(&state, blast), Zone::Exile);
 }
+
+#[test]
+fn shattering_spree_copies_itself_for_each_replicate_payment() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let theirs = [put(&mut state, P1, "Sol Ring"), put(&mut state, P1, "Arcane Signet"), put(&mut state, P1, "Treasure Token")];
+    put(&mut state, P0, "Guttersnipe");
+    let spree = put_in(&mut state, P0, "Shattering Spree", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(spree)).unwrap();
+    let mut copy_targets = theirs[1..].iter();
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseTargets { .. } => Action::ChooseTarget(Target::Object(theirs[0])),
+            Decision::ChooseEffectOption { option_count, .. } => {
+                assert_eq!(option_count, 3, "zero, one or two payments of {{R}}");
+                Action::ChooseEffectOption(2)
+            }
+            Decision::ChooseEffectTargets { legal_targets, .. } => {
+                assert!(legal_targets.contains(&Target::Object(theirs[0])), "may keep the target");
+                Action::ChooseEffectTarget(Target::Object(*copy_targets.next().unwrap()))
+            }
+            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert!(theirs.iter().all(|&a| zone(&state, a) == Zone::Graveyard));
+    assert_eq!(state.players[1].life, 38, "copies aren't cast: one Guttersnipe trigger");
+    assert_eq!(zone(&state, spree), Zone::Graveyard);
+}
+
+#[test]
+fn shattering_spree_without_replicate_is_one_spell() {
+    let mut state = game();
+    lands(&mut state, P0, 1);
+    let theirs = [put(&mut state, P1, "Sol Ring"), put(&mut state, P1, "Arcane Signet")];
+    cast(&mut state, "Shattering Spree", Some(Target::Object(theirs[0])), 0);
+    assert_eq!((zone(&state, theirs[0]), zone(&state, theirs[1])), (Zone::Graveyard, Zone::Battlefield));
+}

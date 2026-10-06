@@ -11427,7 +11427,7 @@
     },
     {
       "name": "Shattering Spree",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{R}",
       "mana_value": 1,
       "colors": [

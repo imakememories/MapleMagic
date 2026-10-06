@@ -164,6 +164,22 @@ pub(crate) fn materialize_trigger_effect(
                 },
             }
         }
+        EffectOp::MaterializeReplicateCopies => state
+            .stack
+            .iter()
+            .find(|item| item.kind == crate::state::StackItemKind::Spell && item.source == source && !item.is_copy)
+            .filter(|item| item.v4.replicate_count > 0)
+            .map_or(EffectOp::MaterializeReplicateCopies, |item| {
+                let live = state.objects.get(source);
+                EffectOp::ReplicateCopies {
+                    parent: crate::state::ObjectLinkV4 { object: source, zone_change_count: live.zone_change_count },
+                    card_def: live.card_def,
+                    count: item.v4.replicate_count,
+                    target_spec: item.v4.target_spec.unwrap_or(TargetSpec::None),
+                    target: item.targets.first().copied(),
+                    target_contract: item.v4.target_contracts.first().copied(),
+                }
+            }),
         EffectOp::MaterializeStormCopies => {
             crate::engine::materialize_storm_copy_binding(state, source)
                 .map(|binding| EffectOp::CreateStormCopies { binding })
@@ -1222,6 +1238,18 @@ const HIDEOUS_TASKMASTER_TRIGGERS: [TriggeredAbilityDef; 1] = [TriggeredAbilityD
     effect: hideous_taskmaster_cast_effect,
 }];
 
+fn replicate_effect() -> EffectOp {
+    EffectOp::MaterializeReplicateCopies
+}
+
+const REPLICATE_TRIGGERS: [TriggeredAbilityDef; 1] = [TriggeredAbilityDef {
+    condition: TriggerCondition::CastSelf,
+    home_zone: Zone::Stack,
+    intervening_if_kicked: false,
+    intervening_if_controls_another_source_card: false,
+    effect: replicate_effect,
+}];
+
 const WEATHER_THE_STORM_TRIGGERS: [TriggeredAbilityDef; 1] = [TriggeredAbilityDef {
     condition: TriggerCondition::CastSelf,
     home_zone: Zone::Stack,
@@ -1364,6 +1392,7 @@ fn triggers_by_name(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Hellkite Charger" => &HELLKITE_CHARGER_TRIGGERS,
         "Call Forth the Tempest" => &CALL_FORTH_THE_TEMPEST_TRIGGERS,
         "Hideous Taskmaster" => &HIDEOUS_TASKMASTER_TRIGGERS,
+        "Shattering Spree" => &REPLICATE_TRIGGERS,
         "Pyreswipe Hawk" => &PYRESWIPE_HAWK_TRIGGERS,
         "Urabrask, Heretic Praetor" => &URABRASK_TRIGGERS,
         "Cavern-Hoard Dragon" => &CAVERN_HOARD_DRAGON_TRIGGERS,
@@ -1444,6 +1473,9 @@ pub fn trigger_effect_matches(card_def: u16, effect: &EffectOp) -> bool {
         return true;
     }
     if card.name == "Weather the Storm" && matches!(effect, EffectOp::CreateStormCopies { .. }) {
+        return true;
+    }
+    if card.replicate_cost.is_some() && matches!(effect, EffectOp::ReplicateCopies { .. }) {
         return true;
     }
     if card.name == "Amulet of Vigor" && matches!(effect, EffectOp::UntapBoundObject { .. }) {
@@ -2026,6 +2058,10 @@ fn triggers_from_events(
                     } else {
                         materialize_trigger_effect(def, id, state)
                     };
+                    // Replicate: "if a replicate cost was paid for it" (603.4).
+                    if effect == EffectOp::MaterializeReplicateCopies {
+                        continue;
+                    }
                     let required_optional_cost =
                         required_optional_additional_cost_for_trigger(obj.card_def, &effect);
                     let (paid_optional_cost, paid_cost_refs) =
