@@ -3844,9 +3844,7 @@ pub(crate) fn validate_initiative_trigger_binding(
     state: &GameState,
     binding: InitiativeTriggerBindingV1,
 ) -> Result<(), String> {
-    let history_index = usize::try_from(binding.history_index)
-        .map_err(|_| "Initiative history index exceeds usize".to_string())?;
-    if state.engine.event_history.get(history_index)
+    if state.history_event(binding.history_index)
         != Some(&event::CommittedEvent::InitiativeTrigger { binding })
     {
         return Err("Initiative trigger lost its exact committed marker".to_string());

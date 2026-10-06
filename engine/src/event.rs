@@ -998,8 +998,9 @@ pub fn log_initiative_trigger(
         return Err("Initiative designation source contract is malformed".to_string());
     }
     source.controller = player;
-    let history_index = u32::try_from(state.engine.event_history.len())
-        .map_err(|_| "Initiative event history exceeds u32".to_string())?;
+    let history_index = state
+        .next_history_index()
+        .ok_or_else(|| "Initiative event history exceeds u32".to_string())?;
     let binding = crate::state::InitiativeTriggerBindingV1 {
         history_index,
         player,

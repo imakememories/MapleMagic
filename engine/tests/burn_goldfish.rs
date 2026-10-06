@@ -119,20 +119,32 @@ fn bolt_in_hand(state: &GameState, player: PlayerId, bolt_def: u16) -> Option<Ob
         .find(|&id| state.objects.get(id).card_def == bolt_def)
 }
 
+/// Appends the events committed since the last call: the engine keeps only
+/// the current turn's history.
+fn record_history(state: &GameState, history: &mut Vec<CommittedEvent>) {
+    let base = state.event_history_base as usize;
+    assert!(history.len() >= base, "an earlier turn's events were dropped unrecorded");
+    let seen = history.len() - base;
+    history.extend(state.engine.event_history[seen..].iter().cloned());
+}
+
 /// Drives the whole goldfish to completion, logging every decision kind and
 /// every P1 life total observed right after it changes. Policy: play a
 /// land whenever available; starting turn 2, cast exactly one Lightning
 /// Bolt at P1 per P0 turn (tracked via `last_cast_turn` so a second
 /// untapped Mountain on the same turn is deliberately *not* spent --
 /// keeps the life sequence exactly 20,17,14,...); otherwise pass.
-fn run_goldfish(state: &mut GameState) -> (Vec<Kind>, Vec<i32>) {
+fn run_goldfish(state: &mut GameState) -> (Vec<Kind>, Vec<i32>, Vec<CommittedEvent>) {
     let bolt_def = card_id_by_name("Lightning Bolt").unwrap();
     let mut log = Vec::new();
+    let mut history = Vec::new();
     let mut life_history = vec![state.players[1].life];
     let mut last_cast_turn = 0u32;
 
     loop {
+        record_history(state, &mut history);
         let decision = engine::advance_until_decision(state);
+        record_history(state, &mut history);
         log.push(kind_of(&decision));
 
         // `state` already reflects any resolution `advance_until_decision`
@@ -222,7 +234,7 @@ fn run_goldfish(state: &mut GameState) -> (Vec<Kind>, Vec<i32>) {
         }
     }
 
-    (log, life_history)
+    (log, life_history, history)
 }
 
 /// Turn 1 (P0 plays Mountain + passes, both steps of priority; P1 gets a
@@ -282,14 +294,14 @@ const NARRATED_PREFIX: [Kind; 30] = {
 #[test]
 fn narrated_prefix_matches_turn_1_and_start_of_p1_turn_1_exactly() {
     let mut state = setup();
-    let (log, _life_history) = run_goldfish(&mut state);
+    let (log, _life_history, _) = run_goldfish(&mut state);
     assert_eq!(&log[..30], &NARRATED_PREFIX[..]);
 }
 
 #[test]
 fn burn_goldfish_kills_p1_via_repeated_lightning_bolt_through_faithful_priority() {
     let mut state = setup();
-    let (log, life_history) = run_goldfish(&mut state);
+    let (log, life_history, history) = run_goldfish(&mut state);
 
     // ---- life totals: exactly 7 casts of 3 damage, the first is the
     // narrated 20 -> 17.
@@ -359,13 +371,10 @@ fn burn_goldfish_kills_p1_via_repeated_lightning_bolt_through_faithful_priority(
         segment_start = pos + 1;
     }
 
-    // ---- event log contents (the permanent history; `event_log` itself
-    // is drained to empty after every resolution by
-    // `trigger::collect_and_process`, by design -- see `event_history`'s
-    // doc comment in `engine::EngineState`).
-    let damage_to_p1: Vec<_> = state
-        .engine
-        .event_history
+    // ---- event log contents (the whole game, recorded turn by turn;
+    // `event_log` itself is drained after every resolution by
+    // `trigger::collect_and_process`).
+    let damage_to_p1: Vec<_> = history
         .iter()
         .filter(|e| {
             matches!(
@@ -384,9 +393,7 @@ fn burn_goldfish_kills_p1_via_repeated_lightning_bolt_through_faithful_priority(
         "exactly 7 Lightning Bolts should have dealt 3 damage to P1"
     );
 
-    let bolts_to_graveyard = state
-        .engine
-        .event_history
+    let bolts_to_graveyard = history
         .iter()
         .filter(|e| {
             matches!(
@@ -403,17 +410,13 @@ fn burn_goldfish_kills_p1_via_repeated_lightning_bolt_through_faithful_priority(
         "each resolved Lightning Bolt goes to the graveyard, nothing else dies"
     );
 
-    let taps = state
-        .engine
-        .event_history
+    let taps = history
         .iter()
         .filter(|e| matches!(e, CommittedEvent::Tap { .. }))
         .count();
     assert_eq!(taps, 7, "each cast pays with exactly 1 Mountain");
 
-    let p0_lands_played = state
-        .engine
-        .event_history
+    let p0_lands_played = history
         .iter()
         .filter(|e| matches!(e, CommittedEvent::ZoneChange { to: mtg_kernel::state::Zone::Battlefield, object, .. } if state.objects.get(*object).owner == PlayerId::P0))
         .count();

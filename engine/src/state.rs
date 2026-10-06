@@ -90,6 +90,10 @@ fn u8_is_zero(value: &u8) -> bool {
     *value == 0
 }
 
+fn u32_is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
 fn no_celebration(value: &[u8; 2]) -> bool {
     *value == [0, 0]
 }
@@ -1351,6 +1355,10 @@ pub struct GameState {
     /// See [`ControlWhileV1`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub control_while: Vec<ControlWhileV1>,
+    /// Events dropped from the front of `engine.event_history` at turn
+    /// starts. History indices stay absolute; see [`GameState::history_event`].
+    #[serde(default, skip_serializing_if = "u32_is_zero")]
+    pub event_history_base: u32,
     /// Priority/stack/turn-structure bookkeeping and the propose-commit
     /// event log, all owned by the `engine`/`event`/`trigger` modules. See
     /// `engine::EngineState`.
@@ -1426,6 +1434,9 @@ impl Hash for GameState {
         }
         if !self.control_while.is_empty() {
             self.control_while.hash(state);
+        }
+        if self.event_history_base != 0 {
+            self.event_history_base.hash(state);
         }
         if !self.last_known_charge.is_empty() {
             self.last_known_charge.iter().map(|e| e.1).collect::<Vec<_>>().hash(state);
@@ -1589,6 +1600,7 @@ impl GameState {
             spell_mana_this_turn: [0; 2],
             extra_combats: 0,
             control_while: Vec::new(),
+            event_history_base: 0,
             engine: crate::engine::EngineState::default(),
         }
     }
@@ -1664,6 +1676,17 @@ impl GameState {
 
     pub fn known_hand_cards(&self, observer: PlayerId, owner: PlayerId) -> &[HandKnowledgeEntry] {
         &self.hand_knowledge[observer.index()][owner.index()]
+    }
+
+    /// The committed event at absolute history index `index`, if it is
+    /// from this turn (earlier turns are dropped).
+    pub fn history_event(&self, index: u32) -> Option<&crate::event::CommittedEvent> {
+        self.engine.event_history.get(index.checked_sub(self.event_history_base)? as usize)
+    }
+
+    /// The absolute history index of the next committed event.
+    pub fn next_history_index(&self) -> Option<u32> {
+        self.event_history_base.checked_add(u32::try_from(self.engine.event_history.len()).ok()?)
     }
 
     /// The record of `id` if it lies face down in exile now.

@@ -146,12 +146,10 @@ pub struct EngineState {
     /// appends here, `trigger::collect_and_process` drains it after every
     /// resolution to match triggers. Empty between resolutions.
     pub event_log: Vec<CommittedEvent>,
-    /// Full permanent record of every committed event this game, in
-    /// commit order. Never drained; this is what
-    /// `event::commit`/`trigger::collect_and_process`'s draining of
-    /// `event_log` would otherwise make unobservable after the fact (game
-    /// replay / RL trace logging / the acceptance tests' event-log
-    /// assertions all read this instead).
+    /// Every event committed this turn, in commit order. Not drained with
+    /// `event_log`; cleared at each Untap, with the dropped count added to
+    /// `GameState::event_history_base` so history indices stay absolute.
+    /// Tests that need the whole game record it after each step.
     pub event_history: Vec<CommittedEvent>,
     pub active_replacements: Vec<ActiveReplacement>,
     pub next_replacement_id: u32,
@@ -2089,8 +2087,10 @@ fn storm_copy_count_from_binding(
     {
         return Err("Storm cast binding is structurally malformed".to_string());
     }
-    let event_index = usize::try_from(binding.spell_cast_event_index)
-        .map_err(|_| "Storm event index does not fit this platform".to_string())?;
+    let event_index = binding
+        .spell_cast_event_index
+        .checked_sub(state.event_history_base)
+        .ok_or("Storm binding lost its exact SpellCast marker")? as usize;
     if state.engine.event_history.get(event_index)
         != Some(&CommittedEvent::SpellCast {
             spell: binding.source_contract.source,
@@ -2212,7 +2212,7 @@ pub(crate) fn materialize_storm_copy_binding(
         producing_stack_item: producer.v4.stack_item_id,
         turn: state.turn,
         active_player: state.active_player,
-        spell_cast_event_index: spell_cast_event_index.try_into().ok()?,
+        spell_cast_event_index: state.event_history_base.checked_add(spell_cast_event_index.try_into().ok()?)?,
         casts_after_source: [
             state.players[0].spells_cast_this_turn,
             state.players[1].spells_cast_this_turn,
@@ -10064,6 +10064,11 @@ fn attachment_prevents_untap(state: &GameState, host: ObjectId) -> bool {
 fn run_step_entry_action(state: &mut GameState, step: Step) {
     match step {
         Step::Untap => {
+            // History bindings never outlive a turn; dropping older events
+            // keeps state clones small.
+            let dropped = u32::try_from(state.engine.event_history.len()).unwrap_or(u32::MAX);
+            state.event_history_base = state.event_history_base.saturating_add(dropped);
+            state.engine.event_history.clear();
             let p = state.active_player;
             state
                 .engine

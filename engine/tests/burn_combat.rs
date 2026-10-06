@@ -120,6 +120,15 @@ fn card_in_hand(state: &GameState, player: PlayerId, def_id: u16) -> Option<Obje
         .find(|&id| state.objects.get(id).card_def == def_id)
 }
 
+/// Appends the events committed since the last call: the engine keeps only
+/// the current turn's history.
+fn record_history(state: &GameState, history: &mut Vec<CommittedEvent>) {
+    let base = state.event_history_base as usize;
+    assert!(history.len() >= base, "an earlier turn's events were dropped unrecorded");
+    let seen = history.len() - base;
+    history.extend(state.engine.event_history[seen..].iter().cloned());
+}
+
 /// Drives the whole scripted game to completion, logging every decision
 /// kind observed and applying a small reactive policy:
 /// - always play a land when one is available;
@@ -143,12 +152,13 @@ fn card_in_hand(state: &GameState, player: PlayerId, def_id: u16) -> Option<Obje
 /// same thing as "P0 actually attacked", and callers that need the latter
 /// (the `DeclareBlockers(P1)` cross-check, the Guttersnipe-trigger damage
 /// arithmetic) need this separate count instead.
-fn run_combat_game(state: &mut GameState) -> (Vec<Kind>, u32) {
+fn run_combat_game(state: &mut GameState) -> (Vec<Kind>, u32, Vec<CommittedEvent>) {
     let guttersnipe_def = card_id_by_name("Guttersnipe").unwrap();
     let bolt_def = card_id_by_name("Lightning Bolt").unwrap();
     let meower_def = card_id_by_name("Masked Meower").unwrap();
 
     let mut log = Vec::new();
+    let mut history = Vec::new();
     let mut real_p0_attacks = 0u32;
     let mut last_bolt_turn = 0u32;
     let mut iterations = 0u32;
@@ -160,7 +170,9 @@ fn run_combat_game(state: &mut GameState) -> (Vec<Kind>, u32) {
             "scripted game did not terminate; policy or engine logic is likely wrong"
         );
 
+        record_history(state, &mut history);
         let decision = engine::advance_until_decision(state);
+        record_history(state, &mut history);
         log.push(kind_of(&decision));
 
         match decision {
@@ -329,7 +341,7 @@ fn run_combat_game(state: &mut GameState) -> (Vec<Kind>, u32) {
         }
     }
 
-    (log, real_p0_attacks)
+    (log, real_p0_attacks, history)
 }
 
 #[test]
@@ -338,7 +350,7 @@ fn combat_and_burn_together_end_the_game() {
     let guttersnipe_def = card_id_by_name("Guttersnipe").unwrap();
     let meower_def = card_id_by_name("Masked Meower").unwrap();
 
-    let (log, real_p0_attacks) = run_combat_game(&mut state);
+    let (log, real_p0_attacks, history) = run_combat_game(&mut state);
 
     // ---- terminal state -------------------------------------------------
     assert!(state.players[1].has_lost);
@@ -410,9 +422,7 @@ fn combat_and_burn_together_end_the_game() {
     // Masked Meower (the one turn they fought).
     let guttersnipe_id = guttersnipe_id.unwrap();
     let meower_id = meower_id.unwrap();
-    let object_damage: Vec<_> = state
-        .engine
-        .event_history
+    let object_damage: Vec<_> = history
         .iter()
         .filter(|e| {
             matches!(
@@ -444,15 +454,11 @@ fn combat_and_burn_together_end_the_game() {
     // ---- event log: every Lightning Bolt actually resolved for exactly 3
     // damage to P1 (unambiguous -- nothing else in this script deals 3).
     let bolt_def = card_id_by_name("Lightning Bolt").unwrap();
-    let bolts_cast = state
-        .engine
-        .event_history
+    let bolts_cast = history
         .iter()
         .filter(|e| matches!(e, CommittedEvent::SpellCast { spell, controller: PlayerId::P0 } if state.objects.get(*spell).card_def == bolt_def))
         .count();
-    let bolt_damage = state
-        .engine
-        .event_history
+    let bolt_damage = history
         .iter()
         .filter(|e| {
             matches!(
@@ -477,9 +483,7 @@ fn combat_and_burn_together_end_the_game() {
     // Player(P1)`), so cross-check by total-damage arithmetic instead:
     // every point of P1's life loss is accounted for by exactly these
     // three sources (unblocked combat, Guttersnipe triggers, Bolts).
-    let damage_to_p1: i32 = state
-        .engine
-        .event_history
+    let damage_to_p1: i32 = history
         .iter()
         .filter_map(|e| match e {
             CommittedEvent::Damage {
@@ -496,9 +500,7 @@ fn combat_and_burn_together_end_the_game() {
         "every point of P1's life loss should be accounted for by a logged Damage event"
     );
 
-    let two_damage_events_to_p1 = state
-        .engine
-        .event_history
+    let two_damage_events_to_p1 = history
         .iter()
         .filter(|e| matches!(e, CommittedEvent::Damage { target: Target::Player(PlayerId::P1), amount: 2, source, .. } if *source == guttersnipe_id))
         .count();
@@ -542,7 +544,7 @@ fn combat_and_burn_together_end_the_game() {
 #[test]
 fn masked_meower_zone_history_is_stack_battlefield_graveyard() {
     let mut state = setup();
-    run_combat_game(&mut state);
+    let (_, _, history) = run_combat_game(&mut state);
 
     let meower_def = card_id_by_name("Masked Meower").unwrap();
     let meower_id = state.players[1]
@@ -552,9 +554,7 @@ fn masked_meower_zone_history_is_stack_battlefield_graveyard() {
         .find(|&id| state.objects.get(id).card_def == meower_def)
         .expect("Masked Meower should be dead");
 
-    let history: Vec<_> = state
-        .engine
-        .event_history
+    let history: Vec<_> = history
         .iter()
         .filter_map(|e| match e {
             CommittedEvent::ZoneChange {
