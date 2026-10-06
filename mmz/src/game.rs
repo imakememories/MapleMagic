@@ -358,17 +358,11 @@ impl Game {
             for (id, def) in slots.into_iter().zip(fixed.into_iter().chain(defs)) {
                 set_card(&mut self.state, id, def);
             }
-            // A commander in a library is a known card; only its position is hidden.
+            // A commander in a hidden spot is a known card; only where it is
+            // is hidden: any unknown library position or any face-down card
+            // the observer can't see.
             if !(keep_own_library && owner == observer) {
-                let c = self.state.commander.as_ref().map(|c| c.commanders[owner.index()]);
-                let at = c.and_then(|c| self.state.players[owner.index()].library.iter().position(|&id| id == c));
-                if let Some(at) = at {
-                    let unknown = unknown_library_positions(&self.state, observer, owner);
-                    if unknown.contains(&at) {
-                        let to = unknown[(rng.next_u64() % unknown.len() as u64) as usize];
-                        self.state.players[owner.index()].library.swap(at, to);
-                    }
-                }
+                self.place_hidden_commander(observer, owner, &mut rng);
                 // Cards on the bottom in a random order: known cards, unknown
                 // order, except any whose exact position is known (looked at since).
                 let exact: Vec<ObjectId> = {
@@ -403,6 +397,43 @@ impl Game {
         self.state.reseed_shuffles(rng.next_u64());
         if self.outcome.is_none() && matches!(self.pending, Pending::None) {
             self.settle();
+        }
+    }
+
+    /// Moves `owner`'s commander, if it sits in a spot hidden from
+    /// `observer`, to a random one of those spots.
+    fn place_hidden_commander(&mut self, observer: PlayerId, owner: PlayerId, rng: &mut SplitMix64) {
+        let Some(commander) = self.state.commander.as_ref().map(|c| c.commanders[owner.index()]) else {
+            return;
+        };
+        let library = &self.state.players[owner.index()].library;
+        let mut spots: Vec<ObjectId> =
+            unknown_library_positions(&self.state, observer, owner).into_iter().map(|pos| library[pos]).collect();
+        spots.extend(self.state.exile.iter().copied().filter(|&id| {
+            self.state.objects.get(id).owner == owner && self.state.face_down_hidden_from(id, observer)
+        }));
+        if !spots.contains(&commander) {
+            return;
+        }
+        let to = spots[(rng.next_u64() % spots.len() as u64) as usize];
+        if to == commander {
+            return;
+        }
+        let library = &mut self.state.players[owner.index()].library;
+        if let (Some(a), Some(b)) = (library.iter().position(|&id| id == commander), library.iter().position(|&id| id == to)) {
+            library.swap(a, b);
+            return;
+        }
+        // One of the two is face down in exile: swap which card is which.
+        let (commander_def, other_def) = (self.state.objects.get(commander).card_def, self.state.objects.get(to).card_def);
+        set_card(&mut self.state, to, commander_def);
+        set_card(&mut self.state, commander, other_def);
+        let (old_generation, new_generation) =
+            (self.state.objects.get(commander).zone_change_count, self.state.objects.get(to).zone_change_count);
+        let c = self.state.commander.as_mut().expect("checked above");
+        c.commanders[owner.index()] = to;
+        if c.declined[owner.index()] == Some(old_generation) {
+            c.declined[owner.index()] = Some(new_generation);
         }
     }
 
@@ -913,7 +944,11 @@ pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerI
     }
     if !state.face_down.is_empty() {
         slots.extend(
-            state.exile.iter().copied().filter(|&id| state.objects.get(id).owner == owner && state.face_down_hidden_from(id, observer)),
+            state.exile.iter().copied().filter(|&id| {
+                state.objects.get(id).owner == owner
+                    && state.face_down_hidden_from(id, observer)
+                    && !mtg_kernel::commander::is_commander(state, id)
+            }),
         );
     }
     slots
@@ -1183,6 +1218,35 @@ mod tests {
             (g.state.state_hash(), g.decisions)
         };
         assert_eq!(run(5), run(5));
+    }
+
+    #[test]
+    fn determinize_hides_which_face_down_card_is_a_commander() {
+        use crate::commander::CommanderDeck;
+        use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+        let deck = CommanderDeck::named_with_stand_in("Ognis", Some("Mountain")).unwrap();
+        let mut g = Game::new_commander(&deck, &deck, 1);
+        let me = g.to_act();
+        let opp = me.opponent();
+        let commander = g.state.commander.as_ref().unwrap().commanders[opp.index()];
+        // The opponent's commander goes to its library top unseen, then face down into exile.
+        propose_and_commit(&mut g.state, ProposedEvent::private_top_library_insert(commander));
+        mtg_kernel::face_down::exile_top(&mut g.state, opp, true, None).unwrap();
+        // Its owner chose to leave it there (903.9a).
+        let generation = g.state.objects.get(commander).zone_change_count;
+        g.state.commander.as_mut().unwrap().declined[opp.index()] = Some(generation);
+        let seen = crate::features::observe(&g, me);
+        let mut zones = std::collections::BTreeSet::new();
+        // About one world in ninety leaves it in exile: the library is large.
+        for seed in 0..400 {
+            let mut w = g.clone();
+            w.determinize(me, seed);
+            assert_eq!(crate::features::observe(&w, me), seen);
+            let c = w.state.commander.as_ref().unwrap().commanders[opp.index()];
+            assert_eq!(w.state.objects.get(c).card_def, g.state.objects.get(commander).card_def);
+            zones.insert(format!("{:?}", w.state.objects.get(c).zone));
+        }
+        assert_eq!(zones.len(), 2, "sometimes face down in exile, sometimes in the library: {zones:?}");
     }
 
     #[test]
