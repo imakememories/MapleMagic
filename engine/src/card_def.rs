@@ -933,6 +933,8 @@ pub enum DynamicValueDef {
     /// The resolving ability's X (Secluded Starforge). Only an effect
     /// context has one; see `effect::dynamic_value`.
     X,
+    /// Artifacts the controller controls (Fomori Vault).
+    ControlledArtifacts,
 }
 
 /// Reusable definition for a single printed mana ability whose cost, amount,
@@ -1618,7 +1620,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0x58ff_1e63_614b_f9c0);
+        assert_eq!(KERNEL_CARDDB_HASH, 0x764f_cf2c_9c85_ac70);
     }
 
     #[test]

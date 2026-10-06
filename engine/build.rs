@@ -3505,6 +3505,19 @@ fn activated_ability_recipes_for(name: &str) -> &'static [ActivatedAbilityRecipe
                 max_activations_per_turn: None,
             },
         ],
+        "Fomori Vault" => &[ActivatedAbilityRecipe {
+            cost: &[
+                AbilityCostRecipe::ManaCost("{3}"),
+                AbilityCostRecipe::Tap,
+                AbilityCostRecipe::DiscardCards(1),
+            ],
+            effect: AbilityEffectRecipe::Custom("fomori_vault_effect"),
+            activation_zone: "Battlefield",
+            sorcery_speed_only: false,
+            target_spec: "None",
+            activation_target_filter: "TargetSpecOnly",
+            max_activations_per_turn: None,
+        }],
         "Abstergo Entertainment" => &[ActivatedAbilityRecipe {
             cost: &[
                 AbilityCostRecipe::ManaCost("{3}"),

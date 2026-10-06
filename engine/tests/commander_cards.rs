@@ -1454,3 +1454,67 @@ fn secluded_starforge_pumps_only_as_a_sorcery_and_makes_robots() {
     assert_eq!((effective_power(&state, robot), CARD_DEFS[o.card_def as usize].types.len()), (2, 2));
     assert!(o.v4.is_token);
 }
+
+/// Makes `player`'s library card at `position` (0 = top) a `name`.
+fn library_card(state: &mut GameState, player: PlayerId, position: usize, name: &str) -> ObjectId {
+    let o = state.players[player.index()].library[position];
+    let obj = state.objects.get_mut(o);
+    obj.card_def = id(name);
+    obj.name = name.to_string();
+    obj.v4 = ObjectStateV4::from_card_def(id(name));
+    o
+}
+
+/// Activates Fomori Vault, discarding the first card offered, and picks `pick` if asked.
+fn fomori(state: &mut GameState, vault: ObjectId, pick: Option<ObjectId>) -> Option<Vec<Target>> {
+    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { activatable_abilities, .. } if activatable_abilities.contains(&(vault, 0))));
+    engine::step(state, Action::ActivateAbility(vault, 0)).unwrap();
+    let mut offered = None;
+    loop {
+        let a = match engine::advance_until_decision(state) {
+            Decision::Discard { choices, .. } => Action::Discard(vec![choices[0]]),
+            Decision::ChooseEffectTargets { legal_targets, .. } => {
+                offered = Some(legal_targets);
+                Action::ChooseEffectTarget(Target::Object(pick.expect("a pick")))
+            }
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => return offered,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(state, a).unwrap();
+    }
+}
+
+#[test]
+fn fomori_vault_takes_one_of_the_top_x_and_bottoms_the_rest_in_a_random_order() {
+    let mut state = game();
+    let vault = put(&mut state, P0, "Fomori Vault");
+    lands(&mut state, P0, 3);
+    put(&mut state, P0, "Myr Enforcer");
+    put(&mut state, P0, "Arcane Signet");
+    put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+    let snipe = library_card(&mut state, P0, 0, "Guttersnipe");
+    let bolt = library_card(&mut state, P0, 1, "Lightning Bolt");
+    let offered = fomori(&mut state, vault, Some(snipe));
+    assert_eq!(offered, Some(vec![Target::Object(snipe), Target::Object(bolt)]), "two artifacts: the top two");
+    assert_eq!(zone(&state, snipe), Zone::Hand);
+    let lib = &state.players[0].library;
+    assert_eq!((lib.len(), *lib.last().unwrap()), (9, bolt));
+    // Its owner knows the card is down there, but not where; the opponent knows nothing.
+    assert!(state.known_library_cards(P0, P0).iter().all(|e| e.object != bolt));
+    let groups: Vec<_> = state.known_library_groups(P0, P0).map(|g| g.cards.iter().map(|l| l.object).collect::<Vec<_>>()).collect();
+    assert_eq!(groups, vec![vec![bolt]]);
+    assert_eq!(state.known_library_groups(P1, P0).count(), 0);
+    assert!(!state.known_hand_cards(P1, P0).iter().any(|e| e.object == snipe));
+}
+
+#[test]
+fn fomori_vault_without_artifacts_looks_at_nothing() {
+    let mut state = game();
+    let vault = put(&mut state, P0, "Fomori Vault");
+    lands(&mut state, P0, 3);
+    let discard = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+    assert_eq!(fomori(&mut state, vault, None), None);
+    assert_eq!(zone(&state, discard), Zone::Graveyard);
+    assert_eq!((state.players[0].library.len(), state.players[0].hand.len()), (10, 0));
+}

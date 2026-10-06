@@ -7304,7 +7304,7 @@
     },
     {
       "name": "Fomori Vault",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "",
       "mana_value": 0,
       "colors": [],
@@ -7316,13 +7316,18 @@
       "power": null,
       "toughness": null,
       "is_land": true,
-      "produces_mana": [],
+      "produces_mana": [
+        "C"
+      ],
       "decks": [
         "Commander - Ognis"
       ],
       "sideboard_only": false,
       "complexity": "commander",
-      "mechanics": [],
+      "mechanics": [
+        "mana_ability",
+        "activated_ability"
+      ],
       "keywords": [],
       "oracle": "{T}: Add {C}.\n{3}, {T}, Discard a card: Look at the top X cards of your library, where X is the number of artifacts you control. Put one of those cards into your hand and the rest on the bottom of your library in a random order.",
       "layout": "normal",

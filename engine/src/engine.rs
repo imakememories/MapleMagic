@@ -3208,6 +3208,9 @@ pub(crate) fn evaluate_dynamic_value(
         DynamicValueDef::Fixed(value) => return value,
         // X exists only while an ability resolves (`effect::dynamic_value`).
         DynamicValueDef::X => return 0,
+        DynamicValueDef::ControlledArtifacts => battlefield_objects(state)
+            .filter(|&id| state.objects.get(id).controller == controller && object_has_type(state, id, CardType::Artifact))
+            .count(),
         DynamicValueDef::BattlefieldPermanentsWithSubtype(subtype) => state
             .objects
             .iter()

@@ -34,6 +34,12 @@ pub fn demolition_field_effect() -> EffectOp {
     ])
 }
 
+/// Fomori Vault: look at the top X cards, X the artifacts you control; one
+/// into hand, the rest on the bottom in a random order.
+pub fn fomori_vault_effect() -> EffectOp {
+    EffectOp::LookTopPutOneInHandRestBottomRandom { player: PlayerRef::Controller, count: DynamicValueDef::ControlledArtifacts }
+}
+
 /// Secluded Starforge: "Target creature gets +X/+0 until end of turn."
 pub fn secluded_starforge_pump_effect() -> EffectOp {
     EffectOp::PumpTargetUntilEndOfTurnDynamic {

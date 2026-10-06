@@ -944,6 +944,12 @@ pub enum EffectOp {
         player: PlayerRef,
         filter: LibraryCardFilter,
     },
+    /// Look at the top `count` cards of `player`'s library, put one into
+    /// their hand and the rest on the bottom in a random order (Fomori Vault).
+    LookTopPutOneInHandRestBottomRandom {
+        player: PlayerRef,
+        count: DynamicValueDef,
+    },
 }
 
 /// Which creatures a `ThreatenAll` takes.
@@ -1228,6 +1234,13 @@ pub enum EffectFrame {
         canonical_path: Vec<u16>,
         expected_remaining_frames: Vec<EffectFrame>,
     },
+    /// Moves the picked card to hand and the rest of the looked-at cards to
+    /// the bottom in a random order.
+    LookTopPutOneInHand {
+        player: PlayerId,
+        original_prefix: Vec<EffectObjectBinding>,
+        selected: EffectObjectBinding,
+    },
 }
 
 /// Completed private scry stages. A subset is canonicalized into original
@@ -1436,6 +1449,12 @@ pub enum EffectTargetSelectionPurpose {
         original_library: Vec<EffectObjectBinding>,
         revealed_prefix: Vec<EffectObjectBinding>,
         candidates: Vec<EffectObjectBinding>,
+        canonical_path: Vec<u16>,
+    },
+    /// The private pick of `LookTopPutOneInHandRestBottomRandom`.
+    LookTopPutOneInHand {
+        player: PlayerId,
+        original_prefix: Vec<EffectObjectBinding>,
         canonical_path: Vec<u16>,
     },
 }
@@ -1807,6 +1826,7 @@ pub fn contains_player_choice(op: &EffectOp) -> bool {
         | EffectOp::DestroyTargetLandThenMaySearchBasicTapped { .. }
         | EffectOp::SearchLibraryToBattlefieldTapped { .. }
         | EffectOp::SearchLibraryToBattlefield { .. }
+        | EffectOp::LookTopPutOneInHandRestBottomRandom { .. }
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand
@@ -2744,6 +2764,24 @@ fn complete_resumable_target_selection(
                     path: canonical_path.clone(),
                     canonical_path,
                 });
+        }
+        EffectTargetSelectionPurpose::LookTopPutOneInHand {
+            player,
+            original_prefix,
+            canonical_path,
+        } => {
+            if path != canonical_path || objects.len() != 1 {
+                return Err("look-at-top pick changed shape".to_string());
+            }
+            let selected = *original_prefix
+                .iter()
+                .find(|binding| binding.object == objects[0].object)
+                .ok_or("look-at-top pick is not a looked-at card")?;
+            continuation.frames.push(EffectFrame::LookTopPutOneInHand {
+                player,
+                original_prefix,
+                selected,
+            });
         }
         EffectTargetSelectionPurpose::LookTopSelectByTypeToHandBottomRest {
             player,
@@ -5009,6 +5047,24 @@ pub fn validate_pending_effect_choice(state: &GameState) -> Result<(), String> {
                         );
                     }
                 }
+                EffectTargetSelectionPurpose::LookTopPutOneInHand {
+                    player: library_player,
+                    original_prefix,
+                    canonical_path,
+                } => {
+                    let count = u8::try_from(original_prefix.len()).map_err(|_| "look-at-top prefix exceeds u8")?;
+                    let live: Vec<EffectObjectBinding> =
+                        legal.iter().filter_map(|candidate| candidate.expected_object).collect();
+                    if chooser != library_player
+                        || path != canonical_path
+                        || (*min_targets, *max_targets, *ordered) != (1, 1, false)
+                        || !selected.is_empty()
+                        || &live != original_prefix
+                        || bind_library_top(state, *library_player, count) != *original_prefix
+                    {
+                        return Err("look-at-top pick has a noncanonical shape".to_string());
+                    }
+                }
                 EffectTargetSelectionPurpose::LookTopSelectByTypeToHandBottomRest {
                     player: library_player,
                     requested_count,
@@ -6696,6 +6752,22 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                     state.engine.pending_effect = Some(continuation);
                     return Ok(ResumableProgress::Suspended);
                 }
+                EffectFrame::LookTopPutOneInHand {
+                    player,
+                    original_prefix,
+                    selected,
+                } => {
+                    let count = u8::try_from(original_prefix.len()).map_err(|_| "look-at-top prefix exceeds u8")?;
+                    if bind_library_top(state, player, count) != original_prefix || !original_prefix.contains(&selected) {
+                        return Err("look-at-top cards moved before the pick resolved".to_string());
+                    }
+                    event::propose_and_commit(state, event::ProposedEvent::zone_change(selected.object, Zone::Hand));
+                    let rest: Vec<ObjectId> =
+                        original_prefix.iter().filter(|&&b| b != selected).map(|b| b.object).collect();
+                    let mut known_to = [false; 2];
+                    known_to[player.index()] = true;
+                    state.move_library_cards_to_bottom_in_random_order(player, &rest, known_to)?;
+                }
                 EffectFrame::LookTopSelectByTypeToHandBottomRest {
                     player,
                     requested_count,
@@ -7865,6 +7937,44 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                 });
                 state.engine.pending_effect = Some(continuation);
                 return Ok(ResumableProgress::Suspended);
+            }
+            EffectOp::LookTopPutOneInHandRestBottomRandom { player, count } => {
+                let player = continuation.ctx.resolve_player(player, state);
+                let count = u8::try_from(dynamic_value(&continuation.ctx, state, count).max(0)).unwrap_or(u8::MAX);
+                let original_prefix = bind_library_top(state, player, count);
+                state.reveal_library_top(player, player, original_prefix.len());
+                match original_prefix.len() {
+                    0 => {}
+                    1 => continuation.frames.push(EffectFrame::LookTopPutOneInHand {
+                        player,
+                        selected: original_prefix[0],
+                        original_prefix,
+                    }),
+                    _ => {
+                        continuation.choice = Some(PendingEffectChoice::SelectTargets {
+                            player,
+                            path: path.clone(),
+                            selected: Vec::new(),
+                            legal: original_prefix
+                                .iter()
+                                .map(|&binding| EffectTargetCandidate {
+                                    target: Target::Object(binding.object),
+                                    expected_object: Some(binding),
+                                })
+                                .collect(),
+                            min_targets: 1,
+                            max_targets: 1,
+                            ordered: false,
+                            purpose: EffectTargetSelectionPurpose::LookTopPutOneInHand {
+                                player,
+                                original_prefix,
+                                canonical_path: path,
+                            },
+                        });
+                        state.engine.pending_effect = Some(continuation);
+                        return Ok(ResumableProgress::Suspended);
+                    }
+                }
             }
             EffectOp::SearchLibraryToBattlefieldTapped { player, filter }
             | EffectOp::SearchLibraryToBattlefield { player, filter } => {
@@ -11426,6 +11536,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         | EffectOp::DestroyTargetLandThenMaySearchBasicTapped { .. }
         | EffectOp::SearchLibraryToBattlefieldTapped { .. }
         | EffectOp::SearchLibraryToBattlefield { .. }
+        | EffectOp::LookTopPutOneInHandRestBottomRandom { .. }
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand
