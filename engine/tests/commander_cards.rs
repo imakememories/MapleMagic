@@ -1826,3 +1826,31 @@ fn seize_the_spotlight_fortune_draws_and_makes_a_treasure() {
     cast(&mut state, "Seize the Spotlight", None, 0);
     assert_eq!((state.players[0].hand.len(), named(&state, P0, "Treasure Token").len()), (0, 0));
 }
+
+#[test]
+fn depthshaker_titans_delayed_sacrifice_survives_a_change_of_control() {
+    let mut state = game();
+    lands(&mut state, P0, 7);
+    let ring = put(&mut state, P0, "Sol Ring");
+    let titan = put_in(&mut state, P0, "Depthshaker Titan", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(titan)).unwrap();
+    let mut chosen = false;
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseTargets { .. } if chosen => Action::FinishEffectSelection,
+            Decision::ChooseTargets { .. } => {
+                chosen = true;
+                Action::ChooseTarget(Target::Object(ring))
+            }
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    // Another player takes the Titan; the delayed trigger stays player 0's (603.7d).
+    state.objects.get_mut(titan).controller = P1;
+    advance(&mut state, |s, _| s.step == Step::Cleanup || s.active_player == P1);
+    assert_eq!(zone(&state, ring), Zone::Graveyard);
+}

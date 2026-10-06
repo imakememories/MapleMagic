@@ -10476,7 +10476,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
                 state.engine.pending_triggers.push(PendingTrigger {
                     controller: delayed.controller,
                     source: delayed.source,
-                    source_contract: Some(AbilitySourceContractV4::capture(state, delayed.source)),
+                    source_contract: Some(delayed.source_contract),
                     granted_by: None,
                     effect: EffectOp::SacrificeBound { objects: delayed.objects },
                     is_madness_offer: false,

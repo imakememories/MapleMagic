@@ -51,6 +51,9 @@ pub struct DelayedSacrificeV1 {
     pub source: ObjectId,
     pub controller: PlayerId,
     pub objects: Vec<ObjectLinkV4>,
+    /// The source as the delayed ability was created; it triggers even if
+    /// the source has left the battlefield since.
+    pub source_contract: AbilitySourceContractV4,
 }
 
 /// A resolving cascade (702.85a): the cards it exiled, the hit that may be

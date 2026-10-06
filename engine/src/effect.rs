@@ -10851,10 +10851,13 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 animated.push(link);
             }
             if !animated.is_empty() {
+                let mut source_contract = crate::state::AbilitySourceContractV4::capture(state, ctx.source);
+                source_contract.controller = ctx.controller;
                 state.delayed_sacrifices.push(crate::state::DelayedSacrificeV1 {
                     source: ctx.source,
                     controller: ctx.controller,
                     objects: animated,
+                    source_contract,
                 });
             }
         }
