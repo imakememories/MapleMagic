@@ -1606,3 +1606,86 @@ fn wild_magic_surge_on_a_land_finds_a_land() {
     assert_eq!(named(&state, P1, "Mountain").len(), 1);
     assert_eq!(state.known_library_groups(P0, P1).count(), 0, "nothing else was revealed");
 }
+
+/// Casts Call Forth the Tempest, answering each cascade offer from `cast_hits`
+/// (targets: player 1), and resolves everything.
+fn tempest(state: &mut GameState, cast_hits: &[bool]) -> Vec<ObjectId> {
+    let spell = put_in(state, P0, "Call Forth the Tempest", Zone::Hand);
+    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(state, Action::CastSpell(spell)).unwrap();
+    let (mut answers, mut offered) = (cast_hits.iter(), Vec::new());
+    loop {
+        let a = match engine::advance_until_decision(state) {
+            Decision::ChooseCascadeCast { player, card } => {
+                assert_eq!(player, P0);
+                offered.push(card);
+                Action::ChooseCascadeCast(*answers.next().expect("an answer"))
+            }
+            Decision::ChooseTargets { legal_targets, .. } => {
+                Action::ChooseTarget(if legal_targets.contains(&Target::Player(P1)) { Target::Player(P1) } else { legal_targets[0] })
+            }
+            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => return offered,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(state, a).unwrap();
+    }
+}
+
+#[test]
+fn call_forth_the_tempest_cascades_twice_and_deals_the_other_spells_mana_value() {
+    let mut state = game();
+    lands(&mut state, P0, 8);
+    let enforcer = put(&mut state, P1, "Myr Enforcer");
+    let bolt = library_card(&mut state, P0, 1, "Lightning Bolt");
+    let snipe = library_card(&mut state, P0, 3, "Guttersnipe");
+    let offered = tempest(&mut state, &[true, true]);
+    assert_eq!(offered, vec![bolt, snipe]);
+    assert_eq!(state.players[1].life, 37, "the cascaded Bolt");
+    assert_eq!(zone(&state, snipe), Zone::Battlefield);
+    // Bolt (1) and Guttersnipe (3): 4 damage kills the 4/4.
+    assert_eq!(zone(&state, enforcer), Zone::Graveyard);
+    // The two Mountains exiled on the way went to the bottom, known to both players.
+    assert_eq!(state.players[0].library.len(), 8);
+    for p in [P0, P1] {
+        assert_eq!(state.known_library_groups(p, P0).count(), 2);
+    }
+}
+
+#[test]
+fn a_declined_cascade_hit_goes_to_the_bottom_too() {
+    let mut state = game();
+    lands(&mut state, P0, 8);
+    let bolt = library_card(&mut state, P0, 0, "Lightning Bolt");
+    // Declined, the Bolt goes to the bottom, where the second cascade finds it again.
+    assert_eq!(tempest(&mut state, &[false, false]), vec![bolt, bolt]);
+    assert_eq!(state.players[1].life, 40);
+    assert_eq!((zone(&state, bolt), state.players[0].library.len()), (Zone::Library, 10));
+    let groups: Vec<usize> = state.known_library_groups(P1, P0).map(|g| g.cards.len()).collect();
+    assert_eq!(groups, vec![10], "the whole library, known to both, order unknown");
+}
+
+#[test]
+fn a_cascaded_x_spell_has_x_zero() {
+    let mut state = game();
+    lands(&mut state, P0, 8);
+    let devastator = library_card(&mut state, P0, 0, "Shivan Devastator");
+    tempest(&mut state, &[true, false]);
+    // X = 0: a 0/0 that dies.
+    assert_eq!(zone(&state, devastator), Zone::Graveyard);
+}
+
+#[test]
+fn triggers_from_a_cascade_wait_while_its_hit_is_cast() {
+    let mut state = game();
+    lands(&mut state, P0, 8);
+    let laelia = put(&mut state, P0, "Laelia, the Blade Reforged");
+    let snipe = library_card(&mut state, P0, 0, "Guttersnipe");
+    let aid = library_card(&mut state, P0, 2, "Call for Aid");
+    assert_eq!(tempest(&mut state, &[true, true]), vec![snipe, aid]);
+    assert_eq!(zone(&state, snipe), Zone::Battlefield);
+    assert_eq!(zone(&state, aid), Zone::Graveyard, "cast, with a target");
+    // Each cascade exiled cards from the library: two Laelia triggers.
+    assert_eq!(state.objects.get(laelia).counters.plus1_plus1, 2);
+}

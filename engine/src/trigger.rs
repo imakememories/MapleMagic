@@ -1177,6 +1177,21 @@ const LEMBAS_TRIGGERS: [TriggeredAbilityDef; 2] = [
     },
 ];
 
+/// Cascade against Call Forth the Tempest's mana value, 8.
+fn call_forth_the_tempest_cascade_effect() -> EffectOp {
+    EffectOp::Cascade { mana_value: 8 }
+}
+
+const CASCADE_TRIGGER: TriggeredAbilityDef = TriggeredAbilityDef {
+    condition: TriggerCondition::CastSelf,
+    home_zone: Zone::Stack,
+    intervening_if_kicked: false,
+    intervening_if_controls_another_source_card: false,
+    effect: call_forth_the_tempest_cascade_effect,
+};
+/// Cascade, cascade: two separate triggers.
+const CALL_FORTH_THE_TEMPEST_TRIGGERS: [TriggeredAbilityDef; 2] = [CASCADE_TRIGGER, CASCADE_TRIGGER];
+
 const WEATHER_THE_STORM_TRIGGERS: [TriggeredAbilityDef; 1] = [TriggeredAbilityDef {
     condition: TriggerCondition::CastSelf,
     home_zone: Zone::Stack,
@@ -1317,6 +1332,7 @@ fn triggers_by_name(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Gornog, the Red Reaper" => &GORNOG_TRIGGERS,
         "Depthshaker Titan" => &DEPTHSHAKER_TITAN_TRIGGERS,
         "Hellkite Charger" => &HELLKITE_CHARGER_TRIGGERS,
+        "Call Forth the Tempest" => &CALL_FORTH_THE_TEMPEST_TRIGGERS,
         "Pyreswipe Hawk" => &PYRESWIPE_HAWK_TRIGGERS,
         "Urabrask, Heretic Praetor" => &URABRASK_TRIGGERS,
         "Cavern-Hoard Dragon" => &CAVERN_HOARD_DRAGON_TRIGGERS,

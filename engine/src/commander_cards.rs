@@ -75,6 +75,10 @@ pub fn chaos_warp() -> Option<EffectOp> {
     })
 }
 
+pub fn call_forth_the_tempest() -> Option<EffectOp> {
+    Some(EffectOp::DamageOpponentCreaturesByOtherSpellsCast)
+}
+
 pub fn wild_magic_surge() -> Option<EffectOp> {
     Some(EffectOp::WildMagicSurge { object: ObjectRef::Target(0) })
 }

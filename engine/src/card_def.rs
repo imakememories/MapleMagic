@@ -1631,7 +1631,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0xcb79_088f_0853_5cae);
+        assert_eq!(KERNEL_CARDDB_HASH, 0xd87f_e849_35e0_e228);
     }
 
     #[test]

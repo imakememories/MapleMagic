@@ -5824,7 +5824,7 @@
     },
     {
       "name": "Call Forth the Tempest",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{5}{R}{R}{R}",
       "mana_value": 8,
       "colors": [

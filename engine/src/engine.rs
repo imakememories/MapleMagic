@@ -1323,6 +1323,11 @@ pub enum Decision {
         player: PlayerId,
         creature: ObjectId,
     },
+    /// Cascade (702.85a): cast the exiled `card` without paying its mana cost?
+    ChooseCascadeCast {
+        player: PlayerId,
+        card: ObjectId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1408,6 +1413,8 @@ pub enum Action {
     /// Answers `Decision::ChooseRiot`: true for haste, false for a +1/+1
     /// counter.
     ChooseRiot(bool),
+    /// Answers `Decision::ChooseCascadeCast`.
+    ChooseCascadeCast(bool),
 }
 
 const CHAIN_COPY_COST: Cost = Cost {
@@ -1787,6 +1794,11 @@ fn validate_physical_spell_cast_origin(
                 && cast_method == CastMethodV4::Madness
                 && def.madness_cost.is_some()
         }
+        SpellCastRouteV4::Cascade => {
+            origin.origin_zone == Zone::Exile
+                && source.owner == item.controller
+                && cast_method == CastMethodV4::Cascade
+        }
         SpellCastRouteV4::GraveyardEscape => {
             origin.origin_zone == Zone::Graveyard
                 && source.owner == item.controller
@@ -1927,6 +1939,7 @@ fn validate_spell_source_contract_fields(
                     .plotted_turn
                     .is_some_and(|plotted_turn| plotted_turn < state.turn) => {}
         CastMethodV4::Foretold if def.foretell_cost.is_some() => {}
+        CastMethodV4::Cascade => {}
         CastMethodV4::Alternative
         | CastMethodV4::Flashback
         | CastMethodV4::Madness
@@ -2065,7 +2078,8 @@ fn storm_source_contract_is_structurally_valid(
         | SpellCastRouteV4::Madness
         | SpellCastRouteV4::GraveyardEscape
         | SpellCastRouteV4::CommandZone
-        | SpellCastRouteV4::Foretold { .. } => false,
+        | SpellCastRouteV4::Foretold { .. }
+        | SpellCastRouteV4::Cascade => false,
     };
     definition.name == "Weather the Storm"
         && definition.is_executable()
@@ -5198,7 +5212,8 @@ fn is_castable_now(
         | CastMethodV4::Madness
         | CastMethodV4::Plotted
         | CastMethodV4::Bestow
-        | CastMethodV4::Omen => false,
+        | CastMethodV4::Omen
+        | CastMethodV4::Cascade => false,
     }
 }
 
@@ -6070,6 +6085,20 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
             continue;
         }
 
+        // Cascade: offer the hit, then bottom the cards not cast once any
+        // cast of it is over.
+        if let Some(cascade) = state.pending_cascade.as_ref() {
+            match cascade.offer {
+                Some(card) if !cascade.answered => {
+                    return Decision::ChooseCascadeCast { player: cascade.player, card: card.object };
+                }
+                _ => {
+                    finish_cascade(state);
+                    continue;
+                }
+            }
+        }
+
         // 903.9: after state-based actions, before triggers go on the stack.
         if let Some((player, commander)) = crate::commander::pending_zone_choice(state) {
             return Decision::ChooseCommanderZone { player, commander };
@@ -6323,7 +6352,7 @@ fn remaining_cast_payment_is_payable(
         CastMethodV4::Madness => def
             .madness_cost
             .is_some_and(|cost| mana::can_pay(&cost, 0, pending.controller, state).is_some()),
-        CastMethodV4::Plotted => true,
+        CastMethodV4::Plotted | CastMethodV4::Cascade => true,
         CastMethodV4::Foretold => reduced_foretell_cost(def, pending.controller, state)
             .is_some_and(|cost| mana::can_pay(&cost, x_value, pending.controller, state).is_some()),
         CastMethodV4::Omen => supported_omen(def).is_some_and(|omen| {
@@ -7057,6 +7086,19 @@ pub(crate) fn validate_pending_cast(
             })
     };
     match method {
+        CastMethodV4::Cascade => {
+            let offered = state.pending_cascade.as_ref().and_then(|c| c.offer).is_some_and(|link| {
+                link.object == pending.spell
+                    && source.v4.spell_cast_origin.is_some_and(|o| o.origin_zone_change_count == link.zone_change_count)
+            });
+            if pending.origin_zone != Zone::Exile
+                || source.owner != pending.controller
+                || !offered
+                || pending.cast_mode != Some(CastMode::Normal)
+            {
+                return Err("cascade cast has a noncanonical origin".to_string());
+            }
+        }
         CastMethodV4::Normal => {
             let from_command_zone = pending.origin_zone == Zone::Command
                 && crate::commander::is_commander(state, pending.spell);
@@ -7291,10 +7333,15 @@ pub(crate) fn validate_pending_cast(
         _ => return Err("pending cast optional additional-cost state is noncanonical".to_string()),
     }
 
-    let selected_cost =
-        active_spec.and_then(|_| pending_cast_selected_mana_cost(def, pending, state));
-    let expected_seed_x = if def.cost.x_count == 0
-        && supported_bestow(def).is_none_or(|bestow| bestow.cost.x_count == 0)
+    // Cast without paying its mana cost: no mana to check, and X is zero.
+    let free = method == CastMethodV4::Cascade;
+    let selected_cost = if free {
+        None
+    } else {
+        active_spec.and_then(|_| pending_cast_selected_mana_cost(def, pending, state))
+    };
+    let expected_seed_x = if free
+        || def.cost.x_count == 0 && supported_bestow(def).is_none_or(|bestow| bestow.cost.x_count == 0)
     {
         Some(0)
     } else {
@@ -10268,6 +10315,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             state.tokens_created_this_turn = [0; 2];
             state.nonland_permanents_entered = [0; 2];
             state.spell_mana_this_turn = [0; 2];
+            state.spell_mana_values_this_turn = [0; 2];
             state.players[0].spells_cast_this_turn = 0;
             state.players[1].spells_cast_this_turn = 0;
             for (_, object) in state.objects.iter_mut() {
@@ -11629,6 +11677,22 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
                 return Err(format!("{id} is not a legal Plot action for {p:?}"));
             }
             plot_spell(state, p, id);
+            Ok(())
+        }
+        Action::ChooseCascadeCast(cast) => {
+            let cascade = state.pending_cascade.as_mut().ok_or("no cascade is resolving")?;
+            let card = cascade.offer.filter(|_| !cascade.answered).ok_or("no cascade offer is pending")?;
+            let player = cascade.player;
+            cascade.answered = true;
+            let live = state.objects.get(card.object);
+            if live.zone != Zone::Exile || live.zone_change_count != card.zone_change_count {
+                return Err("the cascade card left exile".to_string());
+            }
+            if cast {
+                let waiting = std::mem::take(&mut state.engine.pending_triggers);
+                state.pending_cascade.as_mut().expect("answered above").waiting_triggers = waiting;
+                begin_cast_ex(state, player, card.object, Some(CastMethodV4::Cascade));
+            }
             Ok(())
         }
         Action::ChooseRiot(haste) => {
@@ -13040,6 +13104,38 @@ fn validate_madness_decision_preflight(state: &GameState) -> Result<(ObjectId, P
     Ok((top.source, top.controller))
 }
 
+/// The end of a cascade: every card it exiled that wasn't cast goes to the
+/// bottom of its owner's library in a random order. They were exiled face
+/// up, so both players know which cards those are.
+fn finish_cascade(state: &mut GameState) {
+    let Some(mut cascade) = state.pending_cascade.take() else {
+        return;
+    };
+    // Triggers from during the cascade wait with the cast's own (603.3b).
+    if !cascade.waiting_triggers.is_empty() {
+        cascade.waiting_triggers.append(&mut state.engine.pending_triggers);
+        state.engine.pending_triggers = std::mem::take(&mut cascade.waiting_triggers);
+    }
+    let mut rest: Vec<ObjectId> = cascade
+        .exiled
+        .iter()
+        .filter(|link| {
+            let o = state.objects.get(link.object);
+            o.zone == Zone::Exile && o.zone_change_count == link.zone_change_count
+        })
+        .map(|link| link.object)
+        .collect();
+    if state.random_order(cascade.player, &mut rest).is_err() {
+        state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, rest.first().copied().unwrap_or(ObjectId(0))));
+        return;
+    }
+    for &id in &rest {
+        event::propose_and_commit(state, ProposedEvent::hidden_library_insert(id, event::LibraryPlacement::Bottom));
+    }
+    let placed: Vec<ObjectId> = rest.into_iter().filter(|&id| state.objects.get(id).zone == Zone::Library).collect();
+    state.record_library_group(cascade.player, &placed, [true, true]);
+}
+
 fn apply_choose_madness_cast(state: &mut GameState, cast_it: bool) -> Result<(), String> {
     let (card, owner) = validate_madness_decision_preflight(state)?;
     let item = state
@@ -13424,7 +13520,7 @@ fn begin_cast_ex(
     let plotted_turn = state.objects.get(spell_id).plotted_turn;
     debug_assert!(matches!(
         forced_cast_method,
-        None | Some(CastMethodV4::Madness)
+        None | Some(CastMethodV4::Madness | CastMethodV4::Cascade)
     ));
     // A card sitting in Exile isn't necessarily Plotted any more: an
     // impulse-draw effect (`effect::EffectOp::ImpulseDraw`) also exiles
@@ -13472,6 +13568,7 @@ fn begin_cast_ex(
                 .expect("a Plotted cast was derived from an exact Plot marker"),
         },
         CastMethodV4::Madness => SpellCastRouteV4::Madness,
+        CastMethodV4::Cascade => SpellCastRouteV4::Cascade,
         CastMethodV4::Foretold => SpellCastRouteV4::Foretold {
             foretold_turn: foretold_turn.expect("a foretold cast was derived from a foretell record"),
         },
@@ -13576,8 +13673,8 @@ fn begin_cast_ex(
         optional_additional_cost_paid,
         optional_additional_cost_chosen: vec![],
         optional_additional_cost_selection_finished: false,
-        x_value: if def.cost.x_count == 0
-            && supported_bestow(def).is_none_or(|bestow| bestow.cost.x_count == 0)
+        x_value: if cast_method == CastMethodV4::Cascade
+            || def.cost.x_count == 0 && supported_bestow(def).is_none_or(|bestow| bestow.cost.x_count == 0)
         {
             Some(0)
         } else {
@@ -13686,7 +13783,7 @@ fn finalize_owned_cast(
     };
 
     match cast_method {
-        CastMethodV4::Plotted => {}
+        CastMethodV4::Plotted | CastMethodV4::Cascade => {}
         CastMethodV4::Foretold => {
             let cost = reduced_foretell_cost(def, pending.controller, state)
                 .expect("validated foretold cast has a definition-owned cost");
@@ -13954,6 +14051,9 @@ fn finalize_owned_cast(
         [pending.controller.index()]
     .spells_cast_this_turn
     .saturating_add(1);
+    let cast_mana_value = u16::from(def.mana_value) + u16::from(x_value) * u16::from(def.cost.x_count);
+    let total = &mut state.spell_mana_values_this_turn[pending.controller.index()];
+    *total = total.saturating_add(cast_mana_value);
     if pending.origin_zone == Zone::Command {
         crate::commander::record_cast(state, pending.spell);
     }
@@ -15477,7 +15577,7 @@ mod tests {
             CastMethodV4::Normal | CastMethodV4::Alternative => {
                 (Zone::Hand, SpellCastRouteV4::Hand, None)
             }
-            CastMethodV4::Bestow | CastMethodV4::Omen | CastMethodV4::Foretold => {
+            CastMethodV4::Bestow | CastMethodV4::Omen | CastMethodV4::Foretold | CastMethodV4::Cascade => {
                 panic!("test helper cannot fabricate an unsupported cast method")
             }
         };

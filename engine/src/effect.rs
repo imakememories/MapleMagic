@@ -967,6 +967,16 @@ pub enum EffectOp {
     WildMagicSurge {
         object: ObjectRef,
     },
+    /// Cascade (702.85a): exile from the top until a nonland card with mana
+    /// value less than `mana_value`, which may then be cast without paying
+    /// its mana cost (`engine::Decision::ChooseCascadeCast`).
+    Cascade {
+        mana_value: u16,
+    },
+    /// Damage to each creature the controller's opponents control equal to
+    /// the total mana value of the other spells they cast this turn (Call
+    /// Forth the Tempest).
+    DamageOpponentCreaturesByOtherSpellsCast,
 }
 
 /// Which creatures a `ThreatenAll` takes.
@@ -9848,6 +9858,54 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let o = state.objects.get(top);
             if !o.v4.is_token && crate::card_def::CARD_DEFS[o.card_def as usize].is_permanent_card() {
                 put_library_card_onto_battlefield(state, ctx, top);
+            }
+        }
+        EffectOp::Cascade { mana_value } => {
+            let player = ctx.controller;
+            let mut exiled = Vec::new();
+            let mut offer = None;
+            while let Some(&top) = state.players[player.index()].library.first() {
+                // Exiled face up: public.
+                event::propose_and_commit(state, event::ProposedEvent::zone_change(top, Zone::Exile));
+                let o = state.objects.get(top);
+                if o.zone != Zone::Exile {
+                    break;
+                }
+                let link = crate::state::ObjectLinkV4 { object: top, zone_change_count: o.zone_change_count };
+                exiled.push(link);
+                let def = &crate::card_def::CARD_DEFS[o.card_def as usize];
+                if !def.is_land && def.mana_value < *mana_value {
+                    offer = (def.is_executable() && def.is_castable()).then_some(link);
+                    break;
+                }
+            }
+            state.pending_cascade =
+                Some(crate::state::PendingCascadeV1 { player, exiled, offer, answered: false, waiting_triggers: Vec::new() });
+        }
+        EffectOp::DamageOpponentCreaturesByOtherSpellsCast => {
+            let total = state.spell_mana_values_this_turn[ctx.controller.index()];
+            // This spell's own cast is in the total unless it's a copy.
+            let own = state
+                .stack
+                .iter()
+                .find(|item| item.source == ctx.source && item.kind == crate::state::StackItemKind::Spell)
+                .filter(|item| !item.is_copy)
+                .map_or(0, |_| crate::card_def::CARD_DEFS[state.objects.get(ctx.source).card_def as usize].mana_value);
+            let amount = i32::from(total.saturating_sub(own));
+            if amount > 0 {
+                let creatures: Vec<ObjectId> = [PlayerId::P0, PlayerId::P1]
+                    .into_iter()
+                    .flat_map(|p| state.players[p.index()].battlefield.clone())
+                    .filter(|&id| {
+                        state.objects.get(id).controller != ctx.controller
+                            && crate::engine::object_has_type(state, id, CardType::Creature)
+                    })
+                    .collect();
+                let events = creatures
+                    .into_iter()
+                    .map(|id| event::ProposedEvent::damage(ctx.source, Target::Object(id), amount))
+                    .collect();
+                event::propose_and_commit_batch(state, events);
             }
         }
         EffectOp::WildMagicSurge { object } => {

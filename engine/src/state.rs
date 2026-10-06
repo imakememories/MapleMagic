@@ -53,6 +53,21 @@ pub struct DelayedSacrificeV1 {
     pub objects: Vec<ObjectLinkV4>,
 }
 
+/// A resolving cascade (702.85a): the cards it exiled, the hit that may be
+/// cast (`offer`), and whether that offer was answered. Once any cast of it
+/// is over, the cards not cast go to the bottom in a random order.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PendingCascadeV1 {
+    pub player: PlayerId,
+    pub exiled: Vec<ObjectLinkV4>,
+    pub offer: Option<ObjectLinkV4>,
+    pub answered: bool,
+    /// Abilities that triggered during the cascade, waiting while the hit is
+    /// cast; they go on the stack with the cast's own triggers afterwards.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waiting_triggers: Vec<crate::trigger::PendingTrigger>,
+}
+
 /// Cards put on the bottom of `owner`'s library in a random order
 /// (cascade, Fomori Vault): the observers in `known_to` know which cards
 /// they are, but not their order. Stale once any card leaves the library.
@@ -553,6 +568,8 @@ pub enum CastMethodV4 {
     Omen,
     /// Cast from exile for its foretell cost (702.143).
     Foretold,
+    /// Cast from exile by cascade, without paying its mana cost (702.85a).
+    Cascade,
 }
 
 /// Independently frozen route by which a physical spell's immediately
@@ -579,6 +596,8 @@ pub enum SpellCastRouteV4 {
     Foretold {
         foretold_turn: u32,
     },
+    /// Exiled by its owner's cascade ability.
+    Cascade,
 }
 
 /// Incarnation-local cast provenance stored on the physical source object
@@ -1376,6 +1395,13 @@ pub struct GameState {
     /// See [`LibraryGroupV1`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub library_groups: Vec<LibraryGroupV1>,
+    /// See [`PendingCascadeV1`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_cascade: Option<PendingCascadeV1>,
+    /// Total mana value of the spells each player has cast this turn, as
+    /// they were cast (X included). Call Forth the Tempest.
+    #[serde(default, skip_serializing_if = "no_tokens_created")]
+    pub spell_mana_values_this_turn: [u16; 2],
     /// Priority/stack/turn-structure bookkeeping and the propose-commit
     /// event log, all owned by the `engine`/`event`/`trigger` modules. See
     /// `engine::EngineState`.
@@ -1457,6 +1483,12 @@ impl Hash for GameState {
         }
         if !self.library_groups.is_empty() {
             self.library_groups.hash(state);
+        }
+        if self.pending_cascade.is_some() {
+            self.pending_cascade.hash(state);
+        }
+        if !no_tokens_created(&self.spell_mana_values_this_turn) {
+            self.spell_mana_values_this_turn.hash(state);
         }
         if !self.last_known_charge.is_empty() {
             self.last_known_charge.iter().map(|e| e.1).collect::<Vec<_>>().hash(state);
@@ -1622,6 +1654,8 @@ impl GameState {
             control_while: Vec::new(),
             event_history_base: 0,
             library_groups: Vec::new(),
+            pending_cascade: None,
+            spell_mana_values_this_turn: [0; 2],
             engine: crate::engine::EngineState::default(),
         }
     }

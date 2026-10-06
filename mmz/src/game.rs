@@ -774,6 +774,10 @@ impl Game {
                 self.actor = player;
                 yes_no(&mut out, def_of(st, source), 4, Action::ChooseEffectBoolean);
             }
+            Decision::ChooseCascadeCast { player, card } => {
+                self.actor = player;
+                yes_no(&mut out, def_of(st, card), 13, Action::ChooseCascadeCast);
+            }
             Decision::ChooseRiot { player, creature } => {
                 self.actor = player;
                 yes_no(&mut out, def_of(st, creature), 12, Action::ChooseRiot);
