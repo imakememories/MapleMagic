@@ -4576,6 +4576,7 @@ fn hand_written_spell(name: &str) -> Option<(&'static str, &'static str)> {
         "Chaos Warp" => ("TargetSpec::AnyPermanent", "crate::commander_cards::chaos_warp"),
         "Demand Answers" => ("TargetSpec::None", "crate::commander_cards::demand_answers"),
         "Seize the Spotlight" => ("TargetSpec::None", "crate::commander_cards::seize_the_spotlight"),
+        "Vandalblast" => ("TargetSpec::ArtifactYouDontControl", "crate::commander_cards::vandalblast"),
         "Call Forth the Tempest" => ("TargetSpec::None", "crate::commander_cards::call_forth_the_tempest"),
         "Wild Magic Surge" => ("TargetSpec::OpponentPermanent", "crate::commander_cards::wild_magic_surge"),
         "Mass Mutiny" => (
@@ -4634,7 +4635,11 @@ fn mode3_for(name: &str) -> String {
 fn omen_for(name: &str) -> String {
     match name {
         "Sagu Wildling" => {
-            "Some(OmenDef { cost: Cost { pips: &[Pip::Colored(ManaColor::G)], generic: 0, x_count: 0 }, types: &[CardType::Sorcery], target_spec: TargetSpec::None, effect: omen_effect_search_basic_land })".to_string()
+            "Some(OmenDef { cost: Cost { pips: &[Pip::Colored(ManaColor::G)], generic: 0, x_count: 0 }, types: &[CardType::Sorcery], target_spec: TargetSpec::None, effect: omen_effect_search_basic_land, overload: false })".to_string()
+        }
+        // Overload {4}{R}: "each" instead of "target".
+        "Vandalblast" => {
+            "Some(OmenDef { cost: Cost { pips: &[Pip::Colored(ManaColor::R)], generic: 4, x_count: 0 }, types: &[CardType::Sorcery], target_spec: TargetSpec::None, effect: crate::commander_cards::vandalblast_overload, overload: true })".to_string()
         }
         _ => "None".to_string(),
     }

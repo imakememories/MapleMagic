@@ -985,6 +985,9 @@ pub enum EffectOp {
     ThreatenChosenCreature {
         player: PlayerRef,
     },
+    /// Destroys each artifact the controller doesn't control, at once
+    /// (overloaded Vandalblast).
+    DestroyEachArtifactYouDontControl,
 }
 
 /// Which creatures a `ThreatenAll` takes.
@@ -10000,6 +10003,19 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                     .collect();
                 event::propose_and_commit_batch(state, events);
             }
+        }
+        EffectOp::DestroyEachArtifactYouDontControl => {
+            let events = [PlayerId::P0, PlayerId::P1]
+                .into_iter()
+                .flat_map(|p| state.players[p.index()].battlefield.clone())
+                .filter(|&id| {
+                    state.objects.get(id).controller != ctx.controller
+                        && crate::engine::object_has_type(state, id, CardType::Artifact)
+                        && !crate::engine::has_effective_keyword(state, id, crate::card_def::Keywords::INDESTRUCTIBLE)
+                })
+                .map(|id| event::ProposedEvent::zone_change(id, Zone::Graveyard))
+                .collect();
+            event::propose_and_commit_batch(state, events);
         }
         EffectOp::WildMagicSurge { object } => {
             let target = ctx.resolve_object(*object);

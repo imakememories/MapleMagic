@@ -1497,6 +1497,7 @@ fn target_count(spec: TargetSpec) -> u8 {
         | TargetSpec::UpToOneHistoricCardInYourGraveyard
         | TargetSpec::OpponentNonbasicLand
         | TargetSpec::OpponentPermanent
+        | TargetSpec::ArtifactYouDontControl
         | TargetSpec::SpellManaValueAtMostControlledSubtypes { .. }
         | TargetSpec::UpToOneTappedCreature
         | TargetSpec::NoncreatureArtifactPermanent
@@ -2603,6 +2604,10 @@ fn legal_targets_for_controller_from_source(
         }
         TargetSpec::UpToOneArtifact => battlefield_objects(state)
             .filter(|&id| object_has_type(state, id, CardType::Artifact))
+            .map(Target::Object)
+            .collect(),
+        TargetSpec::ArtifactYouDontControl => battlefield_objects(state)
+            .filter(|&id| state.objects.get(id).controller != controller && object_has_type(state, id, CardType::Artifact))
             .map(Target::Object)
             .collect(),
         TargetSpec::OpponentPermanent => battlefield_objects(state)
@@ -5027,6 +5032,27 @@ fn viable_pending_spell_forms(
     let Some(omen) = supported_omen(def) else {
         return viable_printed_spell_modes(def, pending.spell, pending.controller, state);
     };
+    // Cast without paying its mana cost: no mana to check, and an overload
+    // cost, an alternative cost, can't be used (118.9a).
+    if pending.source_contract.cast_method == CastMethodV4::Cascade {
+        let completable = |spec| {
+            target_prefix_can_complete_for_controller_and_source(
+                spec,
+                &pending.targets_chosen,
+                pending.controller,
+                targeting_source_for_object(state, pending.spell),
+                state,
+            )
+        };
+        let mut forms = Vec::new();
+        if completable(def.target_spec) {
+            forms.push(0);
+        }
+        if !omen.overload && completable(omen.target_spec) {
+            forms.push(1);
+        }
+        return forms;
+    }
     let mut forms = Vec::with_capacity(2);
     let normal_cost = pending_normal_cast_cost(def, &pending, state);
     if target_prefix_can_complete_for_controller_and_source(
@@ -9896,8 +9922,9 @@ fn finish_resolved_stack_item(state: &mut GameState, item: &StackItem) -> Result
         return Ok(());
     }
     let def = &card_def::CARD_DEFS[state.objects.get(item.source).card_def as usize];
-    if item.v4.cast_method == Some(CastMethodV4::Omen) {
-        supported_omen(def).ok_or("resolved Omen spell lost its definition")?;
+    if item.v4.cast_method == Some(CastMethodV4::Omen)
+        && !supported_omen(def).ok_or("resolved Omen spell lost its definition")?.overload
+    {
         let departure = plan_spell_departure(state, item, Zone::Library)?;
         if item.is_copy {
             return apply_spell_departure(state, departure);

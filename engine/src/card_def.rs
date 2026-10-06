@@ -573,6 +573,8 @@ pub enum TargetSpec {
     OpponentNonbasicLand,
     /// A permanent an opponent controls (Wild Magic Surge).
     OpponentPermanent,
+    /// An artifact you don't control (Vandalblast).
+    ArtifactYouDontControl,
 }
 
 impl TargetSpec {
@@ -625,6 +627,7 @@ impl TargetSpec {
             TargetSpec::UpToOneHistoricCardInYourGraveyard => 41,
             TargetSpec::OpponentNonbasicLand => 42,
             TargetSpec::OpponentPermanent => 43,
+            TargetSpec::ArtifactYouDontControl => 44,
         }
     }
 }
@@ -990,6 +993,10 @@ pub struct OmenDef {
     pub types: &'static [CardType],
     pub target_spec: TargetSpec,
     pub effect: fn() -> EffectOp,
+    /// An overload cost (702.96) rather than an Omen half: the card goes to
+    /// the graveyard as usual, and casting it without paying its mana cost
+    /// can't use this form.
+    pub overload: bool,
 }
 
 /// Bestow's alternative spell characteristics. Form zero remains the
@@ -1618,6 +1625,7 @@ mod tests {
             (TargetSpec::UpToOneHistoricCardInYourGraveyard, 41),
             (TargetSpec::OpponentNonbasicLand, 42),
             (TargetSpec::OpponentPermanent, 43),
+            (TargetSpec::ArtifactYouDontControl, 44),
         ];
         for (target_spec, ordinal) in stable_ordinals {
             assert_eq!(target_spec.stable_id(), ordinal);
@@ -1637,7 +1645,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0xf942_50a6_0ff8_a737);
+        assert_eq!(KERNEL_CARDDB_HASH, 0x5266_3da5_42aa_fe24);
     }
 
     #[test]

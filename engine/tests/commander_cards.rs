@@ -1854,3 +1854,23 @@ fn depthshaker_titans_delayed_sacrifice_survives_a_change_of_control() {
     advance(&mut state, |s, _| s.step == Step::Cleanup || s.active_player == P1);
     assert_eq!(zone(&state, ring), Zone::Graveyard);
 }
+
+#[test]
+fn vandalblast_destroys_one_artifact_or_overloaded_each_you_dont_control() {
+    let mut state = game();
+    lands(&mut state, P0, 1);
+    let mine = put(&mut state, P0, "Arcane Signet");
+    let theirs = [put(&mut state, P1, "Sol Ring"), put(&mut state, P1, "Arcane Signet")];
+    let spell = cast(&mut state, "Vandalblast", Some(Target::Object(theirs[0])), 0);
+    assert_eq!((zone(&state, theirs[0]), zone(&state, theirs[1]), zone(&state, mine)), (Zone::Graveyard, Zone::Battlefield, Zone::Battlefield));
+    assert_eq!(zone(&state, spell), Zone::Graveyard);
+
+    let mut state = game();
+    lands(&mut state, P0, 5);
+    let mine = put(&mut state, P0, "Arcane Signet");
+    let theirs = [put(&mut state, P1, "Sol Ring"), put(&mut state, P1, "Arcane Signet")];
+    let spell = cast(&mut state, "Vandalblast", None, 1);
+    assert!(theirs.iter().all(|&a| zone(&state, a) == Zone::Graveyard), "overloaded: each");
+    assert_eq!(zone(&state, mine), Zone::Battlefield);
+    assert_eq!(zone(&state, spell), Zone::Graveyard, "not shuffled away like an Omen");
+}

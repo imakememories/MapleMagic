@@ -901,6 +901,7 @@ pub fn stack_target_contract_is_structurally_valid(
                 | TargetSpec::UpToOneArtifact
                 | TargetSpec::OpponentNonbasicLand
                 | TargetSpec::OpponentPermanent
+                | TargetSpec::ArtifactYouDontControl
                 | TargetSpec::UpToOneTappedCreature
                 | TargetSpec::NoncreatureArtifactPermanent
                 | TargetSpec::Land

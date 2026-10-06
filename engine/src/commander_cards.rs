@@ -91,6 +91,14 @@ pub fn seize_the_spotlight() -> Option<EffectOp> {
     })
 }
 
+pub fn vandalblast() -> Option<EffectOp> {
+    Some(EffectOp::DestroyObject { object: ObjectRef::Target(0) })
+}
+
+pub fn vandalblast_overload() -> EffectOp {
+    EffectOp::DestroyEachArtifactYouDontControl
+}
+
 pub fn demand_answers() -> Option<EffectOp> {
     Some(EffectOp::DrawCards { player: PlayerRef::Controller, count: 2 })
 }
