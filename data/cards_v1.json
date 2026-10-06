@@ -6001,7 +6001,7 @@
     },
     {
       "name": "Chaos Warp",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}{R}",
       "mana_value": 3,
       "colors": [
@@ -13288,7 +13288,7 @@
     },
     {
       "name": "Wild Magic Surge",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{R}{R}",
       "mana_value": 2,
       "colors": [

@@ -127,6 +127,8 @@ pub enum PlayerRef {
     ObjectController(ObjectRef),
     /// The controller's one opponent in this strictly two-player kernel.
     Opponent,
+    /// The owner of an object (Chaos Warp's "the owner of target permanent").
+    ObjectOwner(ObjectRef),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -222,6 +224,8 @@ pub enum EffectCond {
     /// Refurbished Familiar's 1v1 form: its opponent can discard exactly
     /// one card iff that opponent's hand is nonempty at resolution.
     OpponentHasCardsInHand,
+    /// The target is a commander (903.9b's choice applies).
+    TargetIsCommander(u8),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -949,6 +953,19 @@ pub enum EffectOp {
     LookTopPutOneInHandRestBottomRandom {
         player: PlayerRef,
         count: DynamicValueDef,
+    },
+    /// Chaos Warp: the target's owner shuffles it into their library (or
+    /// puts a commander into the command zone instead), then reveals the
+    /// top card and puts it onto the battlefield if it's a permanent card.
+    ChaosWarp {
+        object: ObjectRef,
+        to_command_zone: bool,
+    },
+    /// Wild Magic Surge: destroy the target; its controller reveals until a
+    /// permanent card sharing a card type with it, puts that card onto the
+    /// battlefield and the rest on the bottom in a random order.
+    WildMagicSurge {
+        object: ObjectRef,
     },
 }
 
@@ -8253,6 +8270,7 @@ impl ExecCtx {
                 state.objects.get(self.resolve_object(oref)).controller
             }
             PlayerRef::Opponent => self.controller.opponent(),
+            PlayerRef::ObjectOwner(oref) => state.objects.get(self.resolve_object(oref)).owner,
         }
     }
 }
@@ -9785,8 +9803,88 @@ fn dynamic_value(ctx: &ExecCtx, state: &GameState, value: DynamicValueDef) -> i3
     }
 }
 
+/// Puts a library card onto the battlefield under its owner's control.
+/// An Aura would need an object to enchant, which isn't supported yet.
+fn put_library_card_onto_battlefield(state: &mut GameState, ctx: &ExecCtx, card: ObjectId) {
+    let def = &crate::card_def::CARD_DEFS[state.objects.get(card).card_def as usize];
+    if def.subtypes.contains(&Subtype::Aura) {
+        state.engine.halted = Some((crate::engine::UnsupportedMechanic::AuraEntersWithoutBeingCast, ctx.source));
+        return;
+    }
+    event::propose_and_commit(state, event::ProposedEvent::zone_change(card, Zone::Battlefield));
+}
+
 pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
     match op {
+        EffectOp::ChaosWarp { object, to_command_zone } => {
+            let target = ctx.resolve_object(*object);
+            let owner = state.objects.get(target).owner;
+            if *to_command_zone {
+                event::propose_and_commit(state, event::ProposedEvent::zone_change(target, Zone::Command));
+            } else {
+                event::propose_and_commit(
+                    state,
+                    event::ProposedEvent::public_library_insert(target, event::LibraryPlacement::Top),
+                );
+                // The 903.9b choice was made: don't ask again for this move.
+                if crate::commander::is_commander(state, target) {
+                    let generation = state.objects.get(target).zone_change_count;
+                    if let Some(c) = state.commander.as_mut() {
+                        c.declined[owner.index()] = Some(generation);
+                    }
+                }
+            }
+            // 701.24c: shuffled even if the permanent didn't go there.
+            if state.shuffle_library(owner).is_err() {
+                state.engine.halted = Some((crate::engine::UnsupportedMechanic::InvalidEffectContinuation, ctx.source));
+                return;
+            }
+            let Some(&top) = state.players[owner.index()].library.first() else {
+                return;
+            };
+            for observer in [PlayerId::P0, PlayerId::P1] {
+                state.reveal_library_top(observer, owner, 1);
+            }
+            let o = state.objects.get(top);
+            if !o.v4.is_token && crate::card_def::CARD_DEFS[o.card_def as usize].is_permanent_card() {
+                put_library_card_onto_battlefield(state, ctx, top);
+            }
+        }
+        EffectOp::WildMagicSurge { object } => {
+            let target = ctx.resolve_object(*object);
+            let player = state.objects.get(target).controller;
+            let types: Vec<CardType> = [
+                CardType::Land,
+                CardType::Creature,
+                CardType::Artifact,
+                CardType::Enchantment,
+                CardType::Planeswalker,
+                CardType::Battle,
+                CardType::Kindred,
+            ]
+            .into_iter()
+            .filter(|&t| crate::engine::object_has_type(state, target, t))
+            .collect();
+            execute(&EffectOp::DestroyObject { object: *object }, ctx, state);
+            let mut revealed = Vec::new();
+            let mut found = None;
+            for &id in &state.players[player.index()].library {
+                revealed.push(id);
+                let def = &crate::card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
+                if def.is_permanent_card() && types.iter().any(|&t| def.has_type(t)) {
+                    found = Some(id);
+                    break;
+                }
+            }
+            if let Some(card) = found {
+                revealed.pop();
+                put_library_card_onto_battlefield(state, ctx, card);
+            }
+            // Revealed, so both players know which cards went to the bottom.
+            if state.move_library_cards_to_bottom_in_random_order(player, &revealed, [true, true]).is_err() {
+                state.engine.halted = Some((crate::engine::UnsupportedMechanic::InvalidEffectContinuation, ctx.source));
+            }
+        }
         EffectOp::Sequence(ops) => {
             for inner in ops {
                 execute(inner, ctx, state);
@@ -11597,6 +11695,10 @@ fn eval_cond(cond: &EffectCond, ctx: &ExecCtx, state: &GameState) -> bool {
             _ => false,
         },
         EffectCond::And(a, b) => eval_cond(a, ctx, state) && eval_cond(b, ctx, state),
+        EffectCond::TargetIsCommander(idx) => match ctx.targets.get(*idx as usize) {
+            Some(Target::Object(id)) => crate::commander::is_commander(state, *id),
+            _ => false,
+        },
         EffectCond::ControlsArtifactCount(n) => controlled_artifact_count(state, ctx.controller) >= *n as usize,
         EffectCond::ControlsOtherSubtypeCount {
             subtype,

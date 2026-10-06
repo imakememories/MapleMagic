@@ -62,6 +62,23 @@ pub fn vision_of_love() -> Option<EffectOp> {
     })
 }
 
+/// Chaos Warp: a commander's owner may put it into the command zone instead.
+pub fn chaos_warp() -> Option<EffectOp> {
+    let warp = |to_command_zone| EffectOp::ChaosWarp { object: ObjectRef::Target(0), to_command_zone };
+    Some(EffectOp::Conditional {
+        cond: crate::effect::EffectCond::TargetIsCommander(0),
+        then: Box::new(EffectOp::Choice {
+            controller: PlayerRef::ObjectOwner(ObjectRef::Target(0)),
+            options: vec![warp(false), warp(true)],
+        }),
+        else_: Box::new(warp(false)),
+    })
+}
+
+pub fn wild_magic_surge() -> Option<EffectOp> {
+    Some(EffectOp::WildMagicSurge { object: ObjectRef::Target(0) })
+}
+
 pub fn call_for_aid() -> Option<EffectOp> {
     Some(EffectOp::CallForAid)
 }

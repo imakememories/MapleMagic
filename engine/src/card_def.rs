@@ -571,6 +571,8 @@ pub enum TargetSpec {
     UpToOneHistoricCardInYourGraveyard,
     /// A nonbasic land an opponent controls (Demolition Field).
     OpponentNonbasicLand,
+    /// A permanent an opponent controls (Wild Magic Surge).
+    OpponentPermanent,
 }
 
 impl TargetSpec {
@@ -622,6 +624,7 @@ impl TargetSpec {
             TargetSpec::UpToOneArtifact => 40,
             TargetSpec::UpToOneHistoricCardInYourGraveyard => 41,
             TargetSpec::OpponentNonbasicLand => 42,
+            TargetSpec::OpponentPermanent => 43,
         }
     }
 }
@@ -1231,6 +1234,13 @@ impl CardDef {
         self.types.contains(&t)
     }
 
+    /// A card with a permanent type (110.4a).
+    pub fn is_permanent_card(&self) -> bool {
+        [CardType::Artifact, CardType::Creature, CardType::Enchantment, CardType::Land, CardType::Planeswalker, CardType::Battle]
+            .iter()
+            .any(|&t| self.has_type(t))
+    }
+
     /// Artifacts, legendaries and Sagas are historic (700.6).
     pub fn is_historic(&self) -> bool {
         self.has_type(CardType::Artifact)
@@ -1601,6 +1611,7 @@ mod tests {
             (TargetSpec::UpToOneArtifact, 40),
             (TargetSpec::UpToOneHistoricCardInYourGraveyard, 41),
             (TargetSpec::OpponentNonbasicLand, 42),
+            (TargetSpec::OpponentPermanent, 43),
         ];
         for (target_spec, ordinal) in stable_ordinals {
             assert_eq!(target_spec.stable_id(), ordinal);
@@ -1620,7 +1631,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0x764f_cf2c_9c85_ac70);
+        assert_eq!(KERNEL_CARDDB_HASH, 0xcb79_088f_0853_5cae);
     }
 
     #[test]

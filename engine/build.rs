@@ -4561,6 +4561,8 @@ fn hand_written_spell(name: &str) -> Option<(&'static str, &'static str)> {
         "Shivan Devastator" => ("TargetSpec::None", "crate::commander_cards::shivan_devastator"),
         "Vision of Love" => ("TargetSpec::None", "crate::commander_cards::vision_of_love"),
         "Call for Aid" => ("TargetSpec::TargetOpponent", "crate::commander_cards::call_for_aid"),
+        "Chaos Warp" => ("TargetSpec::AnyPermanent", "crate::commander_cards::chaos_warp"),
+        "Wild Magic Surge" => ("TargetSpec::OpponentPermanent", "crate::commander_cards::wild_magic_surge"),
         "Mass Mutiny" => (
             "TargetSpec::UpToOneOpponentControlledCreature",
             "crate::commander_cards::threaten_target",

@@ -1518,3 +1518,91 @@ fn fomori_vault_without_artifacts_looks_at_nothing() {
     assert_eq!(zone(&state, discard), Zone::Graveyard);
     assert_eq!((state.players[0].library.len(), state.players[0].hand.len()), (10, 0));
 }
+
+#[test]
+fn chaos_warp_shuffles_the_permanent_in_and_reveals_the_top_card() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let snipe = put(&mut state, P1, "Guttersnipe");
+    for i in 0..10 {
+        library_card(&mut state, P1, i, "Lightning Bolt");
+    }
+    cast(&mut state, "Chaos Warp", Some(Target::Object(snipe)), 0);
+    let lib = state.players[1].library.clone();
+    if zone(&state, snipe) == Zone::Battlefield {
+        // The Guttersnipe itself was revealed on top: a permanent card.
+        assert_eq!(lib.len(), 10);
+    } else {
+        assert_eq!((lib.len(), zone(&state, snipe)), (11, Zone::Library));
+        assert_ne!(lib[0], snipe);
+        // A revealed Bolt stays on top, and both players know it.
+        for p in [P0, P1] {
+            assert!(state.known_library_cards(p, P1).iter().any(|e| e.position == 0 && e.object == lib[0]));
+        }
+    }
+}
+
+#[test]
+fn chaos_warp_puts_a_revealed_permanent_card_onto_the_battlefield() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let snipe = put(&mut state, P1, "Guttersnipe");
+    cast(&mut state, "Chaos Warp", Some(Target::Object(snipe)), 0);
+    // Every other card is a Mountain, so something always enters.
+    assert_eq!(state.players[1].battlefield.len(), 1);
+    assert_eq!(state.players[1].library.len(), 10);
+}
+
+#[test]
+fn chaos_warp_lets_a_commanders_owner_choose_the_command_zone() {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    for (choice, expected) in [(1u8, Zone::Command), (0u8, Zone::Library)] {
+        let mut state = game();
+        lands(&mut state, P0, 3);
+        let ognis = state.commander.as_ref().unwrap().commanders[1];
+        propose_and_commit(&mut state, ProposedEvent::zone_change(ognis, Zone::Battlefield));
+        for i in 0..10 {
+            library_card(&mut state, P1, i, "Lightning Bolt");
+        }
+        // `cast` answers the owner's choice with `choice` and would fail on a second commander prompt.
+        cast(&mut state, "Chaos Warp", Some(Target::Object(ognis)), choice);
+        match (expected, zone(&state, ognis)) {
+            (Zone::Command, Zone::Command) => assert_eq!(state.players[1].library.len(), 10, "shuffled anyway"),
+            (Zone::Library, Zone::Library) => assert_eq!(state.players[1].library.len(), 11),
+            // Shuffled in, then revealed on top: a permanent card.
+            (Zone::Library, Zone::Battlefield) => assert_eq!(state.players[1].library.len(), 10),
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[test]
+fn wild_magic_surge_finds_a_permanent_sharing_a_type_and_bottoms_the_rest() {
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let enforcer = put(&mut state, P1, "Myr Enforcer");
+    let bolts = [library_card(&mut state, P1, 0, "Lightning Bolt"), library_card(&mut state, P1, 1, "Lightning Bolt")];
+    let snipe = library_card(&mut state, P1, 2, "Guttersnipe");
+    cast(&mut state, "Wild Magic Surge", Some(Target::Object(enforcer)), 0);
+    assert_eq!(zone(&state, enforcer), Zone::Graveyard);
+    assert_eq!((zone(&state, snipe), state.objects.get(snipe).controller), (Zone::Battlefield, P1), "a creature, like the Enforcer");
+    let lib = &state.players[1].library;
+    assert_eq!(lib.len(), 9);
+    let mut bottom = lib[7..].to_vec();
+    bottom.sort();
+    assert_eq!(bottom, bolts.to_vec());
+    for p in [P0, P1] {
+        assert_eq!(state.known_library_groups(p, P1).count(), 1, "revealed, so both know");
+    }
+}
+
+#[test]
+fn wild_magic_surge_on_a_land_finds_a_land() {
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let mine = put(&mut state, P1, "Strip Mine");
+    cast(&mut state, "Wild Magic Surge", Some(Target::Object(mine)), 0);
+    assert_eq!(zone(&state, mine), Zone::Graveyard);
+    assert_eq!(named(&state, P1, "Mountain").len(), 1);
+    assert_eq!(state.known_library_groups(P0, P1).count(), 0, "nothing else was revealed");
+}

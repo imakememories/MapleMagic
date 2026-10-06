@@ -706,6 +706,9 @@ pub enum UnsupportedMechanic {
     /// interpreter's fail-closed structural contract. Supported card
     /// definitions must never reach this at runtime.
     InvalidEffectContinuation,
+    /// An Aura would be put onto the battlefield without being cast, which
+    /// needs an object to enchant (303.4f); not supported yet.
+    AuraEntersWithoutBeingCast,
 }
 
 /// Issues the next 613.7 timestamp for a newly-created
@@ -1482,6 +1485,7 @@ fn target_count(spec: TargetSpec) -> u8 {
         | TargetSpec::UpToOneArtifact
         | TargetSpec::UpToOneHistoricCardInYourGraveyard
         | TargetSpec::OpponentNonbasicLand
+        | TargetSpec::OpponentPermanent
         | TargetSpec::SpellManaValueAtMostControlledSubtypes { .. }
         | TargetSpec::UpToOneTappedCreature
         | TargetSpec::NoncreatureArtifactPermanent
@@ -2581,6 +2585,10 @@ fn legal_targets_for_controller_from_source(
         }
         TargetSpec::UpToOneArtifact => battlefield_objects(state)
             .filter(|&id| object_has_type(state, id, CardType::Artifact))
+            .map(Target::Object)
+            .collect(),
+        TargetSpec::OpponentPermanent => battlefield_objects(state)
+            .filter(|&id| state.objects.get(id).controller != controller)
             .map(Target::Object)
             .collect(),
         TargetSpec::OpponentNonbasicLand => battlefield_objects(state)
