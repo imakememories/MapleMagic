@@ -156,7 +156,13 @@ pub fn observe_with(g: &Game, viewer: PlayerId, perfect: bool) -> Vec<[u16; TOKE
     }
     for item in &st.stack {
         if st.objects.try_get(item.source).is_some() {
-            out.push(object_token(st, item.source, me, Zone::Stack, item.controller == me));
+            let mut t = object_token(st, item.source, me, Zone::Stack, item.controller == me);
+            // An ability's source is public as it was, even if it has since
+            // moved to a hidden zone.
+            if let Some(source) = item.v4.ability_source_contract {
+                t[0] = source.card_def + 1;
+            }
+            out.push(t);
         }
     }
     for &id in &st.exile {

@@ -76,7 +76,9 @@ impl History {
         // Activating from a hidden zone reveals the card (602.2a); foretelling doesn't.
         let card = if feat.src == u16::MAX { 0 } else { feat.src + 1 };
         let secret = feat.kind == Kind::Foretell;
-        let stack = st.stack.last().and_then(|s| st.objects.try_get(s.source)).map_or(0, |o| o.card_def + 1);
+        let stack = st.stack.last().map_or(0, |s| {
+            s.v4.ability_source_contract.map(|c| c.card_def + 1).or_else(|| st.objects.try_get(s.source).map(|o| o.card_def + 1)).unwrap_or(0)
+        });
         let (untapped, hand) = snapshot(st);
         self.events.push(Event { kind: feat.kind as u16 + 1, actor, secret, turn: st.turn, step: st.step as u16, card, stack, untapped, hand });
     }
