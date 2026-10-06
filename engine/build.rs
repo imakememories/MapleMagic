@@ -2746,6 +2746,7 @@ enum AbilityCostRecipe {
         filter: PermanentFilterRecipe,
     },
     ReturnControlledUnblockedAttacker,
+    TapUntappedControlledArtifactsX,
     /// An arbitrary printed mana cost parsed by the same canonical cost
     /// grammar as spell costs. Twisted Landscape's Cycling is the first
     /// multicolor consumer.
@@ -2754,6 +2755,8 @@ enum AbilityCostRecipe {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AbilityEffectRecipe {
+    /// A hand-written program: the named function in `commander_cards.rs`.
+    Custom(&'static str),
     DrawCards(u8),
     GainLife(u8),
     CreateToken(&'static str),
@@ -3222,7 +3225,7 @@ fn primary_mana_ability_colors(card: &CardJson) -> Vec<&str> {
     match card.name.as_str() {
         "Citadel Gate" => vec!["W"],
         "Sea Gate" => vec!["U"],
-        "Heap Gate" => vec!["C"],
+        "Heap Gate" | "Abstergo Entertainment" => vec!["C"],
         _ => card.produces_mana.iter().map(String::as_str).collect(),
     }
 }
@@ -3241,7 +3244,7 @@ fn as_enters_choose_color_other_than(name: &str) -> &'static str {
 
 fn additional_mana_abilities_for(name: &str) -> &'static str {
     match name {
-        "Heap Gate" => "&[AdditionalManaAbilityDef { colors: &[ManaColor::W, ManaColor::U, ManaColor::B, ManaColor::R, ManaColor::G], mana_cost: Cost { pips: &[], generic: 1, x_count: 0 }, ability: ManaAbilityDef { cost: ManaAbilityCostDef::TapSelf, amount: ManaAbilityAmountDef::Fixed(1), controller_damage: 0, max_activations_per_turn: None } }]",
+        "Heap Gate" | "Abstergo Entertainment" => "&[AdditionalManaAbilityDef { colors: &[ManaColor::W, ManaColor::U, ManaColor::B, ManaColor::R, ManaColor::G], mana_cost: Cost { pips: &[], generic: 1, x_count: 0 }, ability: ManaAbilityDef { cost: ManaAbilityCostDef::TapSelf, amount: ManaAbilityAmountDef::Fixed(1), controller_damage: 0, max_activations_per_turn: None } }]",
         _ => "&[]",
     }
 }
@@ -3495,6 +3498,56 @@ fn activated_ability_recipes_for(name: &str) -> &'static [ActivatedAbilityRecipe
             ActivatedAbilityRecipe {
                 cost: &[AbilityCostRecipe::ManaCost("{3}"), AbilityCostRecipe::SacrificeSelf],
                 effect: AbilityEffectRecipe::DrawPerOpponentTappedCreature,
+                activation_zone: "Battlefield",
+                sorcery_speed_only: false,
+                target_spec: "None",
+                activation_target_filter: "TargetSpecOnly",
+                max_activations_per_turn: None,
+            },
+        ],
+        "Abstergo Entertainment" => &[ActivatedAbilityRecipe {
+            cost: &[
+                AbilityCostRecipe::ManaCost("{3}"),
+                AbilityCostRecipe::Tap,
+                AbilityCostRecipe::ExileSelf,
+            ],
+            effect: AbilityEffectRecipe::Custom("abstergo_entertainment_effect"),
+            activation_zone: "Battlefield",
+            sorcery_speed_only: false,
+            target_spec: "UpToOneHistoricCardInYourGraveyard",
+            activation_target_filter: "TargetSpecOnly",
+            max_activations_per_turn: None,
+        }],
+        "Demolition Field" => &[ActivatedAbilityRecipe {
+            cost: &[
+                AbilityCostRecipe::ManaCost("{2}"),
+                AbilityCostRecipe::Tap,
+                AbilityCostRecipe::SacrificeSelf,
+            ],
+            effect: AbilityEffectRecipe::Custom("demolition_field_effect"),
+            activation_zone: "Battlefield",
+            sorcery_speed_only: false,
+            target_spec: "OpponentNonbasicLand",
+            activation_target_filter: "TargetSpecOnly",
+            max_activations_per_turn: None,
+        }],
+        "Secluded Starforge" => &[
+            ActivatedAbilityRecipe {
+                cost: &[
+                    AbilityCostRecipe::ManaCost("{2}"),
+                    AbilityCostRecipe::Tap,
+                    AbilityCostRecipe::TapUntappedControlledArtifactsX,
+                ],
+                effect: AbilityEffectRecipe::Custom("secluded_starforge_pump_effect"),
+                activation_zone: "Battlefield",
+                sorcery_speed_only: true,
+                target_spec: "Creature",
+                activation_target_filter: "TargetSpecOnly",
+                max_activations_per_turn: None,
+            },
+            ActivatedAbilityRecipe {
+                cost: &[AbilityCostRecipe::ManaCost("{5}"), AbilityCostRecipe::Tap],
+                effect: AbilityEffectRecipe::CreateToken("Robot Token"),
                 activation_zone: "Battlefield",
                 sorcery_speed_only: false,
                 target_spec: "None",
@@ -4096,6 +4149,9 @@ fn ability_cost_src(cost: AbilityCostRecipe) -> String {
         AbilityCostRecipe::ReturnControlledUnblockedAttacker => {
             "CostComponent::ReturnControlledUnblockedAttackerToOwnersHand".to_string()
         }
+        AbilityCostRecipe::TapUntappedControlledArtifactsX => {
+            "CostComponent::TapUntappedControlledArtifactsX".to_string()
+        }
         AbilityCostRecipe::ManaCost(cost) => {
             let (pips, generic, x_count) = parse_cost(cost);
             format!(
@@ -4139,6 +4195,7 @@ fn ability_cost_token(cost: AbilityCostRecipe) -> String {
         AbilityCostRecipe::ReturnControlledUnblockedAttacker => {
             "return_controlled_unblocked_attacker".to_string()
         }
+        AbilityCostRecipe::TapUntappedControlledArtifactsX => "tap_untapped_controlled_artifacts_x".to_string(),
         AbilityCostRecipe::ManaCost(cost) => format!("mana_cost:{cost}"),
     }
 }
@@ -4163,6 +4220,7 @@ fn ability_effect_token(effect: AbilityEffectRecipe) -> String {
     match effect {
         AbilityEffectRecipe::DrawCards(count) => format!("draw_cards:{count}"),
         AbilityEffectRecipe::GainLife(amount) => format!("gain_life:{amount}"),
+        AbilityEffectRecipe::Custom(name) => format!("custom:{name}"),
         AbilityEffectRecipe::CreateToken(name) => format!("create_token:{name}"),
         AbilityEffectRecipe::DamageTarget(amount) => format!("damage_target:{amount}"),
         AbilityEffectRecipe::MoveAllTargetsToHand => "move_all_targets_to_hand".to_string(),
@@ -4284,6 +4342,8 @@ fn ability_effect_fn_name(effect: AbilityEffectRecipe) -> String {
             "ability_effect_create_treasure_token".to_string()
         }
         AbilityEffectRecipe::CreateToken("Eldrazi Token") => "ability_effect_create_eldrazi_token".to_string(),
+        AbilityEffectRecipe::CreateToken("Robot Token") => "ability_effect_create_robot_token".to_string(),
+        AbilityEffectRecipe::Custom(name) => format!("ability_effect_custom_{name}"),
         AbilityEffectRecipe::CreateToken("Sacred Cat Embalmed Token") => {
             "ability_effect_create_sacred_cat_embalmed_token".to_string()
         }
@@ -5041,6 +5101,9 @@ fn codegen(cards: &[CardJson]) -> String {
             }
             AbilityEffectRecipe::MakeTargetArtifactUntilEndOfTurn => {
                 writeln!(out, "    EffectOp::BecomeArtifactUntilEndOfTurn {{ object: ObjectRef::Target(0) }}").unwrap();
+            }
+            AbilityEffectRecipe::Custom(name) => {
+                writeln!(out, "    crate::commander_cards::{name}()").unwrap();
             }
             AbilityEffectRecipe::PumpControlledDragons => {
                 writeln!(out, "    EffectOp::PumpControlled {{ filter: CreatureFilter::ControlledWithSubtype(Subtype::Dragon), power: 1, toughness: 0, grant_haste: false }}").unwrap();

@@ -938,6 +938,12 @@ pub enum EffectOp {
         amount: i32,
         exile_amount: i32,
     },
+    /// `SearchLibraryToBattlefieldTapped`, but the card enters untapped
+    /// (Demolition Field).
+    SearchLibraryToBattlefield {
+        player: PlayerRef,
+        filter: LibraryCardFilter,
+    },
 }
 
 /// Which creatures a `ThreatenAll` takes.
@@ -1800,6 +1806,7 @@ pub fn contains_player_choice(op: &EffectOp) -> bool {
         | EffectOp::MayPayManaThen { .. }
         | EffectOp::DestroyTargetLandThenMaySearchBasicTapped { .. }
         | EffectOp::SearchLibraryToBattlefieldTapped { .. }
+        | EffectOp::SearchLibraryToBattlefield { .. }
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand
@@ -3770,7 +3777,7 @@ fn validate_search_library_to_battlefield_origin(
     player: PlayerId,
     filter: LibraryCardFilter,
     canonical_path: &[u16],
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let root = validated_definition_owned_root_effect(state, pending)?;
     match effect_op_at_path(root.as_ref(), canonical_path) {
         Some(EffectOp::SearchLibraryToBattlefieldTapped {
@@ -3779,7 +3786,15 @@ fn validate_search_library_to_battlefield_origin(
         }) if *original_filter == filter
             && pending.ctx.resolve_player(*original_player, state) == player =>
         {
-            Ok(())
+            Ok(true)
+        }
+        Some(EffectOp::SearchLibraryToBattlefield {
+            player: original_player,
+            filter: original_filter,
+        }) if *original_filter == filter
+            && pending.ctx.resolve_player(*original_player, state) == player =>
+        {
+            Ok(false)
         }
         Some(EffectOp::DestroyTargetLandThenMaySearchBasicTapped {
             object: ObjectRef::Target(0),
@@ -3796,7 +3811,7 @@ fn validate_search_library_to_battlefield_origin(
                 } if controller == player
             ) =>
         {
-            Ok(())
+            Ok(true)
         }
         _ => Err("battlefield-search lost its definition-owned origin".to_string()),
     }
@@ -3838,6 +3853,7 @@ fn validate_begin_search_library_to_battlefield_frame(
         return Err("battlefield-search answered path or filter changed".to_string());
     }
     validate_search_library_to_battlefield_origin(state, pending, *player, *filter, canonical_path)
+        .map(|_| ())
 }
 
 pub(crate) fn validate_initiative_trigger_binding(
@@ -6564,7 +6580,7 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                             "battlefield library-search coordinator metadata changed".to_string()
                         );
                     }
-                    validate_search_library_to_battlefield_origin(
+                    let tapped = validate_search_library_to_battlefield_origin(
                         state,
                         &continuation,
                         player,
@@ -6591,7 +6607,11 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                     if let Some(binding) = selected {
                         event::propose_and_commit(
                             state,
-                            event::ProposedEvent::zone_change_to_battlefield_tapped(binding.object),
+                            if tapped {
+                                event::ProposedEvent::zone_change_to_battlefield_tapped(binding.object)
+                            } else {
+                                event::ProposedEvent::zone_change(binding.object, Zone::Battlefield)
+                            },
                         );
                     }
                     state
@@ -7846,7 +7866,8 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                 state.engine.pending_effect = Some(continuation);
                 return Ok(ResumableProgress::Suspended);
             }
-            EffectOp::SearchLibraryToBattlefieldTapped { player, filter } => {
+            EffectOp::SearchLibraryToBattlefieldTapped { player, filter }
+            | EffectOp::SearchLibraryToBattlefield { player, filter } => {
                 let player = continuation.ctx.resolve_player(player, state);
                 let original_library = bind_library_exact(state, player);
                 validate_library_search_live_metadata(state, player, filter, &original_library)?;
@@ -9646,6 +9667,14 @@ fn creature_matches_filter(state: &GameState, object: ObjectId, filter: &Creatur
     }
 }
 
+/// `engine::evaluate_dynamic_value`, plus the resolving ability's X.
+fn dynamic_value(ctx: &ExecCtx, state: &GameState, value: DynamicValueDef) -> i32 {
+    match value {
+        DynamicValueDef::X => i32::from(ctx.x_value),
+        _ => crate::engine::evaluate_dynamic_value(state, value, ctx.controller),
+    }
+}
+
 pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
     match op {
         EffectOp::Sequence(ops) => {
@@ -10806,9 +10835,8 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let Target::Object(object) = ctx.resolve_target(*target) else {
                 panic!("dynamic target pump requires an object target");
             };
-            let power = crate::engine::evaluate_dynamic_value(state, *power, ctx.controller);
-            let toughness =
-                crate::engine::evaluate_dynamic_value(state, *toughness, ctx.controller);
+            let power = dynamic_value(ctx, state, *power);
+            let toughness = dynamic_value(ctx, state, *toughness);
             if power != 0 || toughness != 0 {
                 let timestamp = crate::engine::next_timestamp(state);
                 state.engine.until_end_of_turn.push(
@@ -11397,6 +11425,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         | EffectOp::MayPayManaThen { .. }
         | EffectOp::DestroyTargetLandThenMaySearchBasicTapped { .. }
         | EffectOp::SearchLibraryToBattlefieldTapped { .. }
+        | EffectOp::SearchLibraryToBattlefield { .. }
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand

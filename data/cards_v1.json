@@ -5094,7 +5094,7 @@
     },
     {
       "name": "Abstergo Entertainment",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "",
       "mana_value": 0,
       "colors": [],
@@ -5108,13 +5108,23 @@
       "power": null,
       "toughness": null,
       "is_land": true,
-      "produces_mana": [],
+      "produces_mana": [
+        "C",
+        "W",
+        "U",
+        "B",
+        "R",
+        "G"
+      ],
       "decks": [
         "Commander - Ognis"
       ],
       "sideboard_only": false,
       "complexity": "commander",
-      "mechanics": [],
+      "mechanics": [
+        "mana_ability",
+        "activated_ability"
+      ],
       "keywords": [],
       "oracle": "{T}: Add {C}.\n{1}, {T}: Add one mana of any color.\n{3}, {T}, Exile Abstergo Entertainment: Return up to one target historic card from your graveyard to your hand, then exile all graveyards. (Artifacts, legendaries, and Sagas are historic.)",
       "layout": "normal",
@@ -6572,7 +6582,7 @@
     },
     {
       "name": "Demolition Field",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "",
       "mana_value": 0,
       "colors": [],
@@ -6584,13 +6594,18 @@
       "power": null,
       "toughness": null,
       "is_land": true,
-      "produces_mana": [],
+      "produces_mana": [
+        "C"
+      ],
       "decks": [
         "Commander - Ognis"
       ],
       "sideboard_only": false,
       "complexity": "commander",
-      "mechanics": [],
+      "mechanics": [
+        "mana_ability",
+        "activated_ability"
+      ],
       "keywords": [],
       "oracle": "{T}: Add {C}.\n{2}, {T}, Sacrifice this land: Destroy target nonbasic land an opponent controls. That land's controller may search their library for a basic land card, put it onto the battlefield, then shuffle. You may search your library for a basic land card, put it onto the battlefield, then shuffle.",
       "layout": "normal",
@@ -11260,7 +11275,7 @@
     },
     {
       "name": "Secluded Starforge",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "",
       "mana_value": 0,
       "colors": [],
@@ -11272,13 +11287,19 @@
       "power": null,
       "toughness": null,
       "is_land": true,
-      "produces_mana": [],
+      "produces_mana": [
+        "C"
+      ],
       "decks": [
         "Commander - Ognis"
       ],
       "sideboard_only": false,
       "complexity": "commander",
-      "mechanics": [],
+      "mechanics": [
+        "mana_ability",
+        "activated_ability",
+        "token_creation"
+      ],
       "keywords": [],
       "oracle": "{T}: Add {C}.\n{2}, {T}, Tap X untapped artifacts you control: Target creature gets +X/+0 until end of turn. Activate only as a sorcery.\n{5}, {T}: Create a 2/2 colorless Robot artifact creature token.",
       "layout": "normal",
@@ -13405,6 +13426,33 @@
         "token_creation"
       ],
       "java_file": "Mage/src/main/java/mage/game/permanent/token/EldraziToken.java"
+    },
+    {
+      "name": "Robot Token",
+      "engine_capability": "full",
+      "mana_cost": "",
+      "mana_value": 0,
+      "colors": [],
+      "types": [
+        "Artifact",
+        "Creature"
+      ],
+      "subtypes": [
+        "Robot"
+      ],
+      "supertypes": [],
+      "power": 2,
+      "toughness": 2,
+      "is_land": false,
+      "produces_mana": [],
+      "decks": [],
+      "is_token": true,
+      "sideboard_only": false,
+      "complexity": "commander",
+      "mechanics": [
+        "token_creation"
+      ],
+      "java_file": "Mage/src/main/java/mage/game/permanent/token/RobotToken.java"
     }
   ],
   "unresolved": []

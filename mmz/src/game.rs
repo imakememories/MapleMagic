@@ -665,12 +665,15 @@ impl Game {
                     out.push(mk(ActFeat::new(Kind::FinishTargets, d, 0, 0), Exec::Engine(Action::FinishEffectSelection)));
                 }
             }
-            Decision::ChooseCostTargets { player, source, candidates, .. } => {
+            Decision::ChooseCostTargets { player, source, candidates, can_finish, .. } => {
                 self.actor = player;
                 let d = def_of(st, source);
                 for id in candidates {
                     let feat = ActFeat::new(Kind::CostTarget, d, obj_sig(st, id, player), 0).with_role(obj_role(st, id));
                     push_unique(&mut out, mk(feat, Exec::Engine(Action::ChooseCostTarget(id))));
+                }
+                if can_finish {
+                    out.push(mk(ActFeat::new(Kind::FinishTargets, d, 0, 0), Exec::Engine(Action::FinishEffectSelection)));
                 }
             }
             Decision::ChooseCastMode { player, spell, options } => {

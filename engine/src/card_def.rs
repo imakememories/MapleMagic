@@ -566,6 +566,11 @@ pub enum TargetSpec {
     AnyNumberOfNoncreatureArtifactsYouControl,
     /// Zero or one artifact, any controller (Pyreswipe Hawk).
     UpToOneArtifact,
+    /// Zero or one historic card (artifact, legendary or Saga) in the
+    /// controller's graveyard (Abstergo Entertainment).
+    UpToOneHistoricCardInYourGraveyard,
+    /// A nonbasic land an opponent controls (Demolition Field).
+    OpponentNonbasicLand,
 }
 
 impl TargetSpec {
@@ -615,6 +620,8 @@ impl TargetSpec {
             TargetSpec::PlayerThenUpToOneCreature => 38,
             TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl => 39,
             TargetSpec::UpToOneArtifact => 40,
+            TargetSpec::UpToOneHistoricCardInYourGraveyard => 41,
+            TargetSpec::OpponentNonbasicLand => 42,
         }
     }
 }
@@ -781,6 +788,9 @@ pub enum CostComponent {
     /// filter. Unlike the preceding activation-only form, this component
     /// may appear in an alternative casting cost such as flashback.
     TapUntappedControlledPermanent(PermanentFilterDef),
+    /// "Tap X untapped artifacts you control" (Secluded Starforge): any
+    /// number, chosen one at a time during activation; the count is X.
+    TapUntappedControlledArtifactsX,
     /// Reveal the payer's complete hand, but only if it contains no card of
     /// the named type. The reveal itself is the cost, so it happens during
     /// payment after the spell has left hand for the stack. Land Grant is
@@ -920,6 +930,9 @@ pub enum DynamicValueDef {
     /// The greatest mana value among artifacts the controller controls
     /// (Pyreswipe Hawk).
     GreatestControlledArtifactManaValue,
+    /// The resolving ability's X (Secluded Starforge). Only an effect
+    /// context has one; see `effect::dynamic_value`.
+    X,
 }
 
 /// Reusable definition for a single printed mana ability whose cost, amount,
@@ -1214,6 +1227,13 @@ pub struct CardDef {
 impl CardDef {
     pub fn has_type(&self, t: CardType) -> bool {
         self.types.contains(&t)
+    }
+
+    /// Artifacts, legendaries and Sagas are historic (700.6).
+    pub fn is_historic(&self) -> bool {
+        self.has_type(CardType::Artifact)
+            || self.supertypes.contains(&Supertype::Legendary)
+            || self.subtypes.contains(&Subtype::Saga)
     }
 
     pub fn types_for_face(&self, face_index: u8) -> &'static [CardType] {
@@ -1524,7 +1544,7 @@ mod tests {
         // Hero Token remains id 159 and Clue Token remains id 160. Skeleton
         // Token is appended as id 161 without renumbering earlier ids. The
         // Commander decks' cards follow from id 162.
-        assert_eq!(CARD_DEFS.len(), 440);
+        assert_eq!(CARD_DEFS.len(), 441);
     }
 
     #[test]
@@ -1577,6 +1597,8 @@ mod tests {
             (TargetSpec::PlayerThenUpToOneCreature, 38),
             (TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl, 39),
             (TargetSpec::UpToOneArtifact, 40),
+            (TargetSpec::UpToOneHistoricCardInYourGraveyard, 41),
+            (TargetSpec::OpponentNonbasicLand, 42),
         ];
         for (target_spec, ordinal) in stable_ordinals {
             assert_eq!(target_spec.stable_id(), ordinal);
@@ -1596,7 +1618,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0xf5ff_23cd_ee6c_41f6);
+        assert_eq!(KERNEL_CARDDB_HASH, 0x58ff_1e63_614b_f9c0);
     }
 
     #[test]

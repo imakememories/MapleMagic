@@ -1229,3 +1229,228 @@ fn pyreswipe_hawk_grows_by_artifact_mana_value_and_takes_an_artifact_on_expend_s
     advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
     assert_eq!(state.objects.get(theirs).controller, P1, "only as long as you control the Hawk");
 }
+
+/// Activates `source`'s ability `index` and answers its decisions: targets
+/// from `targets` in order (none left finishes an "up to"), artifacts to tap
+/// from `tap` (then done), and effect options from `options` in order.
+fn activate_with(state: &mut GameState, source: ObjectId, index: u8, targets: &[Target], tap: &[ObjectId], options: &[u16]) {
+    advance(state, |_, d| {
+        matches!(d, Decision::CastSpellOrPass { activatable_abilities, .. } if activatable_abilities.contains(&(source, index)))
+    });
+    engine::step(state, Action::ActivateAbility(source, index)).unwrap();
+    let (mut targets, mut tap, mut options) = (targets.iter(), tap.iter(), options.iter());
+    loop {
+        let a = match engine::advance_until_decision(state) {
+            Decision::ChooseTargets { legal_targets, .. } => {
+                let t = *targets.next().expect("a target is required");
+                assert!(legal_targets.contains(&t), "{t:?} not in {legal_targets:?}");
+                Action::ChooseTarget(t)
+            }
+            Decision::ChooseEffectTargets { legal_targets, .. } => match targets.next() {
+                Some(&t) => {
+                    assert!(legal_targets.contains(&t), "{t:?} not in {legal_targets:?}");
+                    Action::ChooseEffectTarget(t)
+                }
+                None => Action::FinishEffectSelection,
+            },
+            Decision::ChooseCostTargets { candidates, can_finish, .. } => match tap.next() {
+                Some(&o) => {
+                    assert!(candidates.contains(&o), "{o:?} not in {candidates:?}");
+                    Action::ChooseCostTarget(o)
+                }
+                None => {
+                    assert!(can_finish);
+                    Action::FinishEffectSelection
+                }
+            },
+            Decision::ChooseEffectOption { .. } => Action::ChooseEffectOption(*options.next().expect("an option")),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => return,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(state, a).unwrap();
+    }
+}
+
+fn zone(state: &GameState, o: ObjectId) -> Zone {
+    state.objects.get(o).zone
+}
+
+#[test]
+fn abstergo_makes_colorless_or_any_color_for_one() {
+    let mut state = game();
+    let abstergo = put(&mut state, P0, "Abstergo Entertainment");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert_eq!(engine::available_mana_ability_choices(P0, abstergo, &state), vec![ManaColor::C]);
+    lands(&mut state, P0, 1);
+    let choices = engine::available_mana_ability_choices(P0, abstergo, &state);
+    assert!(choices.contains(&ManaColor::C) && choices.contains(&ManaColor::G), "{choices:?}");
+}
+
+#[test]
+fn abstergo_returns_a_historic_card_then_exiles_all_graveyards() {
+    let mut state = game();
+    let abstergo = put(&mut state, P0, "Abstergo Entertainment");
+    lands(&mut state, P0, 3);
+    let signet = put_in(&mut state, P0, "Arcane Signet", Zone::Graveyard);
+    let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+    let theirs = put_in(&mut state, P1, "Lightning Bolt", Zone::Graveyard);
+    activate_with(&mut state, abstergo, 0, &[Target::Object(signet)], &[], &[]);
+    assert_eq!(zone(&state, signet), Zone::Hand);
+    assert_eq!((zone(&state, bolt), zone(&state, theirs), zone(&state, abstergo)), (Zone::Exile, Zone::Exile, Zone::Exile));
+}
+
+#[test]
+fn abstergo_targets_only_historic_cards_and_may_target_none() {
+    let mut state = game();
+    let abstergo = put(&mut state, P0, "Abstergo Entertainment");
+    lands(&mut state, P0, 3);
+    let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+    // No historic card: the ability still exiles every graveyard.
+    activate_with(&mut state, abstergo, 0, &[], &[], &[]);
+    assert_eq!(zone(&state, bolt), Zone::Exile);
+}
+
+#[test]
+fn abstergo_does_nothing_once_its_target_is_gone() {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    let abstergo = put(&mut state, P0, "Abstergo Entertainment");
+    lands(&mut state, P0, 3);
+    let signet = put_in(&mut state, P0, "Arcane Signet", Zone::Graveyard);
+    let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::ActivateAbility(abstergo, 0)).unwrap();
+    engine::advance_until_decision(&mut state);
+    engine::step(&mut state, Action::ChooseEffectTarget(Target::Object(signet))).unwrap();
+    advance(&mut state, |s, _| !s.stack.is_empty());
+    propose_and_commit(&mut state, ProposedEvent::zone_change(signet, Zone::Exile));
+    resolve(&mut state);
+    assert_eq!(zone(&state, bolt), Zone::Graveyard, "no graveyard is exiled");
+    assert_eq!(zone(&state, abstergo), Zone::Exile, "exiling it was a cost");
+}
+
+#[test]
+fn demolition_field_destroys_a_nonbasic_land_and_each_player_may_search() {
+    let mut state = game();
+    let field = put(&mut state, P0, "Demolition Field");
+    lands(&mut state, P0, 2);
+    let mine = put(&mut state, P0, "Strip Mine");
+    let basic = put(&mut state, P1, "Mountain");
+    let theirs = put(&mut state, P1, "Strip Mine");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::ActivateAbility(field, 0)).unwrap();
+    match engine::advance_until_decision(&mut state) {
+        Decision::ChooseTargets { legal_targets, .. } => {
+            assert_eq!(legal_targets, vec![Target::Object(theirs)], "not {basic:?} or {mine:?}")
+        }
+        other => panic!("{other:?}"),
+    }
+    engine::step(&mut state, Action::ChooseTarget(Target::Object(theirs))).unwrap();
+    let libraries = [state.players[0].library.len(), state.players[1].library.len()];
+    let mut asked = Vec::new();
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseEffectOption { player, option_count, .. } => {
+                assert_eq!(option_count, 2);
+                asked.push(player);
+                Action::ChooseEffectOption(1)
+            }
+            Decision::ChooseEffectTargets { legal_targets, .. } => Action::ChooseEffectTarget(legal_targets[0]),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(asked, vec![P1, P0], "the land's controller first, then you");
+    assert_eq!((zone(&state, theirs), zone(&state, field)), (Zone::Graveyard, Zone::Graveyard));
+    for p in [P0, P1] {
+        assert_eq!(state.players[p.index()].library.len(), libraries[p.index()] - 1);
+        let searched = state.players[p.index()].battlefield.last().copied().unwrap();
+        assert_eq!(CARD_DEFS[state.objects.get(searched).card_def as usize].name, "Mountain");
+        assert!(!state.objects.get(searched).tapped, "it enters untapped");
+    }
+}
+
+#[test]
+fn demolition_field_searches_are_optional_and_need_a_legal_target() {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    let field = put(&mut state, P0, "Demolition Field");
+    lands(&mut state, P0, 2);
+    let theirs = put(&mut state, P1, "Strip Mine");
+    activate_with(&mut state, field, 0, &[Target::Object(theirs)], &[], &[0, 0]);
+    assert_eq!(zone(&state, theirs), Zone::Graveyard);
+    assert_eq!((state.players[0].library.len(), state.players[1].library.len()), (10, 10), "both declined");
+
+    let mut state = game();
+    let field = put(&mut state, P0, "Demolition Field");
+    lands(&mut state, P0, 2);
+    let theirs = put(&mut state, P1, "Strip Mine");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::ActivateAbility(field, 0)).unwrap();
+    engine::advance_until_decision(&mut state);
+    engine::step(&mut state, Action::ChooseTarget(Target::Object(theirs))).unwrap();
+    advance(&mut state, |s, _| !s.stack.is_empty());
+    propose_and_commit(&mut state, ProposedEvent::zone_change(theirs, Zone::Hand));
+    resolve(&mut state);
+    assert_eq!(zone(&state, field), Zone::Graveyard);
+    assert_eq!((state.players[0].library.len(), state.players[1].library.len()), (10, 10), "no one searches");
+}
+
+#[test]
+fn secluded_starforge_taps_x_artifacts_for_plus_x() {
+    let mut state = game();
+    let forge = put(&mut state, P0, "Secluded Starforge");
+    lands(&mut state, P0, 2);
+    let creature = put(&mut state, P0, "Guttersnipe");
+    let artifacts = [put(&mut state, P0, "Treasure Token"), put(&mut state, P0, "Arcane Signet"), put(&mut state, P0, "Sol Ring")];
+    let base = effective_power(&state, creature);
+    activate_with(&mut state, forge, 0, &[Target::Object(creature)], &artifacts[..2], &[]);
+    assert_eq!(effective_power(&state, creature), base + 2);
+    let tapped: Vec<bool> = artifacts.iter().map(|&a| state.objects.get(a).tapped).collect();
+    assert_eq!(tapped, vec![true, true, false]);
+    assert_eq!(state.players[0].battlefield.len(), 7, "nothing was sacrificed");
+}
+
+#[test]
+fn secluded_starforge_keeps_the_artifacts_its_mana_needs() {
+    let mut state = game();
+    let forge = put(&mut state, P0, "Secluded Starforge");
+    let creature = put(&mut state, P0, "Guttersnipe");
+    let ring = put(&mut state, P0, "Sol Ring");
+    let treasure = put(&mut state, P0, "Treasure Token");
+    let base = effective_power(&state, creature);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::ActivateAbility(forge, 0)).unwrap();
+    engine::advance_until_decision(&mut state);
+    engine::step(&mut state, Action::ChooseTarget(Target::Object(creature))).unwrap();
+    // Sol Ring has to pay for {2}, so only the Treasure can be tapped for X.
+    match engine::advance_until_decision(&mut state) {
+        Decision::ChooseCostTargets { candidates, can_finish, .. } => assert_eq!((candidates, can_finish), (vec![treasure], true)),
+        other => panic!("{other:?}"),
+    }
+    engine::step(&mut state, Action::ChooseCostTarget(treasure)).unwrap();
+    advance(&mut state, |s, _| !s.stack.is_empty());
+    resolve(&mut state);
+    assert_eq!(effective_power(&state, creature), base + 1);
+    assert!(state.objects.get(ring).tapped && state.objects.get(treasure).tapped);
+    assert_eq!(zone(&state, treasure), Zone::Battlefield);
+}
+
+#[test]
+fn secluded_starforge_pumps_only_as_a_sorcery_and_makes_robots() {
+    let mut state = game();
+    let forge = put(&mut state, P0, "Secluded Starforge");
+    lands(&mut state, P0, 7);
+    put(&mut state, P0, "Guttersnipe");
+    advance(&mut state, |s, _| s.step == Step::BeginCombat);
+    assert!(!offered_ability(&mut state, forge, 0));
+    assert!(offered_ability(&mut state, forge, 1));
+    activate_with(&mut state, forge, 1, &[], &[], &[]);
+    let robot = named(&state, P0, "Robot Token")[0];
+    let o = state.objects.get(robot);
+    assert_eq!((effective_power(&state, robot), CARD_DEFS[o.card_def as usize].types.len()), (2, 2));
+    assert!(o.v4.is_token);
+}

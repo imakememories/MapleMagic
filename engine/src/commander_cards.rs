@@ -1,7 +1,47 @@
-//! Hand-written spell programs for the Commander decks' cards; `build.rs`'s
-//! `hand_written_spell` points each card at its function.
+//! Hand-written programs for the Commander decks' cards. `build.rs` points
+//! spells at them through `hand_written_spell`, and activated abilities
+//! through `AbilityEffectRecipe::Custom`.
 
-use crate::effect::{EffectOp, ObjectRef, ThreatenFilter};
+use crate::card_def::DynamicValueDef;
+use crate::effect::{EffectOp, LibraryCardFilter, ObjectRef, PlayerRef, TargetRef, ThreatenFilter};
+use crate::state::Zone;
+
+/// Abstergo Entertainment: "Return up to one target historic card from your
+/// graveyard to your hand, then exile all graveyards."
+pub fn abstergo_entertainment_effect() -> EffectOp {
+    EffectOp::Sequence(vec![EffectOp::MoveAllTargets { to_zone: Zone::Hand }, EffectOp::ExileAllGraveyards])
+}
+
+/// "You may search": either nothing or the search.
+fn may_search_basic_land(player: PlayerRef) -> EffectOp {
+    EffectOp::Choice {
+        controller: player,
+        options: vec![
+            EffectOp::Sequence(vec![]),
+            EffectOp::SearchLibraryToBattlefield { player, filter: LibraryCardFilter::BasicLand },
+        ],
+    }
+}
+
+/// Demolition Field: destroy the target, then its controller and then you
+/// may each search for a basic land. In two-player games the land's
+/// controller is the opponent: the target must be theirs at resolution.
+pub fn demolition_field_effect() -> EffectOp {
+    EffectOp::Sequence(vec![
+        EffectOp::DestroyObject { object: ObjectRef::Target(0) },
+        may_search_basic_land(PlayerRef::Opponent),
+        may_search_basic_land(PlayerRef::Controller),
+    ])
+}
+
+/// Secluded Starforge: "Target creature gets +X/+0 until end of turn."
+pub fn secluded_starforge_pump_effect() -> EffectOp {
+    EffectOp::PumpTargetUntilEndOfTurnDynamic {
+        target: TargetRef::Target(0),
+        power: DynamicValueDef::X,
+        toughness: DynamicValueDef::Fixed(0),
+    }
+}
 
 /// "You may sacrifice an artifact or discard a card. If you do, draw two cards."
 pub fn vision_of_love() -> Option<EffectOp> {

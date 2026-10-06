@@ -890,6 +890,9 @@ pub struct PendingActivation {
     /// driven and deliberately independent of the source card's identity.
     #[serde(default)]
     pub object_cost_chosen: Vec<EffectObjectBinding>,
+    /// The variable "tap X untapped artifacts" choice is finished.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub object_cost_done: bool,
 }
 
 /// A staged land drop waiting for an as-this-enters color choice.
@@ -1139,6 +1142,9 @@ pub enum Decision {
         cost_kind: CostKind,
         remaining: u8,
         candidates: Vec<ObjectId>,
+        /// Picking may stop here: the count is variable ("tap X untapped
+        /// artifacts"), answered with `Action::FinishEffectSelection`.
+        can_finish: bool,
     },
     /// Fireblast only, this increment: whether to pay its printed mana
     /// cost or sacrifice 2 Mountains instead. Only asked when *both* are
@@ -1474,6 +1480,8 @@ fn target_count(spec: TargetSpec) -> u8 {
         | TargetSpec::OpponentControlledCreature
         | TargetSpec::UpToOneOpponentControlledCreature
         | TargetSpec::UpToOneArtifact
+        | TargetSpec::UpToOneHistoricCardInYourGraveyard
+        | TargetSpec::OpponentNonbasicLand
         | TargetSpec::SpellManaValueAtMostControlledSubtypes { .. }
         | TargetSpec::UpToOneTappedCreature
         | TargetSpec::NoncreatureArtifactPermanent
@@ -1500,7 +1508,8 @@ fn target_min_count(spec: TargetSpec) -> u8 {
         | TargetSpec::UpToOneTappedCreature
         | TargetSpec::UpToOneOpponentControlledCreature
         | TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl
-        | TargetSpec::UpToOneArtifact => 0,
+        | TargetSpec::UpToOneArtifact
+        | TargetSpec::UpToOneHistoricCardInYourGraveyard => 0,
         TargetSpec::PlayerThenUpToOneCreature => 1,
         _ => target_count(spec),
     }
@@ -2574,6 +2583,29 @@ fn legal_targets_for_controller_from_source(
             .filter(|&id| object_has_type(state, id, CardType::Artifact))
             .map(Target::Object)
             .collect(),
+        TargetSpec::OpponentNonbasicLand => battlefield_objects(state)
+            .filter(|&id| {
+                state.objects.get(id).controller != controller
+                    && object_has_type(state, id, CardType::Land)
+                    && !card_def::CARD_DEFS[state.objects.get(id).card_def as usize]
+                        .supertypes
+                        .contains(&card_def::Supertype::Basic)
+            })
+            .map(Target::Object)
+            .collect(),
+        TargetSpec::UpToOneHistoricCardInYourGraveyard => state.players[controller.index()]
+            .graveyard
+            .iter()
+            .copied()
+            .filter(|&id| {
+                let object = state.objects.get(id);
+                object.owner == controller
+                    && object.zone == Zone::Graveyard
+                    && !object.v4.is_token
+                    && card_def::CARD_DEFS[object.card_def as usize].is_historic()
+            })
+            .map(Target::Object)
+            .collect(),
         TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl => state.players[controller.index()]
             .battlefield
             .iter()
@@ -3174,6 +3206,8 @@ pub(crate) fn evaluate_dynamic_value(
 ) -> i32 {
     let count = match value {
         DynamicValueDef::Fixed(value) => return value,
+        // X exists only while an ability resolves (`effect::dynamic_value`).
+        DynamicValueDef::X => return 0,
         DynamicValueDef::BattlefieldPermanentsWithSubtype(subtype) => state
             .objects
             .iter()
@@ -3232,6 +3266,43 @@ fn activation_cost_object_candidates(
                 && object.zone == Zone::Battlefield
                 && !object.tapped
                 && has_effective_subtype(state, candidate, subtype)
+        })
+        .collect()
+}
+
+fn has_tap_artifacts_x_cost(components: &[CostComponent]) -> bool {
+    components
+        .iter()
+        .any(|component| matches!(component, CostComponent::TapUntappedControlledArtifactsX))
+}
+
+/// Untapped artifacts `player` controls that can still be tapped for a "tap
+/// X untapped artifacts" cost: not tapped by `{T}`, not already chosen, and
+/// not needed to pay the ability's mana cost.
+fn tap_artifacts_x_candidates(
+    player: PlayerId,
+    source: ObjectId,
+    components: &[CostComponent],
+    state: &GameState,
+    already_chosen: &[ObjectId],
+) -> Vec<ObjectId> {
+    let taps_source = components.iter().any(|component| matches!(component, CostComponent::Tap));
+    let mana_cost = activation_mana_cost_for(components, player, state);
+    battlefield_objects(state)
+        .filter(|&id| !(taps_source && id == source) && !already_chosen.contains(&id))
+        .filter(|&id| {
+            let object = state.objects.get(id);
+            object.controller == player && !object.tapped && object_has_type(state, id, CardType::Artifact)
+        })
+        .filter(|&id| {
+            mana_cost.as_ref().is_none_or(|cost| {
+                let mut reserved = already_chosen.to_vec();
+                reserved.push(id);
+                if taps_source {
+                    reserved.push(source);
+                }
+                mana::can_pay_excluding_sources(cost, 0, player, state, &reserved).is_some()
+            })
         })
         .collect()
 }
@@ -3484,7 +3555,8 @@ fn component_payment_shape_supported(components: &[CostComponent]) -> bool {
                 tap_other_permanent_count += 1;
                 saw_source_changing_component = true;
             }
-            CostComponent::TapUntappedControlledPermanent(_) => {
+            CostComponent::TapUntappedControlledPermanent(_)
+            | CostComponent::TapUntappedControlledArtifactsX => {
                 tap_filtered_permanent_count += 1;
                 saw_source_changing_component = true;
             }
@@ -3741,6 +3813,7 @@ fn can_pay_components(
             CostComponent::TapUntappedControlledPermanent(filter) => {
                 !tap_permanent_cost_candidates(player, state, *filter, &[]).is_empty()
             }
+            CostComponent::TapUntappedControlledArtifactsX => true,
             CostComponent::RevealHandIfNoCardsWithType(card_type) => {
                 state.players[player.index()].hand.iter().all(|&object| {
                     !card_def::CARD_DEFS[state.objects.get(object).card_def as usize]
@@ -3944,6 +4017,15 @@ fn pay_cost_components_with_x(
             return false;
         }
     }
+    let taps_artifacts_x = has_tap_artifacts_x_cost(components);
+    if taps_artifacts_x
+        && !object_cost_chosen.iter().enumerate().all(|(index, id)| {
+            tap_artifacts_x_candidates(player, source, components, state, &object_cost_chosen[..index])
+                .contains(id)
+        })
+    {
+        return false;
+    }
     if sacrifice_needed.is_none()
         && sacrifice_controlled.is_none()
         && graveyard_exile_needed.is_none()
@@ -3951,6 +4033,7 @@ fn pay_cost_components_with_x(
         && !returns_unblocked_attacker
         && tap_other_subtype.is_none()
         && tap_filter.is_none()
+        && !taps_artifacts_x
         && !object_cost_chosen.is_empty()
     {
         return false;
@@ -3971,7 +4054,7 @@ fn pay_cost_components_with_x(
     if tap_other_subtype.is_some() {
         reserved.extend(object_cost_chosen.iter().copied());
     }
-    if tap_filter.is_some() {
+    if tap_filter.is_some() || taps_artifacts_x {
         reserved.extend(object_cost_chosen.iter().copied());
     }
     let mana_plan = mana_cost.map(|cost| {
@@ -4058,6 +4141,11 @@ fn pay_cost_components_with_x(
             }
             CostComponent::TapUntappedControlledPermanent(_) => {
                 event::propose_and_commit(state, ProposedEvent::tap(object_cost_chosen[0]));
+            }
+            CostComponent::TapUntappedControlledArtifactsX => {
+                for &id in object_cost_chosen {
+                    event::propose_and_commit(state, ProposedEvent::tap(id));
+                }
             }
             CostComponent::RevealHandIfNoCardsWithType(_) => {
                 let hand = state.players[player.index()].hand.clone();
@@ -6797,6 +6885,7 @@ fn drain_pending_optional_cost_sacrifice_or_decide(state: &mut GameState) -> Opt
             return drain_pending_optional_cost_sacrifice_or_decide(state);
         }
         return Some(Decision::ChooseCostTargets {
+            can_finish: false,
             player: pending.player,
             source: pending.source,
             cost_kind: if pending.artifacts { CostKind::SacrificeArtifacts } else { CostKind::SacrificeLands },
@@ -7725,6 +7814,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
             return drain_pending_cast_or_decide(state);
         }
         return Some(Decision::ChooseCostTargets {
+            can_finish: false,
             player: pending.controller,
             source: pending.spell,
             cost_kind: CostKind::SacrificeLands,
@@ -7764,6 +7854,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
             return drain_pending_cast_or_decide(state);
         }
         return Some(Decision::ChooseCostTargets {
+            can_finish: false,
             player: pending.controller,
             source: pending.spell,
             cost_kind: CostKind::ExileFromGraveyard,
@@ -7798,6 +7889,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
                 return drain_pending_cast_or_decide(state);
             }
             return Some(Decision::ChooseCostTargets {
+                can_finish: false,
                 player: pending.controller,
                 source: pending.spell,
                 cost_kind: match filter {
@@ -7832,6 +7924,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
                 return drain_pending_cast_or_decide(state);
             }
             return Some(Decision::ChooseCostTargets {
+                can_finish: false,
                 player: pending.controller,
                 source: pending.spell,
                 cost_kind: CostKind::TapPermanents,
@@ -7951,6 +8044,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
                         }
                         _ => {
                             return Some(Decision::ChooseCostTargets {
+                                can_finish: false,
                                 player: pending.controller,
                                 source: pending.spell,
                                 cost_kind: CostKind::SacrificePermanents,
@@ -8034,6 +8128,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
                 return drain_pending_cast_or_decide(state);
             }
             return Some(Decision::ChooseCostTargets {
+                can_finish: false,
                 player: pending.controller,
                 source: pending.spell,
                 cost_kind: CostKind::ChooseCreatureOrRevealCreature,
@@ -8180,6 +8275,7 @@ fn drain_pending_activation_or_decide(state: &mut GameState) -> Option<Decision>
                 return drain_pending_activation_or_decide(state);
             }
             return Some(Decision::ChooseCostTargets {
+                can_finish: false,
                 player: pending.controller,
                 source: pending.source,
                 cost_kind: CostKind::ReturnPermanentsToHand,
@@ -8210,6 +8306,7 @@ fn drain_pending_activation_or_decide(state: &mut GameState) -> Option<Decision>
                 return drain_pending_activation_or_decide(state);
             }
             return Some(Decision::ChooseCostTargets {
+                can_finish: false,
                 player: pending.controller,
                 source: pending.source,
                 cost_kind: cost_kind_for_permanent_filter(filter),
@@ -8249,6 +8346,7 @@ fn drain_pending_activation_or_decide(state: &mut GameState) -> Option<Decision>
             return drain_pending_activation_or_decide(state);
         }
         return Some(Decision::ChooseCostTargets {
+            can_finish: false,
             player: pending.controller,
             source: pending.source,
             cost_kind: CostKind::ReturnPermanentsToHand,
@@ -8296,11 +8394,35 @@ fn drain_pending_activation_or_decide(state: &mut GameState) -> Option<Decision>
             return drain_pending_activation_or_decide(state);
         }
         return Some(Decision::ChooseCostTargets {
+            can_finish: false,
             player: pending.controller,
             source: pending.source,
             cost_kind: CostKind::TapPermanents,
             remaining: 1,
             candidates,
+        });
+    }
+
+    if has_tap_artifacts_x_cost(ability.cost) && !pending.object_cost_done {
+        let chosen: Vec<ObjectId> = pending.object_cost_chosen.iter().map(|binding| binding.object).collect();
+        let candidates =
+            tap_artifacts_x_candidates(pending.controller, pending.source, ability.cost, state, &chosen);
+        if candidates.is_empty() {
+            state
+                .engine
+                .pending_activation
+                .as_mut()
+                .expect("validated activation remains staged")
+                .object_cost_done = true;
+            return drain_pending_activation_or_decide(state);
+        }
+        return Some(Decision::ChooseCostTargets {
+            player: pending.controller,
+            source: pending.source,
+            cost_kind: CostKind::TapPermanents,
+            remaining: u8::try_from(candidates.len()).unwrap_or(u8::MAX),
+            candidates,
+            can_finish: true,
         });
     }
 
@@ -8381,10 +8503,15 @@ pub(crate) fn validate_pending_activation(
     let tap_cost_subtype = activation_tap_cost_subtype(ability.cost);
     let sacrifice_cost = activation_permanent_sacrifice_needed(ability.cost);
     let returns_unblocked_attacker = has_unblocked_attacker_return_cost(ability.cost);
+    let taps_artifacts_x = has_tap_artifacts_x_cost(ability.cost);
     let interactive_families = usize::from(return_filter.is_some())
         + usize::from(tap_cost_subtype.is_some())
         + usize::from(sacrifice_cost.is_some())
-        + usize::from(returns_unblocked_attacker);
+        + usize::from(returns_unblocked_attacker)
+        + usize::from(taps_artifacts_x);
+    if pending.object_cost_done && !taps_artifacts_x {
+        return Err("activation without a variable object cost is marked done".to_string());
+    }
     if interactive_families > 1 {
         return Err("activation has multiple interactive object-cost families".to_string());
     }
@@ -8475,6 +8602,21 @@ pub(crate) fn validate_pending_activation(
         );
         if remaining.len() < usize::from(needed).saturating_sub(pending.object_cost_chosen.len()) {
             return Err("pending activation object cost can no longer complete".to_string());
+        }
+    } else if taps_artifacts_x {
+        let mut chosen = Vec::with_capacity(pending.object_cost_chosen.len());
+        for binding in &pending.object_cost_chosen {
+            let legal = binding.expected_zone == Zone::Battlefield
+                && state
+                    .objects
+                    .try_get(binding.object)
+                    .is_some_and(|live| live.zone_change_count == binding.expected_zone_change_count)
+                && tap_artifacts_x_candidates(pending.controller, pending.source, ability.cost, state, &chosen)
+                    .contains(&binding.object);
+            if !legal {
+                return Err("pending activation carries an illegal artifact to tap".to_string());
+            }
+            chosen.push(binding.object);
         }
     }
 
@@ -9367,7 +9509,12 @@ pub(crate) fn validated_stack_item_target_spec(
             } else if item.v4.hidden_ability_source.is_some() {
                 return Err("non-ninjutsu activation carries hidden source provenance".to_string());
             }
-            let expected_x = activation_x_value(ability, &item.targets, state)?;
+            let expected_x = if has_tap_artifacts_x_cost(ability.cost) {
+                u8::try_from(item.v4.paid_cost_refs.iter().filter(|paid| paid.object != item.source).count())
+                    .map_err(|_| "activated stack item X exceeds its range".to_string())?
+            } else {
+                activation_x_value(ability, &item.targets, state)?
+            };
             if item.v4.x_value != u16::from(expected_x) {
                 return Err("activated stack item X value changed".to_string());
             }
@@ -11185,10 +11332,13 @@ fn pending_activation_action_stage(
         && pending.object_cost_chosen.is_empty();
     let unblocked_attacker_return_cost_incomplete =
         has_unblocked_attacker_return_cost(ability.cost) && pending.object_cost_chosen.is_empty();
+    let tap_artifacts_x_incomplete =
+        has_tap_artifacts_x_cost(ability.cost) && !pending.object_cost_done;
     if return_cost_incomplete
         || sacrifice_cost_incomplete
         || tap_cost_incomplete
         || unblocked_attacker_return_cost_incomplete
+        || tap_artifacts_x_incomplete
     {
         return Ok(PendingActivationActionStage::ChooseCostTarget);
     }
@@ -11210,7 +11360,7 @@ fn action_matches_pending_activation_stage(
         ) | (PendingActivationActionStage::Discard, Action::Discard(_))
             | (
                 PendingActivationActionStage::ChooseCostTarget,
-                Action::ChooseCostTarget(_)
+                Action::ChooseCostTarget(_) | Action::FinishEffectSelection
             )
     )
 }
@@ -11833,6 +11983,19 @@ fn finish_optional_activation_targets(state: &mut GameState) -> Result<(), Strin
         .clone()
         .ok_or("no activation is selecting optional targets")?;
     validate_pending_activation(state, &pending)?;
+    if pending_activation_action_stage(state, &pending)? == PendingActivationActionStage::ChooseCostTarget {
+        let def = &card_def::CARD_DEFS[state.objects.get(pending.source).card_def as usize];
+        if !has_tap_artifacts_x_cost(def.activated_abilities[pending.ability_index as usize].cost) {
+            return Err("this activation cost cannot stop choosing".to_string());
+        }
+        state
+            .engine
+            .pending_activation
+            .as_mut()
+            .expect("validated activation remains staged")
+            .object_cost_done = true;
+        return Ok(());
+    }
     if target_min_count(pending.target_spec) >= target_count(pending.target_spec)
         || !target_cardinality_is_complete(pending.target_spec, pending.targets_chosen.len())
     {
@@ -12120,6 +12283,29 @@ fn apply_choose_cost_target(state: &mut GameState, id: ObjectId) -> Result<(), S
                     .push(binding);
                 return Ok(());
             }
+        }
+        if has_tap_artifacts_x_cost(ability.cost) {
+            let chosen: Vec<ObjectId> =
+                pending.object_cost_chosen.iter().map(|binding| binding.object).collect();
+            if pending.object_cost_done
+                || !tap_artifacts_x_candidates(pending.controller, pending.source, ability.cost, state, &chosen)
+                    .contains(&id)
+            {
+                return Err(format!("{id} is not a legal artifact to tap for this cost"));
+            }
+            let binding = EffectObjectBinding {
+                object: id,
+                expected_zone: Zone::Battlefield,
+                expected_zone_change_count: state.objects.get(id).zone_change_count,
+            };
+            state
+                .engine
+                .pending_activation
+                .as_mut()
+                .expect("validated activation remains staged")
+                .object_cost_chosen
+                .push(binding);
+            return Ok(());
         }
         if activation_tap_cost_subtype(ability.cost).is_some() {
             if !payable_activation_cost_object_candidates(
@@ -13412,6 +13598,7 @@ fn begin_activation(state: &mut GameState, player: PlayerId, source: ObjectId, a
             None
         },
         object_cost_chosen: vec![],
+        object_cost_done: false,
     });
 }
 
@@ -14020,8 +14207,12 @@ fn push_paid_activation(
             }
         }
     }
-    let x_value = activation_x_value(ability, &pending.targets_chosen, state)
-        .expect("validated paid activation retains its target-bound X value");
+    let x_value = if has_tap_artifacts_x_cost(ability.cost) {
+        u8::try_from(pending.object_cost_chosen.len()).unwrap_or(u8::MAX)
+    } else {
+        activation_x_value(ability, &pending.targets_chosen, state)
+            .expect("validated paid activation retains its target-bound X value")
+    };
     let stack_item_id = next_stack_item_id(state);
     state.stack.push(StackItem {
         kind: StackItemKind::ActivatedAbility,
@@ -14633,6 +14824,7 @@ mod tests {
                 cost_kind,
                 remaining,
                 candidates,
+                ..
             } => {
                 assert_eq!(player, PlayerId::P0);
                 assert_eq!(source, fireblast);
@@ -14794,6 +14986,7 @@ mod tests {
                 cost_kind,
                 remaining,
                 candidates,
+                ..
             } => {
                 assert_eq!(player, PlayerId::P0);
                 assert_eq!(source, lava_dart);
@@ -15714,6 +15907,7 @@ mod tests {
                 cost_kind,
                 remaining,
                 candidates,
+                ..
             } => {
                 assert_eq!(player, PlayerId::P0);
                 assert_eq!(source, robbery);

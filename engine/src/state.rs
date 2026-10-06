@@ -867,6 +867,7 @@ pub fn stack_target_contract_is_structurally_valid(
                 | TargetSpec::OpponentControlledCreature
                 | TargetSpec::UpToOneOpponentControlledCreature
                 | TargetSpec::UpToOneArtifact
+                | TargetSpec::OpponentNonbasicLand
                 | TargetSpec::UpToOneTappedCreature
                 | TargetSpec::NoncreatureArtifactPermanent
                 | TargetSpec::Land
@@ -884,7 +885,9 @@ pub fn stack_target_contract_is_structurally_valid(
                 ..
             },
         ) | (
-            TargetSpec::CreatureOrLandCardInGraveyard | TargetSpec::CreatureCardInOwnGraveyard,
+            TargetSpec::CreatureOrLandCardInGraveyard
+                | TargetSpec::CreatureCardInOwnGraveyard
+                | TargetSpec::UpToOneHistoricCardInYourGraveyard,
             0,
             StackTargetContractV4::Object {
                 zone: Zone::Graveyard,
