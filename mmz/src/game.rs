@@ -369,6 +369,35 @@ impl Game {
                         self.state.players[owner.index()].library.swap(at, to);
                     }
                 }
+                // Cards on the bottom in a random order: known cards, unknown
+                // order, except any whose exact position is known (looked at since).
+                let exact: Vec<ObjectId> = {
+                    let lib = &self.state.players[owner.index()].library;
+                    let st = &self.state;
+                    st.known_library_cards(observer, owner)
+                        .iter()
+                        .filter(|e| lib.get(e.position as usize) == Some(&e.object) && st.objects.get(e.object).zone_change_count == e.zone_change_count)
+                        .map(|e| e.object)
+                        .collect()
+                };
+                let groups: Vec<Vec<ObjectId>> = self
+                    .state
+                    .known_library_groups(observer, owner)
+                    .map(|g| g.cards.iter().map(|l| l.object).filter(|id| !exact.contains(id)).collect())
+                    .collect();
+                for mut cards in groups {
+                    let library = &mut self.state.players[owner.index()].library;
+                    let mut positions: Vec<usize> =
+                        cards.iter().map(|id| library.iter().position(|x| x == id).expect("a live group is in the library")).collect();
+                    positions.sort_unstable();
+                    for i in (1..cards.len()).rev() {
+                        let j = (rng.next_u64() % (i as u64 + 1)) as usize;
+                        cards.swap(i, j);
+                    }
+                    for (pos, id) in positions.into_iter().zip(cards) {
+                        library[pos] = id;
+                    }
+                }
             }
         }
         self.state.reseed_shuffles(rng.next_u64());
@@ -827,16 +856,24 @@ fn unseen_hand(state: &GameState, observer: PlayerId, owner: PlayerId) -> Vec<Ob
         .collect()
 }
 
-/// Library positions of `owner`'s `observer` doesn't know.
+/// Library positions of `owner`'s `observer` doesn't know, not counting
+/// known groups (their cards are known, only their order isn't).
 fn unknown_library_positions(state: &GameState, observer: PlayerId, owner: PlayerId) -> Vec<usize> {
     let known = state.known_library_cards(observer, owner);
+    let grouped = grouped_library_cards(state, observer, owner);
     let lib = &state.players[owner.index()].library;
     (0..lib.len())
         .filter(|&pos| {
             let id = lib[pos];
             !known.iter().any(|e| e.position as usize == pos && e.object == id && e.zone_change_count == state.objects.get(id).zone_change_count)
+                && !grouped.contains(&id)
         })
         .collect()
+}
+
+/// `owner`'s library cards in groups `observer` knows.
+fn grouped_library_cards(state: &GameState, observer: PlayerId, owner: PlayerId) -> Vec<ObjectId> {
+    state.known_library_groups(observer, owner).flat_map(|g| g.cards.iter().map(|l| l.object)).collect()
 }
 
 /// `owner`'s cards `observer` can't see: hand first, then library, then face-down exile.
@@ -846,9 +883,11 @@ pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerI
     let mut slots = unseen_hand(state, observer, owner);
     if !keep_library {
         let known = state.known_library_cards(observer, owner);
+        let grouped = grouped_library_cards(state, observer, owner);
         for (pos, &id) in ps.library.iter().enumerate() {
             if !known.iter().any(|e| e.position as usize == pos && e.object == id && e.zone_change_count == zcc(id))
                 && !mtg_kernel::commander::is_commander(state, id)
+                && !grouped.contains(&id)
             {
                 slots.push(id);
             }
@@ -1126,6 +1165,40 @@ mod tests {
             (g.state.state_hash(), g.decisions)
         };
         assert_eq!(run(5), run(5));
+    }
+
+    #[test]
+    fn determinize_deals_a_known_bottom_group_in_any_order_but_nothing_else() {
+        let g = Game::new("Faeries", "Elves", 3).unwrap();
+        let me = g.to_act();
+        let defs = |g: &Game, p: PlayerId| -> Vec<u16> {
+            g.state.players[p.index()].library.iter().map(|&id| g.state.objects.get(id).card_def).collect()
+        };
+        for owner in [me, me.opponent()] {
+            let mut base = g.clone();
+            let lib = base.state.players[owner.index()].library.clone();
+            let top: Vec<_> = (0..lib.len()).map(|i| lib[i]).filter(|&id| base.state.objects.get(id).card_def != base.state.objects.get(lib[0]).card_def).take(1).chain([lib[0]]).collect();
+            base.state.move_library_cards_to_bottom_in_random_order(owner, &top, [true, true]).unwrap();
+            let mut twin = base.clone();
+            let l = &mut twin.state.players[owner.index()].library;
+            let n = l.len();
+            l.swap(n - 1, n - 2);
+            let mut orders = std::collections::BTreeSet::new();
+            for seed in 0..16 {
+                let (mut a, mut b) = (base.clone(), twin.clone());
+                a.determinize(me, seed);
+                b.determinize(me, seed);
+                assert_eq!(defs(&a, owner), defs(&b, owner), "the order is unknown");
+                let d = defs(&a, owner);
+                let mut bottom = d[d.len() - 2..].to_vec();
+                orders.insert(bottom.clone());
+                bottom.sort_unstable();
+                let mut known: Vec<u16> = top.iter().map(|&id| base.state.objects.get(id).card_def).collect();
+                known.sort_unstable();
+                assert_eq!(bottom, known, "the cards are known");
+            }
+            assert_eq!(orders.len(), 2);
+        }
     }
 
     #[test]

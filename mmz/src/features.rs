@@ -191,6 +191,15 @@ pub fn observe_with(g: &Game, viewer: PlayerId, perfect: bool) -> Vec<[u16; TOKE
                 out.push(t);
             }
         }
+        // Known cards on the bottom in an unknown order.
+        for g in st.known_library_groups(me, p) {
+            for l in &g.cards {
+                let mut t = object_token(st, l.object, me, Zone::Library, p == me);
+                t[2] = 1;
+                t[5] = 31;
+                out.push(t);
+            }
+        }
     }
     // Graveyards last, newest first, so truncation drops the oldest.
     let mut yards: Vec<[u16; TOKEN_FIELDS]> = Vec::new();

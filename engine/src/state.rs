@@ -53,6 +53,16 @@ pub struct DelayedSacrificeV1 {
     pub objects: Vec<ObjectLinkV4>,
 }
 
+/// Cards put on the bottom of `owner`'s library in a random order
+/// (cascade, Fomori Vault): the observers in `known_to` know which cards
+/// they are, but not their order. Stale once any card leaves the library.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LibraryGroupV1 {
+    pub owner: PlayerId,
+    pub known_to: [bool; 2],
+    pub cards: Vec<ObjectLinkV4>,
+}
+
 /// Control of `object` while `controller` controls `source` (Pyreswipe
 /// Hawk); it reverts to `previous_controller` when that stops.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1362,6 +1372,9 @@ pub struct GameState {
     /// starts. History indices stay absolute; see [`GameState::history_event`].
     #[serde(default, skip_serializing_if = "u32_is_zero")]
     pub event_history_base: u32,
+    /// See [`LibraryGroupV1`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub library_groups: Vec<LibraryGroupV1>,
     /// Priority/stack/turn-structure bookkeeping and the propose-commit
     /// event log, all owned by the `engine`/`event`/`trigger` modules. See
     /// `engine::EngineState`.
@@ -1440,6 +1453,9 @@ impl Hash for GameState {
         }
         if self.event_history_base != 0 {
             self.event_history_base.hash(state);
+        }
+        if !self.library_groups.is_empty() {
+            self.library_groups.hash(state);
         }
         if !self.last_known_charge.is_empty() {
             self.last_known_charge.iter().map(|e| e.1).collect::<Vec<_>>().hash(state);
@@ -1604,6 +1620,7 @@ impl GameState {
             extra_combats: 0,
             control_while: Vec::new(),
             event_history_base: 0,
+            library_groups: Vec::new(),
             engine: crate::engine::EngineState::default(),
         }
     }
@@ -2230,11 +2247,33 @@ impl GameState {
         owner: PlayerId,
         token: LibraryShuffleToken,
     ) -> Result<(), LibraryShuffleError> {
-        use crate::environment_randomization_v2 as env2;
         let owner = library_shuffle_owner(owner)?;
         if token.owner != owner {
             return Err(LibraryShuffleError::CallerOwnerMismatch);
         }
+        let mut library = self.players[owner.index()].library.clone();
+        self.consume_shuffle(owner, token, &mut library)?;
+        self.players[owner.index()].library = library;
+        self.clear_library_knowledge(owner);
+        Ok(())
+    }
+
+    /// Puts `cards` in a random order, using one shuffle's randomness for
+    /// `owner`'s library.
+    pub(crate) fn random_order(&mut self, owner: PlayerId, cards: &mut [ObjectId]) -> Result<(), LibraryShuffleError> {
+        let token = self.preflight_library_shuffle(owner)?;
+        self.consume_shuffle(owner, token, cards)
+    }
+
+    /// Validates `token` and permutes `cards` with its randomness, advancing
+    /// the state's randomness exactly as a library shuffle does.
+    fn consume_shuffle(
+        &mut self,
+        owner: PlayerId,
+        token: LibraryShuffleToken,
+        cards: &mut [ObjectId],
+    ) -> Result<(), LibraryShuffleError> {
+        use crate::environment_randomization_v2 as env2;
         match (&self.randomness, &token.authorization) {
             (
                 GameRandomnessState::Legacy(rng),
@@ -2244,14 +2283,11 @@ impl GameState {
                     return Err(LibraryShuffleError::TokenStateMismatch);
                 }
                 let mut next_rng = *expected_rng;
-                let mut library = self.players[owner.index()].library.clone();
-                for i in (1..library.len()).rev() {
+                for i in (1..cards.len()).rev() {
                     let j = (next_rng.next_u64() % (i as u64 + 1)) as usize;
-                    library.swap(i, j);
+                    cards.swap(i, j);
                 }
-                self.players[owner.index()].library = library;
                 self.randomness = GameRandomnessState::Legacy(next_rng);
-                self.clear_library_knowledge(owner);
                 Ok(())
             }
             (
@@ -2286,16 +2322,13 @@ impl GameState {
                 if recomputed != *derived_seed {
                     return Err(LibraryShuffleError::TokenStateMismatch);
                 }
-                let mut library = self.players[owner.index()].library.clone();
-                env2::shuffle_slice_in_place_v2(recomputed, &mut library);
+                env2::shuffle_slice_in_place_v2(recomputed, cards);
                 // Frozen local-computation rule: build the successor
                 // randomness on a local clone of the validated current v2
                 // state, then perform only infallible assignments.
                 let mut successor_randomness = v2.clone();
                 successor_randomness.set_live_shuffle_ordinal(physical_owner, expected_successor);
-                self.players[owner.index()].library = library;
                 self.randomness = GameRandomnessState::EnvironmentV2(successor_randomness);
-                self.clear_library_knowledge(owner);
                 Ok(())
             }
             _ => Err(LibraryShuffleError::TokenStateMismatch),
@@ -2400,6 +2433,64 @@ impl GameState {
         for observer in [PlayerId::P0, PlayerId::P1] {
             self.library_knowledge[observer.index()][owner.index()].clear();
         }
+        self.library_groups.retain(|group| group.owner != owner);
+    }
+
+    /// Groups of `owner`'s library cards `observer` knows but not their
+    /// order, among those still entirely in that library.
+    pub fn known_library_groups(&self, observer: PlayerId, owner: PlayerId) -> impl Iterator<Item = &LibraryGroupV1> {
+        self.library_groups.iter().filter(move |group| {
+            group.owner == owner && group.known_to[observer.index()] && self.library_group_is_live(group)
+        })
+    }
+
+    fn library_group_is_live(&self, group: &LibraryGroupV1) -> bool {
+        group.cards.iter().all(|link| {
+            self.objects.try_get(link.object).is_some_and(|o| {
+                o.zone == Zone::Library && o.owner == group.owner && o.zone_change_count == link.zone_change_count
+            })
+        })
+    }
+
+    /// Records `cards`, now on the bottom of `owner`'s library in a random
+    /// order, as a group known to `known_to`.
+    pub(crate) fn record_library_group(&mut self, owner: PlayerId, cards: &[ObjectId], known_to: [bool; 2]) {
+        let live: Vec<LibraryGroupV1> =
+            self.library_groups.iter().filter(|g| self.library_group_is_live(g)).cloned().collect();
+        self.library_groups = live;
+        if cards.is_empty() || !known_to.contains(&true) {
+            return;
+        }
+        let cards = cards
+            .iter()
+            .map(|&object| ObjectLinkV4 { object, zone_change_count: self.objects.get(object).zone_change_count })
+            .collect();
+        self.library_groups.push(LibraryGroupV1 { owner, known_to, cards });
+    }
+
+    /// Moves `cards`, all in `owner`'s library, to its bottom in a random
+    /// order. Not a zone change. Nobody learns their positions; `known_to`
+    /// learn which cards are there.
+    pub fn move_library_cards_to_bottom_in_random_order(
+        &mut self,
+        owner: PlayerId,
+        cards: &[ObjectId],
+        known_to: [bool; 2],
+    ) -> Result<(), String> {
+        let mut order = cards.to_vec();
+        self.random_order(owner, &mut order).map_err(|error| error.to_string())?;
+        for &id in cards {
+            let position = self.players[owner.index()]
+                .library
+                .iter()
+                .position(|&x| x == id)
+                .expect("a card moved to the bottom is in its owner's library");
+            self.players[owner.index()].library.remove(position);
+            self.note_library_removal(owner, position);
+        }
+        self.players[owner.index()].library.extend_from_slice(&order);
+        self.record_library_group(owner, &order, known_to);
+        Ok(())
     }
 
     /// Updates position facts after a card at a publicly determined library

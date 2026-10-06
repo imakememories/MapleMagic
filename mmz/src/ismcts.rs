@@ -1207,6 +1207,22 @@ mod tests {
                         }
                     }
                 }
+                if rng.next_u64() % 4 == 0 {
+                    // Cards the player to act knows, on a library bottom in an unknown order.
+                    let owner = if rng.next_u64() % 2 == 0 { me } else { me.opponent() };
+                    let mut base = g.clone();
+                    let d = |id: mtg_kernel::ids::ObjectId| g.state.objects.get(id).card_def;
+                    let top: Vec<_> = g.state.players[owner.index()].library.iter().copied().take(3).collect();
+                    let differ = top.len() == 3 && d(top[0]) != d(top[1]);
+                    if differ && !(owner == me && sees_own_library(&g)) {
+                        base.state.move_library_cards_to_bottom_in_random_order(owner, &top, [true, true]).unwrap();
+                        let mut t = base.clone();
+                        let l = &mut t.state.players[owner.index()].library;
+                        let (i, j) = (l.iter().position(|&x| x == top[0]).unwrap(), l.iter().position(|&x| x == top[1]).unwrap());
+                        l.swap(i, j);
+                        out.push((base, t, "library group"));
+                    }
+                }
                 let k = g.choices().len();
                 g.apply((rng.next_u64() % k as u64) as usize);
             }
@@ -1219,7 +1235,7 @@ mod tests {
         let scored = |c: Config| Config { world_sampler: WorldSampler::Scored, ..c };
         let twins = unseen_twins(60);
         assert_eq!(twins.len(), 60);
-        for kind in ["own library", "shuffles", "face down"] {
+        for kind in ["own library", "shuffles", "face down", "library group"] {
             assert!(twins.iter().any(|t| t.2 == kind), "no {kind} twins");
         }
         for (g, twin, what) in &twins {
