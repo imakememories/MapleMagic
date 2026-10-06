@@ -6,7 +6,9 @@
 //!
 //! `--replay` plays only the first seed and prints its last decisions.
 //!
-//! usage: random_games <deck a> <deck b> [games] [first seed] [--check] [--replay]
+//! `--threads N` caps the worker threads (default: every core).
+//!
+//! usage: random_games <deck a> <deck b> [games] [first seed] [--check] [--replay] [--threads N]
 use mmz::commander::CommanderDeck;
 use mmz::features::observe;
 use mmz::game::{Game, Kind, Outcome};
@@ -98,7 +100,14 @@ fn replay(a: &CommanderDeck, b: &CommanderDeck, seed: u64, check: bool) {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let check = args.iter().any(|a| a == "--check");
-    let pos: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    let threads_flag = args.iter().position(|a| a == "--threads");
+    let cap: Option<u64> = threads_flag.and_then(|i| args.get(i + 1)).and_then(|s| s.parse().ok());
+    let pos: Vec<&String> = args
+        .iter()
+        .enumerate()
+        .filter(|&(i, a)| !a.starts_with("--") && threads_flag.is_none_or(|t| i != t + 1))
+        .map(|(_, a)| a)
+        .collect();
     let (da, db) = (pos.first().map_or("Ognis", |s| s.as_str()), pos.get(1).map_or("Ognis", |s| s.as_str()));
     let games: u64 = pos.get(2).and_then(|s| s.parse().ok()).unwrap_or(200);
     let first: u64 = pos.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
@@ -107,7 +116,8 @@ fn main() {
     if args.iter().any(|a| a == "--replay") {
         return replay(&a, &b, first, check);
     }
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()) as u64;
+    let cores = std::thread::available_parallelism().map_or(4, |n| n.get()) as u64;
+    let threads = cap.map_or(cores, |c| c.clamp(1, cores));
     let parts: Vec<Tally> = std::thread::scope(|s| {
         let handles: Vec<_> = (0..threads)
             .map(|k| {
