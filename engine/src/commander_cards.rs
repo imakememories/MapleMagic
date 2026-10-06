@@ -75,6 +75,26 @@ pub fn chaos_warp() -> Option<EffectOp> {
     })
 }
 
+/// Seize the Spotlight: the opponent chooses fame (you take a creature of
+/// theirs until end of turn) or fortune (you draw a card and make a Treasure).
+pub fn seize_the_spotlight() -> Option<EffectOp> {
+    let treasure = crate::card_def::card_id_by_name("Treasure Token").expect("Treasure Token in CARD_DEFS");
+    Some(EffectOp::Choice {
+        controller: PlayerRef::Opponent,
+        options: vec![
+            EffectOp::ThreatenChosenCreature { player: PlayerRef::Opponent },
+            EffectOp::Sequence(vec![
+                EffectOp::DrawCards { player: PlayerRef::Controller, count: 1 },
+                EffectOp::CreateToken { token_def: treasure, controller: PlayerRef::Controller },
+            ]),
+        ],
+    })
+}
+
+pub fn demand_answers() -> Option<EffectOp> {
+    Some(EffectOp::DrawCards { player: PlayerRef::Controller, count: 2 })
+}
+
 pub fn call_forth_the_tempest() -> Option<EffectOp> {
     Some(EffectOp::DamageOpponentCreaturesByOtherSpellsCast)
 }

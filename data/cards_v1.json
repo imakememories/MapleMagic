@@ -6554,7 +6554,7 @@
     },
     {
       "name": "Demand Answers",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{1}{R}",
       "mana_value": 2,
       "colors": [
@@ -11371,7 +11371,7 @@
     },
     {
       "name": "Seize the Spotlight",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}{R}",
       "mana_value": 3,
       "colors": [

@@ -851,6 +851,10 @@ pub struct PendingCast {
     /// additional cost was selected. Cards without that cost keep `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chosen_creature_cost_zone: Option<ChosenCreatureCostZoneV1>,
+    /// For an "A or B" additional cost: whether B was chosen. `None` until
+    /// chosen (always `None` for other spells, which pay A).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub additional_cost_or_chosen: Option<bool>,
     /// Exact chosen creature incarnation for that additional cost.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chosen_creature_cost: Option<EffectObjectBinding>,
@@ -4486,7 +4490,7 @@ fn cast_tap_permanent_filter_needed(
             return Some(filter);
         }
     }
-    def.additional_cost.and_then(tap_permanent_filter_in)
+    chosen_additional_cost(def, pending).and_then(tap_permanent_filter_in)
 }
 
 /// `player`'s currently-controlled lands, minus whichever have already
@@ -4628,8 +4632,23 @@ fn controlled_permanent_sacrifice_needed(
             return Some(sacrifice);
         }
     }
-    def.additional_cost
+    chosen_additional_cost(def, pending)
         .and_then(controlled_permanent_sacrifice_in)
+}
+
+/// The additional cost this cast pays: A, or B of an "A or B" cost once chosen.
+fn chosen_additional_cost(def: &card_def::CardDef, pending: &PendingCast) -> Option<&'static [CostComponent]> {
+    if pending.additional_cost_or_chosen == Some(true) {
+        def.additional_cost_or
+    } else {
+        def.additional_cost
+    }
+}
+
+/// Whether `player` could pay some choice of `def`'s additional cost.
+fn some_additional_cost_payable(def: &card_def::CardDef, player: PlayerId, id: ObjectId, state: &GameState) -> bool {
+    def.additional_cost.is_none_or(|cost| can_pay_components(cost, player, id, state))
+        || def.additional_cost_or.is_some_and(|cost| can_pay_components(cost, player, id, state))
 }
 
 fn has_chosen_creature_additional_cost(def: &card_def::CardDef) -> bool {
@@ -5145,9 +5164,7 @@ fn is_castable_now(
     match cast_method {
         CastMethodV4::Flashback => def.flashback.as_ref().is_some_and(|flashback| {
             can_pay_components(flashback.cost, player, id, state)
-                && def
-                    .additional_cost
-                    .is_none_or(|cost| can_pay_components(cost, player, id, state))
+                && some_additional_cost_payable(def, player, id, state)
         }),
         CastMethodV4::Escape => def.escape.as_ref().is_some_and(|escape| {
             def.additional_cost.is_none()
@@ -5173,9 +5190,7 @@ fn is_castable_now(
                 .unwrap_or(false);
             let main_ok = !viable_printed_spell_modes(def, id, player, state).is_empty()
                 && (normal_ok || alt_ok)
-                && def
-                    .additional_cost
-                    .is_none_or(|add| can_pay_components(add, player, id, state));
+                && some_additional_cost_payable(def, player, id, state);
             let omen_ok = supported_omen(def).is_some_and(|omen| {
                 matches!(state.objects.get(id).zone, Zone::Hand | Zone::Exile)
                     && cast_form_timing_ok(omen.types, Keywords::NONE, player, state)
@@ -6363,8 +6378,12 @@ fn remaining_cast_payment_is_payable(
         }),
     };
     base_payable
-        && def.additional_cost.is_none_or(|components| {
-            can_pay_components(components, pending.controller, pending.spell, state)
+        && (if def.additional_cost_or.is_some() && pending.additional_cost_or_chosen.is_none() {
+            some_additional_cost_payable(def, pending.controller, pending.spell, state)
+        } else {
+            chosen_additional_cost(def, pending).is_none_or(|components| {
+                can_pay_components(components, pending.controller, pending.spell, state)
+            })
         })
 }
 
@@ -7500,7 +7519,10 @@ pub(crate) fn validate_pending_cast(
         }
     }
 
-    let interactive_discard = def.additional_cost.and_then(discard_count_in);
+    if def.additional_cost_or.is_none() && pending.additional_cost_or_chosen.is_some() {
+        return Err("only an \"A or B\" additional cost records a choice".to_string());
+    }
+    let interactive_discard = chosen_additional_cost(def, pending).and_then(discard_count_in);
     let seeded_mode = if has_spell_form_choice(def) {
         None
     } else {
@@ -7512,7 +7534,7 @@ pub(crate) fn validate_pending_cast(
     } else {
         Some(CastMode::Normal)
     };
-    let additional_is_at_seed = if def.additional_cost.is_none() {
+    let additional_is_at_seed = if chosen_additional_cost(def, pending).is_none() {
         pending.additional_cost_discarded.as_deref() == Some(&[])
     } else {
         pending.additional_cost_discarded.is_none()
@@ -7607,7 +7629,7 @@ pub(crate) fn validate_pending_cast(
         return Err("pending cast advanced past an unresolved X value".to_string());
     }
     match (
-        def.additional_cost,
+        chosen_additional_cost(def, pending),
         interactive_discard,
         pending.additional_cost_discarded.as_deref(),
     ) {
@@ -7826,6 +7848,31 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
         };
         state.engine.pending_cast.as_mut().unwrap().cast_mode = Some(mode);
         return drain_pending_cast_or_decide(state);
+    }
+
+    if def.additional_cost_or.is_some() && pending.additional_cost_or_chosen.is_none() {
+        let payable = |cost: Option<&[CostComponent]>| {
+            cost.is_some_and(|c| can_pay_components(c, pending.controller, pending.spell, state))
+        };
+        match (payable(def.additional_cost), payable(def.additional_cost_or)) {
+            (true, true) => {
+                return Some(Decision::ChooseEffectOption {
+                    player: pending.controller,
+                    source: pending.spell,
+                    option_count: 2,
+                });
+            }
+            (a, b) if a || b => {
+                state.engine.pending_cast.as_mut().unwrap().additional_cost_or_chosen = Some(b);
+                return drain_pending_cast_or_decide(state);
+            }
+            _ => {
+                let cast_method = finalized_cast_method(&pending, staged_method, def);
+                let pending = state.engine.pending_cast.take().unwrap();
+                abort_cast(state, pending, cast_method);
+                return None;
+            }
+        }
     }
 
     let sacrifice_needed = sacrifice_lands_needed(&pending, def);
@@ -8222,7 +8269,7 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
     }
 
     if pending.additional_cost_discarded.is_none() {
-        let add = def.additional_cost.expect(
+        let add = chosen_additional_cost(def, &pending).expect(
             "additional_cost_discarded is None only when begin_cast saw an additional_cost",
         );
         match discard_count_in(add) {
@@ -11222,6 +11269,7 @@ enum PendingCastActionStage {
     ChooseCollectEvidenceCard,
     ChooseBargainPermanent,
     ChooseAdditionalCostZone,
+    ChooseAdditionalCostOption,
     ChooseXValue,
     Discard,
     AwaitEngineAdvance,
@@ -11277,6 +11325,9 @@ fn pending_cast_action_stage(
     }
     if pending.cast_mode.is_none() {
         return Ok(PendingCastActionStage::ChooseCastMode);
+    }
+    if def.additional_cost_or.is_some() && pending.additional_cost_or_chosen.is_none() {
+        return Ok(PendingCastActionStage::ChooseAdditionalCostOption);
     }
     if pending.sacrifice_chosen.len() < usize::from(sacrifice_lands_needed(pending, def)) {
         return Ok(PendingCastActionStage::ChooseCostTarget);
@@ -11358,7 +11409,7 @@ fn action_matches_pending_cast_stage(action: &Action, stage: PendingCastActionSt
             PendingCastActionStage::ChooseBargainPermanent,
             Action::ChooseCostTarget(_)
         ) | (
-            PendingCastActionStage::ChooseAdditionalCostZone,
+            PendingCastActionStage::ChooseAdditionalCostZone | PendingCastActionStage::ChooseAdditionalCostOption,
             Action::ChooseEffectOption(_)
         ) | (
             PendingCastActionStage::ChooseXValue,
@@ -13396,6 +13447,19 @@ fn apply_pending_cast_effect_option(
         PendingCastActionStage::ChooseOptionalAdditionalCost => {
             apply_choose_optional_additional_cost(state, option_index)
         }
+        PendingCastActionStage::ChooseAdditionalCostOption => {
+            let cost = match option_index {
+                0 => def.additional_cost,
+                1 => def.additional_cost_or,
+                _ => return Err("an additional-cost choice has two options".to_string()),
+            };
+            if !cost.is_some_and(|c| can_pay_components(c, pending.controller, pending.spell, state)) {
+                return Err("that additional cost can't be paid".to_string());
+            }
+            state.engine.pending_cast.as_mut().expect("validated cast remains pending").additional_cost_or_chosen =
+                Some(option_index == 1);
+            Ok(())
+        }
         PendingCastActionStage::ChooseAdditionalCostZone => {
             let zone = match option_index {
                 0 => ChosenCreatureCostZoneV1::Battlefield,
@@ -13682,6 +13746,7 @@ fn begin_cast_ex(
         },
         chosen_creature_cost_zone: None,
         chosen_creature_cost: None,
+        additional_cost_or_chosen: None,
     });
 }
 
@@ -13767,7 +13832,7 @@ fn finalize_owned_cast(
     } else {
         pending.sacrifice_chosen.clone()
     };
-    let additional_owns_object_cost = def.additional_cost.is_some_and(|components| {
+    let additional_owns_object_cost = chosen_additional_cost(def, &pending).is_some_and(|components| {
         controlled_permanent_sacrifice_in(components).is_some()
             || tap_permanent_filter_in(components).is_some()
     });
@@ -13916,7 +13981,7 @@ fn finalize_owned_cast(
             }
         }
     }
-    if let Some(add) = def.additional_cost {
+    if let Some(add) = chosen_additional_cost(def, &pending) {
         if !pay_cost_components(
             state,
             pending.controller,

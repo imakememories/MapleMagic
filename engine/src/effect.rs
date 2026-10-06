@@ -979,6 +979,12 @@ pub enum EffectOp {
     /// the total mana value of the other spells they cast this turn (Call
     /// Forth the Tempest).
     DamageOpponentCreaturesByOtherSpellsCast,
+    /// Gain control of a creature `player` controls until end of turn, chosen
+    /// by this effect's controller without targeting; untap it, and it gains
+    /// haste (Seize the Spotlight's fame).
+    ThreatenChosenCreature {
+        player: PlayerRef,
+    },
 }
 
 /// Which creatures a `ThreatenAll` takes.
@@ -1270,6 +1276,11 @@ pub enum EffectFrame {
         original_prefix: Vec<EffectObjectBinding>,
         selected: EffectObjectBinding,
     },
+    /// Threatens the creature chosen for `ThreatenChosenCreature`.
+    ThreatenChosenCreature {
+        player: PlayerId,
+        selected: EffectObjectBinding,
+    },
 }
 
 /// Completed private scry stages. A subset is canonicalized into original
@@ -1484,6 +1495,11 @@ pub enum EffectTargetSelectionPurpose {
     LookTopPutOneInHand {
         player: PlayerId,
         original_prefix: Vec<EffectObjectBinding>,
+        canonical_path: Vec<u16>,
+    },
+    /// The creature chosen for `ThreatenChosenCreature`.
+    ThreatenChosenCreature {
+        player: PlayerId,
         canonical_path: Vec<u16>,
     },
 }
@@ -1856,6 +1872,7 @@ pub fn contains_player_choice(op: &EffectOp) -> bool {
         | EffectOp::SearchLibraryToBattlefieldTapped { .. }
         | EffectOp::SearchLibraryToBattlefield { .. }
         | EffectOp::LookTopPutOneInHandRestBottomRandom { .. }
+        | EffectOp::ThreatenChosenCreature { .. }
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand
@@ -2793,6 +2810,12 @@ fn complete_resumable_target_selection(
                     path: canonical_path.clone(),
                     canonical_path,
                 });
+        }
+        EffectTargetSelectionPurpose::ThreatenChosenCreature { player, canonical_path } => {
+            if path != canonical_path || objects.len() != 1 {
+                return Err("threaten choice changed shape".to_string());
+            }
+            continuation.frames.push(EffectFrame::ThreatenChosenCreature { player, selected: objects[0] });
         }
         EffectTargetSelectionPurpose::LookTopPutOneInHand {
             player,
@@ -5078,6 +5101,18 @@ pub fn validate_pending_effect_choice(state: &GameState) -> Result<(), String> {
                         );
                     }
                 }
+                EffectTargetSelectionPurpose::ThreatenChosenCreature { player: owner, canonical_path } => {
+                    let live: Vec<EffectObjectBinding> =
+                        legal.iter().filter_map(|candidate| candidate.expected_object).collect();
+                    if *chooser != pending.ctx.controller
+                        || path != canonical_path
+                        || (*min_targets, *max_targets, *ordered) != (1, 1, false)
+                        || !selected.is_empty()
+                        || live != controlled_creature_bindings(state, *owner)
+                    {
+                        return Err("threaten choice has a noncanonical shape".to_string());
+                    }
+                }
                 EffectTargetSelectionPurpose::LookTopPutOneInHand {
                     player: library_player,
                     original_prefix,
@@ -6783,6 +6818,12 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                     state.engine.pending_effect = Some(continuation);
                     return Ok(ResumableProgress::Suspended);
                 }
+                EffectFrame::ThreatenChosenCreature { player, selected } => {
+                    if !controlled_creature_bindings(state, player).contains(&selected) {
+                        return Err("the chosen creature changed before it was taken".to_string());
+                    }
+                    crate::engine::threaten(state, selected.object, continuation.ctx.controller);
+                }
                 EffectFrame::LookTopPutOneInHand {
                     player,
                     original_prefix,
@@ -7968,6 +8009,34 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                 });
                 state.engine.pending_effect = Some(continuation);
                 return Ok(ResumableProgress::Suspended);
+            }
+            EffectOp::ThreatenChosenCreature { player } => {
+                let player = continuation.ctx.resolve_player(player, state);
+                let creatures = controlled_creature_bindings(state, player);
+                match creatures.len() {
+                    0 => {}
+                    1 => continuation.frames.push(EffectFrame::ThreatenChosenCreature { player, selected: creatures[0] }),
+                    _ => {
+                        continuation.choice = Some(PendingEffectChoice::SelectTargets {
+                            player: continuation.ctx.controller,
+                            path: path.clone(),
+                            selected: Vec::new(),
+                            legal: creatures
+                                .into_iter()
+                                .map(|binding| EffectTargetCandidate {
+                                    target: Target::Object(binding.object),
+                                    expected_object: Some(binding),
+                                })
+                                .collect(),
+                            min_targets: 1,
+                            max_targets: 1,
+                            ordered: false,
+                            purpose: EffectTargetSelectionPurpose::ThreatenChosenCreature { player, canonical_path: path },
+                        });
+                        state.engine.pending_effect = Some(continuation);
+                        return Ok(ResumableProgress::Suspended);
+                    }
+                }
             }
             EffectOp::LookTopPutOneInHandRestBottomRandom { player, count } => {
                 let player = continuation.ctx.resolve_player(player, state);
@@ -9819,6 +9888,22 @@ fn dynamic_value(ctx: &ExecCtx, state: &GameState, value: DynamicValueDef) -> i3
         DynamicValueDef::X => i32::from(ctx.x_value),
         _ => crate::engine::evaluate_dynamic_value(state, value, ctx.controller),
     }
+}
+
+/// Creatures `player` controls, in battlefield order.
+fn controlled_creature_bindings(state: &GameState, player: PlayerId) -> Vec<EffectObjectBinding> {
+    [PlayerId::P0, PlayerId::P1]
+        .into_iter()
+        .flat_map(|p| state.players[p.index()].battlefield.iter().copied())
+        .filter(|&id| {
+            state.objects.get(id).controller == player && crate::engine::object_has_type(state, id, CardType::Creature)
+        })
+        .map(|id| EffectObjectBinding {
+            object: id,
+            expected_zone: Zone::Battlefield,
+            expected_zone_change_count: state.objects.get(id).zone_change_count,
+        })
+        .collect()
 }
 
 /// Puts a library card onto the battlefield under its owner's control.
@@ -11701,6 +11786,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         | EffectOp::SearchLibraryToBattlefieldTapped { .. }
         | EffectOp::SearchLibraryToBattlefield { .. }
         | EffectOp::LookTopPutOneInHandRestBottomRandom { .. }
+        | EffectOp::ThreatenChosenCreature { .. }
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand

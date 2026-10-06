@@ -3820,6 +3820,7 @@ mod tests {
             x_value: Some(0),
             chosen_creature_cost_zone: None,
             chosen_creature_cost: None,
+            additional_cost_or_chosen: None,
         });
         let ordinary_contract = state.diagnostic_state_hash();
         state

@@ -1739,3 +1739,90 @@ fn hideous_taskmaster_needs_no_target() {
     let def = &CARD_DEFS[state.objects.get(taskmaster).card_def as usize];
     assert!(def.colors.is_empty(), "devoid");
 }
+
+/// Casts Demand Answers, answering the additional-cost choice with `option`
+/// if asked; returns whether it was asked.
+fn demand_answers(state: &mut GameState, option: u16) -> bool {
+    let spell = put_in(state, P0, "Demand Answers", Zone::Hand);
+    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(state, Action::CastSpell(spell)).unwrap();
+    let mut asked = false;
+    loop {
+        let a = match engine::advance_until_decision(state) {
+            Decision::ChooseEffectOption { option_count, .. } => {
+                assert_eq!(option_count, 2);
+                asked = true;
+                Action::ChooseEffectOption(option)
+            }
+            Decision::ChooseCostTargets { candidates, .. } => Action::ChooseCostTarget(candidates[0]),
+            Decision::Discard { choices, .. } => Action::Discard(vec![choices[0]]),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => return asked,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(state, a).unwrap();
+    }
+}
+
+#[test]
+fn demand_answers_sacrifices_an_artifact_or_discards_then_draws_two() {
+    for (option, artifact_left, card_left) in [(0u16, false, true), (1u16, true, false)] {
+        let mut state = game();
+        lands(&mut state, P0, 2);
+        let signet = put(&mut state, P0, "Arcane Signet");
+        let card = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+        assert!(demand_answers(&mut state, option));
+        assert_eq!(zone(&state, signet) == Zone::Battlefield, artifact_left, "option {option}");
+        assert_eq!(zone(&state, card) == Zone::Hand, card_left, "option {option}");
+        assert_eq!(state.players[0].hand.len(), 2 + usize::from(card_left));
+    }
+}
+
+#[test]
+fn demand_answers_pays_the_only_cost_it_can() {
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let card = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+    assert!(!demand_answers(&mut state, 0), "no artifact: discard without asking");
+    assert_eq!((zone(&state, card), state.players[0].hand.len()), (Zone::Graveyard, 2));
+
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let spell = put_in(&mut state, P0, "Demand Answers", Zone::Hand);
+    match advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. })) {
+        Decision::CastSpellOrPass { castable_spells, .. } => assert!(!castable_spells.contains(&spell), "nothing to pay with"),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn seize_the_spotlight_fame_takes_a_creature_the_caster_chooses() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let _first = put(&mut state, P1, "Guttersnipe");
+    let second = put(&mut state, P1, "Myr Enforcer");
+    state.objects.get_mut(second).tapped = true;
+    // Option 0 is fame; the caster then picks the Enforcer (no target).
+    cast(&mut state, "Seize the Spotlight", Some(Target::Object(second)), 0);
+    let o = state.objects.get(second);
+    assert_eq!((o.controller, o.tapped), (P0, false));
+    assert!(engine::has_effective_keyword(&state, second, mtg_kernel::card_def::Keywords::HASTE));
+    end_turn(&mut state);
+    assert_eq!(state.objects.get(second).controller, P1);
+}
+
+#[test]
+fn seize_the_spotlight_fortune_draws_and_makes_a_treasure() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    put(&mut state, P1, "Guttersnipe");
+    cast(&mut state, "Seize the Spotlight", None, 1);
+    assert_eq!(state.players[0].hand.len(), 1);
+    assert_eq!(named(&state, P0, "Treasure Token").len(), 1);
+
+    // Fame with nothing to take does nothing.
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    cast(&mut state, "Seize the Spotlight", None, 0);
+    assert_eq!((state.players[0].hand.len(), named(&state, P0, "Treasure Token").len()), (0, 0));
+}

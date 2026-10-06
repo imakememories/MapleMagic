@@ -1135,6 +1135,9 @@ pub struct CardDef {
     /// `Some` iff this card has a mandatory additional cost paid on top of
     /// its mana cost (Grab the Prize's discard).
     pub additional_cost: Option<&'static [CostComponent]>,
+    /// The other choice of an "A or B" additional cost, with `additional_cost`
+    /// as A (Demand Answers: sacrifice an artifact or discard a card).
+    pub additional_cost_or: Option<&'static [CostComponent]>,
     /// `Some` iff this card can be cast from the graveyard for its
     /// flashback cost (Faithless Looting, Lava Dart, Deep Analysis).
     pub flashback: Option<FlashbackDef>,
@@ -1634,7 +1637,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0x2916_c971_97f3_1622);
+        assert_eq!(KERNEL_CARDDB_HASH, 0xf942_50a6_0ff8_a737);
     }
 
     #[test]

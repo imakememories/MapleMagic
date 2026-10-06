@@ -3341,6 +3341,17 @@ fn additional_cost_for(name: &str) -> &'static str {
         "Monstrous Emergence" => {
             "Some(&[CostComponent::ChooseControlledCreatureOrRevealCreatureCardFromHand])"
         }
+        "Demand Answers" => {
+            "Some(&[CostComponent::SacrificeControlled { count: 1, filter: PermanentFilter::Artifact }])"
+        }
+        _ => "None",
+    }
+}
+
+/// The other choice of an "A or B" additional cost (`CardDef::additional_cost_or`).
+fn additional_cost_or_for(name: &str) -> &'static str {
+    match name {
+        "Demand Answers" => "Some(&[CostComponent::DiscardCards(1)])",
         _ => "None",
     }
 }
@@ -4563,6 +4574,8 @@ fn hand_written_spell(name: &str) -> Option<(&'static str, &'static str)> {
         "Vision of Love" => ("TargetSpec::None", "crate::commander_cards::vision_of_love"),
         "Call for Aid" => ("TargetSpec::TargetOpponent", "crate::commander_cards::call_for_aid"),
         "Chaos Warp" => ("TargetSpec::AnyPermanent", "crate::commander_cards::chaos_warp"),
+        "Demand Answers" => ("TargetSpec::None", "crate::commander_cards::demand_answers"),
+        "Seize the Spotlight" => ("TargetSpec::None", "crate::commander_cards::seize_the_spotlight"),
         "Call Forth the Tempest" => ("TargetSpec::None", "crate::commander_cards::call_forth_the_tempest"),
         "Wild Magic Surge" => ("TargetSpec::OpponentPermanent", "crate::commander_cards::wild_magic_surge"),
         "Mass Mutiny" => (
@@ -6675,6 +6688,7 @@ fn codegen(cards: &[CardJson]) -> String {
             additional_cost_for(&c.name)
         )
         .unwrap();
+        writeln!(out, "        additional_cost_or: {},", additional_cost_or_for(&c.name)).unwrap();
         writeln!(out, "        flashback: {},", flashback_for(&c.name)).unwrap();
         writeln!(
             out,
@@ -6993,6 +7007,10 @@ fn codegen(cards: &[CardJson]) -> String {
         canon.push_str(&kicker_cost_for(&c.name));
         canon.push('|');
         canon.push_str(additional_cost_for(&c.name));
+        if additional_cost_or_for(&c.name) != "None" {
+            canon.push_str(" or ");
+            canon.push_str(additional_cost_or_for(&c.name));
+        }
         canon.push('|');
         canon.push_str(&flashback_for(&c.name));
         canon.push('|');
