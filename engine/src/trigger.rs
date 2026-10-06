@@ -1192,6 +1192,36 @@ const CASCADE_TRIGGER: TriggeredAbilityDef = TriggeredAbilityDef {
 /// Cascade, cascade: two separate triggers.
 const CALL_FORTH_THE_TEMPEST_TRIGGERS: [TriggeredAbilityDef; 2] = [CASCADE_TRIGGER, CASCADE_TRIGGER];
 
+/// Annihilator 1: defending player sacrifices a permanent. Two players, so
+/// the defending player is the opponent.
+pub fn annihilator_effect() -> EffectOp {
+    EffectOp::SacrificeCreature { player: PlayerRef::Opponent, filter: crate::effect::CreatureSacrificeFilter::AnyPermanent }
+}
+
+/// Hideous Taskmaster: gain control of up to one target creature until end
+/// of turn, untap it; it gains trample, haste and annihilator 1.
+fn hideous_taskmaster_cast_effect() -> EffectOp {
+    EffectOp::Conditional {
+        cond: crate::effect::EffectCond::TargetInZone(0, Zone::Battlefield),
+        then: Box::new(EffectOp::Sequence(vec![
+            EffectOp::Threaten { object: ObjectRef::Target(0) },
+            EffectOp::GrantKeywordTargetUntilEndOfTurn {
+                object: ObjectRef::Target(0),
+                keyword: Keywords(Keywords::TRAMPLE.0 | Keywords::ANNIHILATOR.0),
+            },
+        ])),
+        else_: Box::new(EffectOp::Sequence(vec![])),
+    }
+}
+
+const HIDEOUS_TASKMASTER_TRIGGERS: [TriggeredAbilityDef; 1] = [TriggeredAbilityDef {
+    condition: TriggerCondition::CastSelf,
+    home_zone: Zone::Stack,
+    intervening_if_kicked: false,
+    intervening_if_controls_another_source_card: false,
+    effect: hideous_taskmaster_cast_effect,
+}];
+
 const WEATHER_THE_STORM_TRIGGERS: [TriggeredAbilityDef; 1] = [TriggeredAbilityDef {
     condition: TriggerCondition::CastSelf,
     home_zone: Zone::Stack,
@@ -1333,6 +1363,7 @@ fn triggers_by_name(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Depthshaker Titan" => &DEPTHSHAKER_TITAN_TRIGGERS,
         "Hellkite Charger" => &HELLKITE_CHARGER_TRIGGERS,
         "Call Forth the Tempest" => &CALL_FORTH_THE_TEMPEST_TRIGGERS,
+        "Hideous Taskmaster" => &HIDEOUS_TASKMASTER_TRIGGERS,
         "Pyreswipe Hawk" => &PYRESWIPE_HAWK_TRIGGERS,
         "Urabrask, Heretic Praetor" => &URABRASK_TRIGGERS,
         "Cavern-Hoard Dragon" => &CAVERN_HOARD_DRAGON_TRIGGERS,
@@ -1368,6 +1399,7 @@ pub fn trigger_target_spec(card_def: u16) -> TargetSpec {
         "Whirlwind, Killer Cyclone" => TargetSpec::OpponentControlledCreature,
         "Screaming Nemesis" => TargetSpec::AnyTargetOtherThanSource,
         "Gornog, the Red Reaper" => TargetSpec::OpponentControlledCreature,
+        "Hideous Taskmaster" => TargetSpec::UpToOneOpponentControlledCreature,
         _ => TargetSpec::None,
     }
 }
@@ -2067,6 +2099,34 @@ fn triggers_from_events(
                     if def.condition.once_per_event_batch() {
                         break;
                     }
+                }
+            }
+        }
+        // Annihilator, printed or granted: a keyword trigger on attacking.
+        let attacked = |ev: &CommittedEvent| matches!(ev, CommittedEvent::DeclaredAttacker { source, .. } if *source == id);
+        if obj.zone == Zone::Battlefield
+            && events.iter().any(attacked)
+            && crate::engine::has_effective_keyword(state, id, crate::card_def::Keywords::ANNIHILATOR)
+        {
+            for ev in events {
+                if attacked(ev) {
+                    let mut contract = AbilitySourceContractV4::capture(state, id);
+                    contract.controller = obj.controller;
+                    new_triggers.push(PendingTrigger {
+                        controller: obj.controller,
+                        source: id,
+                        granted_by: None,
+                        effect: annihilator_effect(),
+                        is_madness_offer: false,
+                        kicked: false,
+                        target_spec: TargetSpec::None,
+                        targets: Vec::new(),
+                        target_contracts: Vec::new(),
+                        placement_ordered: false,
+                        source_contract: Some(contract),
+                        optional_additional_cost_paid: None,
+                        paid_cost_refs: Vec::new(),
+                    });
                 }
             }
         }

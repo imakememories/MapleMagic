@@ -659,6 +659,9 @@ impl Keywords {
     /// The permanent spell may be cast whenever its controller has
     /// priority, using the same timing permission as an instant.
     pub const FLASH: Keywords = Keywords(1 << 15);
+    /// Annihilator 1 (702.86): "Whenever this creature attacks, defending
+    /// player sacrifices a permanent." No card has another N.
+    pub const ANNIHILATOR: Keywords = Keywords(1 << 16);
 
     pub const fn has(self, other: Keywords) -> bool {
         self.0 & other.0 != 0
@@ -1631,7 +1634,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0xd87f_e849_35e0_e228);
+        assert_eq!(KERNEL_CARDDB_HASH, 0x2916_c971_97f3_1622);
     }
 
     #[test]

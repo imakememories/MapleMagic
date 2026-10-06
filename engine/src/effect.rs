@@ -60,6 +60,8 @@ pub enum CreatureFilter {
 pub enum CreatureSacrificeFilter {
     Any,
     GreatestPower,
+    /// Any permanent, not only a creature (annihilator).
+    AnyPermanent,
 }
 
 /// Typed predicate for a private library search. The first consumer is
@@ -3521,7 +3523,9 @@ fn validated_definition_owned_root_effect(
     } else {
         return Err("answered effect frame lost its definition-owned root program".to_string());
     };
-    if pending.resolving_item.kind == crate::state::StackItemKind::TriggeredAbility {
+    // Annihilator is a keyword trigger, printed or granted.
+    let keyword_trigger = *root == crate::trigger::annihilator_effect();
+    if pending.resolving_item.kind == crate::state::StackItemKind::TriggeredAbility && !keyword_trigger {
         let card_def = state
             .objects
             .try_get(pending.resolving_item.source)
@@ -8930,16 +8934,20 @@ fn creature_sacrifice_bindings(
     filter: CreatureSacrificeFilter,
 ) -> Result<Vec<EffectObjectBinding>, String> {
     let mut bindings = Vec::new();
-    for &object_id in &state.players[player.index()].battlefield {
+    // Battlefield lists are by owner; what matters is control.
+    let battlefield: Vec<ObjectId> =
+        [PlayerId::P0, PlayerId::P1].into_iter().flat_map(|p| state.players[p.index()].battlefield.clone()).collect();
+    for object_id in battlefield {
         let object = state.objects.get(object_id);
-        if object.controller != player || object.v4.face_index != 0 {
+        let any_permanent = filter == CreatureSacrificeFilter::AnyPermanent;
+        if object.controller != player || (!any_permanent && object.v4.face_index != 0) {
             continue;
         }
         let def = crate::card_def::CARD_DEFS
             .get(object.card_def as usize)
             .ok_or_else(|| "creature-sacrifice card definition is missing".to_string())?;
         let _ = def;
-        if crate::engine::object_has_type(state, object_id, CardType::Creature)
+        if (any_permanent || crate::engine::object_has_type(state, object_id, CardType::Creature))
             && crate::engine::can_be_sacrificed(state, object_id)
         {
             bindings.push(EffectObjectBinding {

@@ -9442,7 +9442,8 @@ fn triggered_stack_item_expected_target_spec(
     } else {
         false
     };
-    if !definition_trigger && !ward_trigger && !equipment_granted_trigger {
+    let annihilator_trigger = item.v4.granted_by.is_none() && *inline_effect == trigger::annihilator_effect();
+    if !definition_trigger && !ward_trigger && !equipment_granted_trigger && !annihilator_trigger {
         return Err("triggered stack item effect is not definition-owned".to_string());
     }
     let spec = definition_target_spec.unwrap_or(TargetSpec::None);
@@ -9711,16 +9712,15 @@ fn stack_targets_still_legal(item: &StackItem, state: &GameState) -> Result<bool
                         object: item.source,
                         card_def: state.objects.get(item.source).card_def,
                     },
-                    StackItemKind::TriggeredAbility => {
-                        let source_contract = item
+                    StackItemKind::TriggeredAbility => TargetingSource {
+                        object: item.source,
+                        // A cast trigger's source is a spell, with no
+                        // battlefield contract.
+                        card_def: item
                             .v4
                             .ability_source_contract
-                            .ok_or("triggered stack item lost its source incarnation")?;
-                        TargetingSource {
-                            object: item.source,
-                            card_def: source_contract.card_def,
-                        }
-                    }
+                            .map_or(state.objects.get(item.source).card_def, |c| c.card_def),
+                    },
                     StackItemKind::MadnessOffer | StackItemKind::ActivatedAbility => {
                         unreachable!("handled or untargeted")
                     }

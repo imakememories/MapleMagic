@@ -3181,6 +3181,7 @@ fn keywords_for(card: &CardJson) -> String {
             "hexproof" => "Keywords::HEXPROOF",
             "indestructible" => "Keywords::INDESTRUCTIBLE",
             "flash" => "Keywords::FLASH",
+            "annihilator" => "Keywords::ANNIHILATOR",
             other => panic!("cards_v1.json: {:?} has unknown keyword {other:?}", card.name),
         };
         if !keywords.contains(&k) {

@@ -1689,3 +1689,53 @@ fn triggers_from_a_cascade_wait_while_its_hit_is_cast() {
     // Each cascade exiled cards from the library: two Laelia triggers.
     assert_eq!(state.objects.get(laelia).counters.plus1_plus1, 2);
 }
+
+#[test]
+fn hideous_taskmaster_steals_a_creature_that_then_annihilates() {
+    use mtg_kernel::card_def::Keywords;
+    let mut state = game();
+    lands(&mut state, P0, 7);
+    let snipe = put(&mut state, P1, "Guttersnipe");
+    state.objects.get_mut(snipe).tapped = true;
+    let theirs: Vec<ObjectId> = (0..3).map(|_| put(&mut state, P1, "Mountain")).collect();
+    let taskmaster = cast(&mut state, "Hideous Taskmaster", Some(Target::Object(snipe)), 0);
+    let o = state.objects.get(snipe);
+    assert_eq!((o.controller, o.tapped), (P0, false));
+    for k in [Keywords::HASTE, Keywords::TRAMPLE, Keywords::ANNIHILATOR] {
+        assert!(engine::has_effective_keyword(&state, snipe, k));
+        assert!(engine::has_effective_keyword(&state, taskmaster, k), "printed");
+    }
+    // Both attack: two annihilator triggers, so player 1 sacrifices two permanents.
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    engine::step(&mut state, Action::DeclareAttackers(vec![taskmaster, snipe])).unwrap();
+    let mut sacrifices = 0;
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseEffectTargets { player, legal_targets, .. } => {
+                assert_eq!(player, P1);
+                sacrifices += 1;
+                Action::ChooseEffectTarget(legal_targets[0])
+            }
+            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(sacrifices, 2);
+    assert_eq!(theirs.iter().filter(|&&m| zone(&state, m) == Zone::Graveyard).count(), 2);
+    end_turn(&mut state);
+    assert_eq!(state.objects.get(snipe).controller, P1);
+    assert!(!engine::has_effective_keyword(&state, snipe, Keywords::ANNIHILATOR));
+}
+
+#[test]
+fn hideous_taskmaster_needs_no_target() {
+    let mut state = game();
+    lands(&mut state, P0, 7);
+    let taskmaster = cast(&mut state, "Hideous Taskmaster", None, 0);
+    assert_eq!(zone(&state, taskmaster), Zone::Battlefield);
+    let def = &CARD_DEFS[state.objects.get(taskmaster).card_def as usize];
+    assert!(def.colors.is_empty(), "devoid");
+}
