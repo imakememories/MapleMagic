@@ -1239,8 +1239,16 @@ const AVENGING_HUNTER_TRIGGERS: [TriggeredAbilityDef; 1] = [TriggeredAbilityDef 
 /// codegen-assigned from `cards_v1.json`'s array order and not worth
 /// duplicating as constants here -- see `build.rs`'s module doc on id
 /// stability). Every other card in the pool has no triggered ability
-/// implemented and falls through to `&[]`.
+/// implemented and falls through to `&[]`. Looked up by id: trigger
+/// collection asks for every object on each event batch.
 pub fn triggers_for(card_def: u16) -> &'static [TriggeredAbilityDef] {
+    TRIGGERS.get(card_def as usize).copied().unwrap_or(&[])
+}
+
+static TRIGGERS: std::sync::LazyLock<Vec<&'static [TriggeredAbilityDef]>> =
+    std::sync::LazyLock::new(|| (0..crate::card_def::CARD_DEFS.len() as u16).map(triggers_by_name).collect());
+
+fn triggers_by_name(card_def: u16) -> &'static [TriggeredAbilityDef] {
     let Some(card) = crate::card_def::CARD_DEFS.get(card_def as usize) else {
         return &[];
     };
@@ -1539,8 +1547,6 @@ fn creature_dies_to_state_based_actions(
             && !indestructible)
 }
 
-/// Runs state-based actions to a fixed point: repeat the full SBA sweep
-/// until one pass makes no change (704.3).
 /// Control "for as long as you control" a source (Pyreswipe Hawk) ends when
 /// that stops being true; returns whether anything changed.
 fn release_ended_control(state: &mut GameState) -> bool {
@@ -1568,6 +1574,8 @@ fn release_ended_control(state: &mut GameState) -> bool {
     changed
 }
 
+/// Runs state-based actions to a fixed point: repeat the full SBA sweep
+/// until one pass makes no change (704.3).
 pub fn sba_fixed_point(state: &mut GameState) {
     sba_fixed_point_with_protected_triggers(state, &[]);
 }
