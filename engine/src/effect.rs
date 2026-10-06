@@ -10881,7 +10881,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let player = ctx.resolve_player(*player, state);
             event::propose_and_commit(
                 state,
-                event::ProposedEvent::mana_add(player, colors.clone()),
+                event::ProposedEvent::mana_add_from(player, colors.clone(), ctx.source),
             );
         }
         EffectOp::DiscardCards { player, count } => {

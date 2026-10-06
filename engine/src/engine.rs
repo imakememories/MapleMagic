@@ -5943,7 +5943,7 @@ fn activate_mana_ability_for(
         if amount > 0 {
             event::propose_and_commit(
                 state,
-                ProposedEvent::mana_add(player, vec![choice; usize::from(amount)]),
+                ProposedEvent::mana_add_from(player, vec![choice; usize::from(amount)], source),
             );
         }
         if rich.controller_damage > 0 {
@@ -10578,6 +10578,7 @@ fn advance_step(state: &mut GameState) {
     state.step = next;
     state.players[0].mana_pool = [0; 6];
     state.players[1].mana_pool = [0; 6];
+    state.artifact_mana = [[0; 6]; 2];
     run_step_entry_action(state, next);
     reset_priority(state);
 }
@@ -10656,6 +10657,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             state.nonland_permanents_entered = [0; 2];
             state.spell_mana_this_turn = [0; 2];
             state.spell_mana_values_this_turn = [0; 2];
+            state.artifact_mana_spent.clear();
             state.players[0].spells_cast_this_turn = 0;
             state.players[1].spells_cast_this_turn = 0;
             for (_, object) in state.objects.iter_mut() {
@@ -14314,6 +14316,9 @@ fn finalize_owned_cast(
         &[]
     };
 
+    // Coin of Mastery counts artifact mana spent on creature spells.
+    let creature_spell = def.has_type(CardType::Creature) && !matches!(cast_method, CastMethodV4::Omen | CastMethodV4::Bestow);
+    state.cast_payment = Some((creature_spell, 0));
     match cast_method {
         CastMethodV4::Plotted | CastMethodV4::Cascade => {
             let replicate = replicate_parts(def, &pending);
@@ -14590,6 +14595,15 @@ fn finalize_owned_cast(
     });
     let finalized_source_contract =
         StackSourceContractV4::capture(state, pending.spell, cast_method);
+    if let Some((_, spent)) = state.cast_payment.take() {
+        if spent > 0 {
+            let link = crate::state::ObjectLinkV4 {
+                object: pending.spell,
+                zone_change_count: state.objects.get(pending.spell).zone_change_count,
+            };
+            state.artifact_mana_spent.push((link, spent));
+        }
+    }
     let item = state.stack.last_mut().expect("begin_cast pushed this spell's StackItem and nothing can push another item while a cast is pending");
     debug_assert_eq!(
         item.source, pending.spell,
@@ -14693,6 +14707,7 @@ fn finalize_owned_cast(
 /// madness_cast`'s decline branch already has, rather than leaving
 /// `priority_passes` untouched.
 fn abort_cast(state: &mut GameState, pending: PendingCast, cast_method: CastMethodV4) {
+    state.cast_payment = None;
     let item = state.stack.pop();
     debug_assert!(
         item.is_some_and(|i| i.source == pending.spell),
@@ -15015,17 +15030,33 @@ pub(crate) fn pay_plan(state: &mut GameState, player: PlayerId, plan: &mana::Pay
         event::propose_and_commit(state, ProposedEvent::tap(id));
         event::propose_and_commit(
             state,
-            ProposedEvent::mana_add(player, vec![color; usize::from(amount)]),
+            ProposedEvent::mana_add_from(player, vec![color; usize::from(amount)], id),
         );
     }
     // Spend: every newly-tapped mana is fully consumed by this cost by
     // construction (the solver only taps what it needs), plus whatever
     // floating pool the plan says to use.
-    for &(_, color) in &plan.taps {
+    let mut from_artifacts = 0u16;
+    for &(id, color) in &plan.taps {
         state.players[player.index()].mana_pool[color.pool_index()] -= 1;
+        if object_has_type(state, id, CardType::Artifact) {
+            state.artifact_mana[player.index()][color.pool_index()] -= 1;
+            from_artifacts += 1;
+        }
     }
+    // Floating mana: a creature spell spends artifact mana first (more Coin
+    // of Mastery counters), anything else spends it last.
+    let prefer_artifact = state.cast_payment.is_some_and(|(prefer, _)| prefer);
     for (i, &amt) in plan.pool_used.iter().enumerate() {
         state.players[player.index()].mana_pool[i] -= amt;
+        let artifact = state.artifact_mana[player.index()][i];
+        let other = state.players[player.index()].mana_pool[i] + amt - artifact;
+        let used = if prefer_artifact { amt.min(artifact) } else { amt.saturating_sub(other) };
+        state.artifact_mana[player.index()][i] = artifact - used;
+        from_artifacts += u16::from(used);
+    }
+    if let Some((_, total)) = state.cast_payment.as_mut() {
+        *total += from_artifacts;
     }
     state.players[player.index()].life -= plan.life_paid;
 }

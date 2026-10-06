@@ -122,6 +122,10 @@ fn u32_is_zero(value: &u32) -> bool {
     *value == 0
 }
 
+fn no_artifact_mana(value: &[[u8; 6]; 2]) -> bool {
+    *value == [[0; 6]; 2]
+}
+
 fn no_celebration(value: &[u8; 2]) -> bool {
     *value == [0, 0]
 }
@@ -1408,6 +1412,18 @@ pub struct GameState {
     /// See [`LibraryGroupV1`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub library_groups: Vec<LibraryGroupV1>,
+    /// The part of each player's `mana_pool` made by artifact sources
+    /// (Coin of Mastery), `[player][W, U, B, R, G, C]`.
+    #[serde(default, skip_serializing_if = "no_artifact_mana")]
+    pub artifact_mana: [[u8; 6]; 2],
+    /// Mana from artifact sources spent to cast each spell, by the spell's
+    /// stack incarnation, until it resolves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifact_mana_spent: Vec<(ObjectLinkV4, u16)>,
+    /// While a cast pays: whether floating artifact mana goes first (a
+    /// creature spell), and the artifact mana spent so far.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cast_payment: Option<(bool, u16)>,
     /// See [`PendingCascadeV1`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_cascade: Option<PendingCascadeV1>,
@@ -1500,6 +1516,15 @@ impl Hash for GameState {
         }
         if !self.library_groups.is_empty() {
             self.library_groups.hash(state);
+        }
+        if !no_artifact_mana(&self.artifact_mana) {
+            self.artifact_mana.hash(state);
+        }
+        if !self.artifact_mana_spent.is_empty() {
+            self.artifact_mana_spent.hash(state);
+        }
+        if self.cast_payment.is_some() {
+            self.cast_payment.hash(state);
         }
         if self.pending_cascade.is_some() {
             self.pending_cascade.hash(state);
@@ -1674,6 +1699,9 @@ impl GameState {
             control_while: Vec::new(),
             event_history_base: 0,
             library_groups: Vec::new(),
+            artifact_mana: [[0; 6]; 2],
+            artifact_mana_spent: Vec::new(),
+            cast_payment: None,
             pending_cascade: None,
             granted_flashback: Vec::new(),
             spell_mana_values_this_turn: [0; 2],

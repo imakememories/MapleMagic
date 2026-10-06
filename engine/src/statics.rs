@@ -61,6 +61,33 @@ fn spell_reduction_color_for(name: &str) -> Option<ManaColor> {
     }
 }
 
+/// Coin of Mastery: a creature entering from the stack gets a +1/+1 counter
+/// per Coin its controller controls for each mana from an artifact source
+/// spent to cast it.
+pub fn coin_of_mastery_counters(state: &mut GameState, object: ObjectId) {
+    let o = state.objects.get(object);
+    let cast = crate::state::ObjectLinkV4 { object, zone_change_count: o.zone_change_count.saturating_sub(1) };
+    let Some(index) = state.artifact_mana_spent.iter().position(|(link, _)| *link == cast) else {
+        return;
+    };
+    let (_, spent) = state.artifact_mana_spent.remove(index);
+    let controller = o.controller;
+    if !crate::engine::object_has_type(state, object, crate::card_def::CardType::Creature) {
+        return;
+    }
+    let coins = [PlayerId::P0, PlayerId::P1]
+        .into_iter()
+        .flat_map(|p| state.players[p.index()].battlefield.iter().copied())
+        .filter(|&id| {
+            let c = state.objects.get(id);
+            c.controller == controller && CARD_DEFS[c.card_def as usize].name == "Coin of Mastery"
+        })
+        .count() as u16;
+    let added = i16::try_from(spent.saturating_mul(coins)).unwrap_or(i16::MAX);
+    let counters = &mut state.objects.get_mut(object).counters.plus1_plus1;
+    *counters = counters.saturating_add(added);
+}
+
 static MUST_BE_BLOCKED: LazyLock<Vec<bool>> =
     LazyLock::new(|| CARD_DEFS.iter().map(|def| def.name == "Jurin, Leading the Charge").collect());
 

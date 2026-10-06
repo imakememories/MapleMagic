@@ -137,6 +137,8 @@ pub struct TapProposed {
 pub struct ManaAddProposed {
     pub player: PlayerId,
     pub colors: Vec<ManaColor>,
+    /// What made the mana, when it matters (artifact sources).
+    pub source: Option<ObjectId>,
     pub touched_by: Vec<ReplacementId>,
 }
 
@@ -312,6 +314,16 @@ impl ProposedEvent {
         ProposedEvent::ManaAdd(ManaAddProposed {
             player,
             colors,
+            source: None,
+            touched_by: Vec::new(),
+        })
+    }
+    /// Mana made by `source`.
+    pub fn mana_add_from(player: PlayerId, colors: Vec<ManaColor>, source: ObjectId) -> ProposedEvent {
+        ProposedEvent::ManaAdd(ManaAddProposed {
+            player,
+            colors,
+            source: Some(source),
             touched_by: Vec::new(),
         })
     }
@@ -780,8 +792,14 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
             CommittedEvent::Tap { object: t.object }
         }
         ProposedEvent::ManaAdd(m) => {
+            let artifact = m
+                .source
+                .is_some_and(|source| crate::engine::object_has_type(state, source, crate::card_def::CardType::Artifact));
             for &c in &m.colors {
                 state.players[m.player.index()].mana_pool[c.pool_index()] += 1;
+                if artifact {
+                    state.artifact_mana[m.player.index()][c.pool_index()] += 1;
+                }
             }
             CommittedEvent::ManaAdded {
                 player: m.player,
@@ -862,6 +880,9 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
             let n = &mut state.nonland_permanents_entered[o.controller.index()];
             *n = (*n + 1).min(2);
         }
+    }
+    if let CommittedEvent::ZoneChange { object, from: Zone::Stack, to: Zone::Battlefield, .. } = &committed {
+        crate::statics::coin_of_mastery_counters(state, *object);
     }
     if let Some(object) = entered.filter(|&o| crate::statics::has_riot(state, o)) {
         let link = crate::state::ObjectLinkV4 { object, zone_change_count: state.objects.get(object).zone_change_count };

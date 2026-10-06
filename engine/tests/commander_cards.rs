@@ -2043,3 +2043,39 @@ fn jurin_must_be_blocked_if_able_and_pumps_attackers_per_defending_creature() {
     assert!(engine::step(&mut state.clone(), Action::DeclareBlockers(vec![(blocker, other)])).is_err());
     engine::step(&mut state, Action::DeclareBlockers(vec![(blocker, jurin)])).unwrap();
 }
+
+#[test]
+fn coin_of_mastery_counts_mana_from_artifacts_spent_on_a_creature() {
+    // A Treasure's floating red plus Sol Ring's two: three artifact mana.
+    let mut state = game();
+    put(&mut state, P0, "Coin of Mastery");
+    put(&mut state, P0, "Sol Ring");
+    let treasure = put(&mut state, P0, "Treasure Token");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::ActivateManaAbilityChoice(treasure, ManaColor::R)).unwrap();
+    let snipe = cast(&mut state, "Guttersnipe", None, 0);
+    assert_eq!(state.objects.get(snipe).counters.plus1_plus1, 3);
+
+    // A Mountain's red isn't an artifact's: two counters for each of two Coins.
+    let mut state = game();
+    put(&mut state, P0, "Coin of Mastery");
+    put(&mut state, P0, "Coin of Mastery");
+    put(&mut state, P0, "Sol Ring");
+    lands(&mut state, P0, 1);
+    let snipe = cast(&mut state, "Guttersnipe", None, 0);
+    assert_eq!(state.objects.get(snipe).counters.plus1_plus1, 4);
+}
+
+#[test]
+fn coin_of_mastery_makes_treasures_and_ignores_other_spells() {
+    let mut state = game();
+    let coin = put(&mut state, P0, "Coin of Mastery");
+    activate_with(&mut state, coin, 0, &[], &[], &[]);
+    assert_eq!(named(&state, P0, "Treasure Token").len(), 1);
+    put(&mut state, P0, "Sol Ring");
+    lands(&mut state, P0, 1);
+    let theirs = put(&mut state, P1, "Myr Enforcer");
+    cast(&mut state, "Vandalblast", Some(Target::Object(theirs)), 0);
+    assert_eq!(zone(&state, theirs), Zone::Graveyard);
+    assert!(state.artifact_mana_spent.is_empty(), "spent on a sorcery: nothing to remember");
+}

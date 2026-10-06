@@ -6087,7 +6087,7 @@
     },
     {
       "name": "Coin of Mastery",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{4}",
       "mana_value": 4,
       "colors": [],
@@ -6105,7 +6105,10 @@
       ],
       "sideboard_only": false,
       "complexity": "commander",
-      "mechanics": [],
+      "mechanics": [
+        "activated_ability",
+        "token_creation"
+      ],
       "keywords": [],
       "oracle": "Each creature you control enters with an additional +1/+1 counter on it for each mana from an artifact source spent to cast it.\n{T}: Create a Treasure token. (It's an artifact with \"{T}, Sacrifice this token: Add one mana of any color.\")",
       "layout": "normal",
