@@ -258,6 +258,7 @@ fn run_combat_game(state: &mut GameState) -> (Vec<Kind>, u32, Vec<CommittedEvent
                 player,
                 attackers,
                 legal_blockers,
+                ..
             } => {
                 assert_eq!(
                     player,

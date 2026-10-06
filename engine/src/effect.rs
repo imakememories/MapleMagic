@@ -1006,6 +1006,10 @@ pub enum EffectOp {
         target: Option<Target>,
         target_contract: Option<StackTargetContractV4>,
     },
+    /// Each creature the controller has attacking a player gets +1/+0 until
+    /// end of turn for each creature that player controls (Jurin). Two
+    /// players: every attacker attacks the opponent.
+    PumpAttackersPerDefendingCreature,
 }
 
 /// Which creatures a `ThreatenAll` takes.
@@ -10187,6 +10191,44 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 .map(|id| event::ProposedEvent::zone_change(id, Zone::Graveyard))
                 .collect();
             event::propose_and_commit_batch(state, events);
+        }
+        EffectOp::PumpAttackersPerDefendingCreature => {
+            let defender = ctx.controller.opponent();
+            let power = [PlayerId::P0, PlayerId::P1]
+                .into_iter()
+                .flat_map(|p| state.players[p.index()].battlefield.iter().copied())
+                .filter(|&id| {
+                    state.objects.get(id).controller == defender
+                        && crate::engine::object_has_type(state, id, CardType::Creature)
+                })
+                .count() as i32;
+            let attackers: Vec<ObjectId> = state
+                .engine
+                .combat
+                .attackers
+                .iter()
+                .copied()
+                .filter(|&id| {
+                    let o = state.objects.get(id);
+                    o.zone == Zone::Battlefield && o.controller == ctx.controller
+                })
+                .collect();
+            if power > 0 {
+                for object in attackers {
+                    let timestamp = crate::engine::next_timestamp(state);
+                    let generation = state.objects.get(object).zone_change_count;
+                    state.engine.until_end_of_turn.push(crate::engine::UntilEndOfTurnEffect::ResolvedObjectEffect {
+                        object_id: object,
+                        object_zone_change_count: generation,
+                        layer: crate::engine::Layers::POWER_TOUGHNESS,
+                        timestamp,
+                        duration: crate::engine::EffectDuration::EndOfTurn,
+                        power,
+                        toughness: 0,
+                        grant_haste: false,
+                    });
+                }
+            }
         }
         EffectOp::WildMagicSurge { object } => {
             let target = ctx.resolve_object(*object);

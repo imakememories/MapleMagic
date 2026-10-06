@@ -1307,6 +1307,9 @@ pub enum Decision {
         player: PlayerId,
         attackers: Vec<ObjectId>,
         legal_blockers: Vec<(ObjectId, Vec<ObjectId>)>,
+        /// Attackers that must be blocked if able (509.1c), each with the
+        /// fewest blockers that can block it (menace): Jurin.
+        must_be_blocked: Vec<(ObjectId, usize)>,
     },
     /// Stub per the design brief: fixed APNAP grouping always happens;
     /// this decision only fires when one player controls 2+ simultaneous
@@ -3380,9 +3383,18 @@ fn pending_origin_generation(pending: &PendingCast) -> u32 {
 
 /// The ways `player` could cast graveyard card `id` right now.
 fn castable_graveyard_methods(player: PlayerId, id: ObjectId, state: &GameState) -> Vec<CastMethodV4> {
+    // Cheap definition checks first: this runs for every graveyard card at
+    // every decision, and `is_castable_now` enumerates targets.
+    let def = &card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
+    let generation = state.objects.get(id).zone_change_count;
+    let has = |method| match method {
+        CastMethodV4::Flashback => flashback_cost(state, id, generation).is_some(),
+        CastMethodV4::Escape => def.escape.is_some(),
+        _ => def.retrace,
+    };
     [CastMethodV4::Flashback, CastMethodV4::Escape, CastMethodV4::Retrace]
         .into_iter()
-        .filter(|&method| is_castable_now(player, id, method, state))
+        .filter(|&method| has(method) && is_castable_now(player, id, method, state))
         .collect()
 }
 
@@ -6439,10 +6451,17 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
                 .iter()
                 .map(|&a| (a, legal_blockers_for(state, a)))
                 .collect();
+            let must_be_blocked = attackers
+                .iter()
+                .copied()
+                .filter(|&a| crate::statics::must_be_blocked_if_able(state, a))
+                .map(|a| (a, minimum_blockers_required(state, a).max(1)))
+                .collect();
             return Decision::DeclareBlockers {
                 player: state.active_player.opponent(),
                 attackers,
                 legal_blockers,
+                must_be_blocked,
             };
         }
 
@@ -13672,8 +13691,65 @@ pub(crate) fn validate_declare_blockers(
             ));
         }
     }
+    // 509.1c: the declaration must obey as many "must be blocked if able"
+    // requirements as any legal declaration could.
+    let required: Vec<(ObjectId, usize, Vec<ObjectId>)> = attackers
+        .iter()
+        .copied()
+        .filter(|&a| crate::statics::must_be_blocked_if_able(state, a))
+        .map(|a| (a, minimum_blockers_required(state, a).max(1), legal_blockers_for(state, a)))
+        .collect();
+    if !required.is_empty() {
+        let obeyed = required
+            .iter()
+            .filter(|(a, min, _)| blocks.iter().filter(|(_, blocked)| blocked == a).count() >= *min)
+            .count();
+        if obeyed < most_requirements_obeyable(&required, &mut Vec::new()) {
+            return Err("a creature that must be blocked if able is left unblocked".to_string());
+        }
+    }
 
     Ok(())
+}
+
+/// The most "must be blocked" requirements one declaration can obey: each
+/// needs `min` blockers of its own (a brute force; there are one or two).
+fn most_requirements_obeyable(required: &[(ObjectId, usize, Vec<ObjectId>)], used: &mut Vec<ObjectId>) -> usize {
+    let Some(((_, min, able), rest)) = required.split_first() else {
+        return 0;
+    };
+    let mut best = most_requirements_obeyable(rest, used);
+    let free: Vec<ObjectId> = able.iter().copied().filter(|b| !used.contains(b)).collect();
+    if free.len() >= *min {
+        // Which `min` blockers it takes matters only for the others: try each set.
+        let mut chosen = Vec::new();
+        best = best.max(try_blocker_sets(&free, *min, 0, &mut chosen, rest, used));
+    }
+    best
+}
+
+fn try_blocker_sets(
+    free: &[ObjectId],
+    min: usize,
+    from: usize,
+    chosen: &mut Vec<ObjectId>,
+    rest: &[(ObjectId, usize, Vec<ObjectId>)],
+    used: &mut Vec<ObjectId>,
+) -> usize {
+    if chosen.len() == min {
+        let before = used.len();
+        used.extend(chosen.iter().copied());
+        let obeyed = 1 + most_requirements_obeyable(rest, used);
+        used.truncate(before);
+        return obeyed;
+    }
+    let mut best = 0;
+    for i in from..free.len() {
+        chosen.push(free[i]);
+        best = best.max(try_blocker_sets(free, min, i + 1, chosen, rest, used));
+        chosen.pop();
+    }
+    best
 }
 
 fn apply_declare_blockers(

@@ -9021,7 +9021,7 @@
     },
     {
       "name": "Jurin, Leading the Charge",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{4}{R}{R}",
       "mana_value": 6,
       "colors": [

@@ -1250,6 +1250,12 @@ const REPLICATE_TRIGGERS: [TriggeredAbilityDef; 1] = [TriggeredAbilityDef {
     effect: replicate_effect,
 }];
 
+fn jurin_attack_effect() -> EffectOp {
+    EffectOp::PumpAttackersPerDefendingCreature
+}
+
+const JURIN_TRIGGERS: [TriggeredAbilityDef; 1] = [trigger(TriggerCondition::Attacks, jurin_attack_effect)];
+
 const WEATHER_THE_STORM_TRIGGERS: [TriggeredAbilityDef; 1] = [TriggeredAbilityDef {
     condition: TriggerCondition::CastSelf,
     home_zone: Zone::Stack,
@@ -1393,6 +1399,7 @@ fn triggers_by_name(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Call Forth the Tempest" => &CALL_FORTH_THE_TEMPEST_TRIGGERS,
         "Hideous Taskmaster" => &HIDEOUS_TASKMASTER_TRIGGERS,
         "Shattering Spree" => &REPLICATE_TRIGGERS,
+        "Jurin, Leading the Charge" => &JURIN_TRIGGERS,
         "Pyreswipe Hawk" => &PYRESWIPE_HAWK_TRIGGERS,
         "Urabrask, Heretic Praetor" => &URABRASK_TRIGGERS,
         "Cavern-Hoard Dragon" => &CAVERN_HOARD_DRAGON_TRIGGERS,

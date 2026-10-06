@@ -2021,3 +2021,25 @@ fn shattering_spree_without_replicate_is_one_spell() {
     cast(&mut state, "Shattering Spree", Some(Target::Object(theirs[0])), 0);
     assert_eq!((zone(&state, theirs[0]), zone(&state, theirs[1])), (Zone::Graveyard, Zone::Battlefield));
 }
+
+#[test]
+fn jurin_must_be_blocked_if_able_and_pumps_attackers_per_defending_creature() {
+    let mut state = game();
+    let jurin = put(&mut state, P0, "Jurin, Leading the Charge");
+    let other = put(&mut state, P0, "Guttersnipe");
+    let blocker = put(&mut state, P1, "Myr Enforcer");
+    put(&mut state, P1, "Guttersnipe");
+    state.objects.get_mut(state.players[1].battlefield[1]).tapped = true;
+    let (base_jurin, base_other) = (effective_power(&state, jurin), effective_power(&state, other));
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    engine::step(&mut state, Action::DeclareAttackers(vec![jurin, other])).unwrap();
+    let d = advance(&mut state, |_, d| matches!(d, Decision::DeclareBlockers { .. }));
+    let Decision::DeclareBlockers { must_be_blocked, .. } = d else { unreachable!() };
+    assert_eq!(must_be_blocked, vec![(jurin, 1)]);
+    // Two creatures on player 1's side: +2/+0 for each attacker.
+    assert_eq!((effective_power(&state, jurin), effective_power(&state, other)), (base_jurin + 2, base_other + 2));
+    // The one untapped creature able to block must block Jurin.
+    assert!(engine::step(&mut state.clone(), Action::DeclareBlockers(vec![])).is_err());
+    assert!(engine::step(&mut state.clone(), Action::DeclareBlockers(vec![(blocker, other)])).is_err());
+    engine::step(&mut state, Action::DeclareBlockers(vec![(blocker, jurin)])).unwrap();
+}

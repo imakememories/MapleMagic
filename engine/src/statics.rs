@@ -61,6 +61,14 @@ fn spell_reduction_color_for(name: &str) -> Option<ManaColor> {
     }
 }
 
+static MUST_BE_BLOCKED: LazyLock<Vec<bool>> =
+    LazyLock::new(|| CARD_DEFS.iter().map(|def| def.name == "Jurin, Leading the Charge").collect());
+
+/// "This creature must be blocked if able" (Jurin, Leading the Charge).
+pub fn must_be_blocked_if_able(state: &GameState, id: ObjectId) -> bool {
+    MUST_BE_BLOCKED[state.objects.get(id).card_def as usize]
+}
+
 static SPELL_REDUCERS: LazyLock<Vec<Option<ManaColor>>> =
     LazyLock::new(|| CARD_DEFS.iter().map(|def| spell_reduction_color_for(def.name)).collect());
 

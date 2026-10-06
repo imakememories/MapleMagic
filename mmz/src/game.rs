@@ -103,7 +103,9 @@ pub struct Choice {
 enum Pending {
     None,
     Attack { eligible: Vec<ObjectId>, next: usize, chosen: Vec<ObjectId> },
-    Block { blockers: Vec<(ObjectId, Vec<ObjectId>)>, next: usize, pairs: Vec<(ObjectId, ObjectId)> },
+    /// `required`: attackers that must be blocked if able (509.1c), with the
+    /// fewest blockers each needs.
+    Block { blockers: Vec<(ObjectId, Vec<ObjectId>)>, next: usize, pairs: Vec<(ObjectId, ObjectId)>, required: Vec<(ObjectId, usize)> },
     Discard { count: u32, pool: Vec<ObjectId>, picked: Vec<ObjectId> },
     Order { sources: Vec<ObjectId>, remaining: Vec<usize>, placed: Vec<usize> },
 }
@@ -573,17 +575,27 @@ impl Game {
                     None
                 }
             }
-            Pending::Block { blockers, next, pairs } => {
+            Pending::Block { blockers, next, pairs, required } => {
                 if *next >= blockers.len() {
                     Some(Action::DeclareBlockers(std::mem::take(pairs)))
                 } else {
                     let (b, attackers) = &blockers[*next];
                     let d = def_of(st, *b);
-                    out.push(mk(
-                        ActFeat::new(Kind::NoBlock, d, obj_sig(st, *b, viewer), 0).with_role(obj_role(st, *b)),
-                        Exec::Block(*b, None),
-                    ));
-                    for &a in attackers {
+                    // 509.1c: while a "must be blocked" attacker still lacks
+                    // blockers and only just enough creatures left could
+                    // block it, this one must.
+                    let forced: Option<ObjectId> = required.iter().copied().find_map(|(r, min)| {
+                        let have = pairs.iter().filter(|&&(_, a)| a == r).count();
+                        let able = blockers[*next..].iter().filter(|(_, can)| can.contains(&r)).count();
+                        (attackers.contains(&r) && have < min && have + able == min).then_some(r)
+                    });
+                    if forced.is_none() {
+                        out.push(mk(
+                            ActFeat::new(Kind::NoBlock, d, obj_sig(st, *b, viewer), 0).with_role(obj_role(st, *b)),
+                            Exec::Block(*b, None),
+                        ));
+                    }
+                    for &a in attackers.iter().filter(|&&a| forced.is_none_or(|r| r == a)) {
                         push_unique(
                             &mut out,
                             mk(
@@ -623,7 +635,23 @@ impl Game {
         match submit {
             Some(action) => {
                 let fallback = match (&self.pending, &action) {
-                    (Pending::Block { .. }, _) => Some(Action::DeclareBlockers(Vec::new())),
+                    // The smallest legal block: just enough blockers on each
+                    // "must be blocked" attacker that enough can block.
+                    (Pending::Block { blockers, required, .. }, _) => {
+                        let mut pairs: Vec<(ObjectId, ObjectId)> = Vec::new();
+                        for &(r, min) in required.iter() {
+                            let free: Vec<ObjectId> = blockers
+                                .iter()
+                                .filter(|(b, can)| can.contains(&r) && !pairs.iter().any(|(used, _)| used == b))
+                                .map(|&(b, _)| b)
+                                .take(min)
+                                .collect();
+                            if free.len() == min {
+                                pairs.extend(free.into_iter().map(|b| (b, r)));
+                            }
+                        }
+                        Some(Action::DeclareBlockers(pairs))
+                    }
                     (Pending::Attack { eligible, .. }, Action::DeclareAttackers(a)) if !a.is_empty() => {
                         let _ = eligible;
                         Some(Action::DeclareAttackers(Vec::new()))
@@ -843,7 +871,7 @@ impl Game {
                 let eligible = eligible.into_iter().filter(|id| !chosen.contains(id)).collect();
                 self.pending = Pending::Attack { eligible, next: 0, chosen };
             }
-            Decision::DeclareBlockers { player, legal_blockers, .. } => {
+            Decision::DeclareBlockers { player, legal_blockers, must_be_blocked, .. } => {
                 self.actor = player;
                 // Invert (attacker -> blockers) into (blocker -> attackers).
                 let mut inv: Vec<(ObjectId, Vec<ObjectId>)> = Vec::new();
@@ -855,7 +883,7 @@ impl Game {
                         }
                     }
                 }
-                self.pending = Pending::Block { blockers: inv, next: 0, pairs: Vec::new() };
+                self.pending = Pending::Block { blockers: inv, next: 0, pairs: Vec::new(), required: must_be_blocked };
             }
             Decision::OrderTriggers { player, pending } => {
                 self.actor = player;
