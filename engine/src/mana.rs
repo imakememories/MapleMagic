@@ -389,6 +389,22 @@ pub fn solve(
     Some(plan)
 }
 
+/// Whether some color has more single-color pips than the pool and the
+/// sources able to make it could supply.
+fn pips_exceed_sources(pips: &[Pip], sources: &[ManaSource], pool: &[u8; 6]) -> bool {
+    [ManaColor::W, ManaColor::U, ManaColor::B, ManaColor::R, ManaColor::G, ManaColor::C].into_iter().any(|color| {
+        let need = pips.iter().filter(|&&pip| pip == Pip::Colored(color)).count();
+        need > 0
+            && need
+                > usize::from(pool[color.pool_index()])
+                    + sources
+                        .iter()
+                        .filter(|source| source.choices.contains(&color))
+                        .map(|source| usize::from(source.amount))
+                        .sum::<usize>()
+    })
+}
+
 fn solve_pips(
     pips: &[Pip],
     idx: usize,
@@ -397,6 +413,11 @@ fn solve_pips(
     pool_remaining: &mut [u8; 6],
     plan: &mut PaymentPlan,
 ) -> bool {
+    // A color needing more pips than its sources can ever make fails here,
+    // before the search tries every ordering of sources (exponential in pips).
+    if idx == 0 && pips_exceed_sources(pips, sources, pool_remaining) {
+        return false;
+    }
     let Some(pip) = pips.get(idx) else {
         return true;
     };
