@@ -1372,6 +1372,13 @@ pub enum Decision {
         player: PlayerId,
         permanent: ObjectId,
     },
+    /// A resolving ability lets `player` cast one of `cards` from exile now
+    /// (Summon: Esper Valigarmanda), or none.
+    ChooseCastFromExile {
+        player: PlayerId,
+        source: ObjectId,
+        cards: Vec<ObjectId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1463,6 +1470,8 @@ pub enum Action {
     ChooseCastMethod(CastMethodV4),
     /// Answers `Decision::ChooseColor`.
     ChooseColor(ManaColor),
+    /// Answers `Decision::ChooseCastFromExile`: the card to cast, if any.
+    ChooseCastFromExile(Option<ObjectId>),
 }
 
 const CHAIN_COPY_COST: Cost = Cost {
@@ -1599,6 +1608,40 @@ fn is_color(state: &GameState, id: ObjectId, color: mana::ManaColor) -> bool {
     card_def::CARD_DEFS[def_idx as usize]
         .colors
         .contains(&color)
+}
+
+/// Whether `id` is a card a resolving ability offers to cast from exile
+/// (it may be on the stack already, being cast).
+pub(crate) fn exile_cast_offered(state: &GameState, id: ObjectId) -> bool {
+    state.pending_exile_cast.as_ref().is_some_and(|pending| {
+        let live = state.objects.get(id);
+        pending.offers.iter().any(|link| {
+            link.object == id
+                && ((live.zone == Zone::Exile && live.zone_change_count == link.zone_change_count)
+                    || live
+                        .v4
+                        .spell_cast_origin
+                        .is_some_and(|origin| origin.origin_zone_change_count == link.zone_change_count))
+        })
+    })
+}
+
+/// The offered cards `player` can cast now.
+fn castable_exile_offers(state: &GameState) -> Vec<ObjectId> {
+    let Some(pending) = state.pending_exile_cast.as_ref() else {
+        return Vec::new();
+    };
+    pending
+        .offers
+        .iter()
+        .filter(|link| {
+            let live = state.objects.get(link.object);
+            live.zone == Zone::Exile
+                && live.zone_change_count == link.zone_change_count
+                && is_castable_now(pending.player, link.object, CastMethodV4::Normal, state)
+        })
+        .map(|link| link.object)
+        .collect()
 }
 
 /// The ability on the stack named by an ability target.
@@ -1889,6 +1932,13 @@ fn validate_physical_spell_cast_origin(
                 && source.owner == item.controller
                 && cast_method == CastMethodV4::Cascade
         }
+        SpellCastRouteV4::ResolutionOffer => {
+            origin.origin_zone == Zone::Exile
+                && matches!(
+                    cast_method,
+                    CastMethodV4::Normal | CastMethodV4::Alternative | CastMethodV4::Bestow | CastMethodV4::Omen
+                )
+        }
         SpellCastRouteV4::GraveyardEscape => {
             origin.origin_zone == Zone::Graveyard
                 && source.owner == item.controller
@@ -2175,7 +2225,8 @@ fn storm_source_contract_is_structurally_valid(
         | SpellCastRouteV4::CommandZone
         | SpellCastRouteV4::Foretold { .. }
         | SpellCastRouteV4::Cascade
-        | SpellCastRouteV4::GraveyardRetrace => false,
+        | SpellCastRouteV4::GraveyardRetrace
+        | SpellCastRouteV4::ResolutionOffer => false,
     };
     definition.name == "Weather the Storm"
         && definition.is_executable()
@@ -5333,6 +5384,7 @@ fn pending_cast_form_timing_ok(
 ) -> bool {
     spell_types_have_instant(types)
         || keywords.has(Keywords::FLASH)
+        || exile_cast_offered(state, pending.spell)
         || (pending.controller == state.active_player
             && pending.controller == state.priority_player
             && matches!(state.step, Step::Main1 | Step::Main2)
@@ -5508,6 +5560,8 @@ fn is_castable_now(
 ) -> bool {
     let def = &card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
     let _spell = mana::SpellPaymentScope::enter(state, card_def::mana_colors_mask(def.colors));
+    let offered = state.pending_exile_cast.is_some() && exile_cast_offered(state, id);
+    let _any = mana::AnyManaTypeScope::enter(offered);
     if !def.is_castable() {
         return false;
     }
@@ -5536,7 +5590,8 @@ fn is_castable_now(
     // kernel_step=Main1" divergence class -- both were this same gap, not a
     // step-tracking bug (state.step really was Combat; the timing check
     // just didn't consult it for this card's type).
-    let main_timing_ok = cast_form_timing_ok(def.types, def.keywords, player, state);
+    // 608.2g: a spell cast while an ability resolves ignores timing.
+    let main_timing_ok = offered || cast_form_timing_ok(def.types, def.keywords, player, state);
     if cast_method != CastMethodV4::Normal && !main_timing_ok {
         return false;
     }
@@ -6520,6 +6575,21 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
             state.engine.pending_cast_method_choice = None;
         }
 
+        // A resolution's offer to cast from exile; then the resolution's
+        // checkpoint, after any cast.
+        if let Some(pending) = state.pending_exile_cast.as_ref() {
+            if !pending.answered {
+                let cards = castable_exile_offers(state);
+                if !cards.is_empty() {
+                    return Decision::ChooseCastFromExile { player: pending.player, source: pending.source, cards };
+                }
+            }
+            state.pending_exile_cast = None;
+            collect_and_queue_triggers(state);
+            reset_priority(state);
+            continue;
+        }
+
         // Cascade: offer the hit, then bottom the cards not cast once any
         // cast of it is over.
         if let Some(cascade) = state.pending_cascade.as_ref() {
@@ -6731,7 +6801,11 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
                     }
                 }
                 if resolve_top_of_stack(state) == ResolutionProgress::Complete {
-                    collect_and_queue_triggers(state);
+                    // A cast offered by the resolution happens before
+                    // state-based actions and triggers.
+                    if state.pending_exile_cast.is_none() {
+                        collect_and_queue_triggers(state);
+                    }
                     reset_priority(state);
                 }
             } else {
@@ -7574,7 +7648,8 @@ pub(crate) fn validate_pending_cast(
                 && crate::commander::is_commander(state, pending.spell);
             if pending.origin_zone != Zone::Hand
                 && !from_command_zone
-                && !(pending.origin_zone == Zone::Exile && has_prior_exile_permission())
+                && !(pending.origin_zone == Zone::Exile
+                    && (has_prior_exile_permission() || exile_cast_offered(state, pending.spell)))
             {
                 return Err(
                     "normal cast has an invalid origin zone or exile permission".to_string()
@@ -8153,6 +8228,10 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
         let def = &card_def::CARD_DEFS[state.objects.get(pending.spell).card_def as usize];
         mana::SpellPaymentScope::enter(state, card_def::mana_colors_mask(def.colors))
     });
+    let _any = mana::AnyManaTypeScope::enter(
+        state.pending_exile_cast.is_some()
+            && state.engine.pending_cast.as_ref().is_some_and(|pending| exile_cast_offered(state, pending.spell)),
+    );
     let pending = state.engine.pending_cast.clone()?;
     if validate_pending_cast(state, &pending).is_err() {
         crate::engine::note_halt(file!(), line!());
@@ -11041,6 +11120,13 @@ fn attachment_prevents_untap(state: &GameState, host: ObjectId) -> bool {
 fn run_step_entry_action(state: &mut GameState, step: Step) {
     match step {
         Step::Untap => {
+            if !state.exiled_with.is_empty() {
+                let objects = &state.objects;
+                state.exiled_with.retain(|e| {
+                    let card = objects.get(e.card.object);
+                    card.zone == Zone::Exile && card.zone_change_count == e.card.zone_change_count
+                });
+            }
             // History bindings never outlive a turn; dropping older events
             // keeps state clones small.
             let dropped = u32::try_from(state.engine.event_history.len()).unwrap_or(u32::MAX);
@@ -11228,6 +11314,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
                 obj.v4.deathtouch_damage = false;
             }
             state.last_known_charge.clear();
+            state.last_known_lore.clear();
             state.type_additions.retain(|a| !a.until_end_of_turn);
             state.extra_combats = 0;
             state.granted_flashback.clear();
@@ -12219,6 +12306,10 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
         let def = &card_def::CARD_DEFS[state.objects.get(pending.spell).card_def as usize];
         mana::SpellPaymentScope::enter(state, card_def::mana_colors_mask(def.colors))
     });
+    let _any = mana::AnyManaTypeScope::enter(
+        state.pending_exile_cast.is_some()
+            && state.engine.pending_cast.as_ref().is_some_and(|pending| exile_cast_offered(state, pending.spell)),
+    );
     if state.engine.pending_land_play.is_some() && !matches!(&action, Action::ChooseEffectOption(_))
     {
         return Err(
@@ -12485,6 +12576,20 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
             }
             state.engine.pending_cast_method_choice = None;
             begin_cast_ex(state, p, id, Some(method));
+            Ok(())
+        }
+        Action::ChooseCastFromExile(card) => {
+            let pending = state.pending_exile_cast.as_ref().filter(|p| !p.answered).ok_or("no cast from exile is offered")?;
+            let player = pending.player;
+            if let Some(card) = card {
+                if !castable_exile_offers(state).contains(&card) {
+                    return Err(format!("{card} can't be cast from exile now"));
+                }
+            }
+            state.pending_exile_cast.as_mut().expect("checked above").answered = true;
+            if let Some(card) = card {
+                begin_cast_ex(state, player, card, None);
+            }
             Ok(())
         }
         Action::ChooseCascadeCast(cast) => {
@@ -14557,6 +14662,9 @@ fn begin_cast_ex(
         },
         CastMethodV4::Normal if origin_zone == Zone::Hand => SpellCastRouteV4::Hand,
         CastMethodV4::Normal if origin_zone == Zone::Command => SpellCastRouteV4::CommandZone,
+        CastMethodV4::Normal if origin_zone == Zone::Exile && exile_cast_offered(state, spell_id) => {
+            SpellCastRouteV4::ResolutionOffer
+        }
         CastMethodV4::Normal if origin_zone == Zone::Exile => {
             let permission = active_permission_for(player, spell_id, state)
                 .expect("an ordinary Exile cast was offered through an exact play permission");

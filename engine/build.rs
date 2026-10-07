@@ -3270,6 +3270,7 @@ fn transform_face_for(name: &str) -> &'static str {
 fn saga_for(name: &str) -> &'static str {
     match name {
         "The Modern Age" => "Some(SagaDef { chapter_effects: &[saga_chapter_modern_age_loot, saga_chapter_modern_age_loot, saga_chapter_modern_age_transform] })",
+        "Summon: Esper Valigarmanda" => "Some(SagaDef { chapter_effects: &[crate::commander_cards::valigarmanda_exile, crate::commander_cards::valigarmanda_cast, crate::commander_cards::valigarmanda_cast, crate::commander_cards::valigarmanda_cast] })",
         _ => "None",
     }
 }

@@ -2534,3 +2534,117 @@ fn raging_river_with_no_creatures_to_divide_lets_only_flyers_block() {
     assert_eq!(of_x, vec![seer]);
     assert!(!of_x.contains(&late));
 }
+
+/// Passes priority and combat; `answer` gives `Some(None)` to stop,
+/// `Some(Some(action))` to act, `None` for the default.
+fn pass_until(state: &mut GameState, mut answer: impl FnMut(&GameState, &Decision) -> Option<Option<Action>>) {
+    drive(state, |s, d| {
+        if let Some(a) = answer(s, d) {
+            return a;
+        }
+        Some(match d {
+            Decision::CastSpellOrPass { .. } => Action::Pass,
+            Decision::DeclareAttackers { .. } => Action::DeclareAttackers(vec![]),
+            Decision::DeclareBlockers { .. } => Action::DeclareBlockers(vec![]),
+            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
+            other => panic!("unhandled decision {other:?}"),
+        })
+    });
+}
+
+/// A card put straight into exile, linked to `saga` as exiled with it.
+fn exiled_with(state: &mut GameState, saga: ObjectId, owner: PlayerId, name: &str) -> ObjectId {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    use mtg_kernel::state::{ExiledWithV1, ObjectLinkV4};
+    let card = put_in(state, owner, name, Zone::Graveyard);
+    propose_and_commit(state, ProposedEvent::zone_change(card, Zone::Exile));
+    let link = |s: &GameState, o: ObjectId| ObjectLinkV4 { object: o, zone_change_count: s.objects.get(o).zone_change_count };
+    let entry = ExiledWithV1 { source: link(state, saga), card: link(state, card) };
+    state.exiled_with.push(entry);
+    card
+}
+
+#[test]
+fn esper_valigarmanda_exiles_from_each_graveyard_then_casts_one_with_any_mana() {
+    let mut state = game();
+    lands(&mut state, P0, 4);
+    let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+    let analysis = put_in(&mut state, P1, "Deep Analysis", Zone::Graveyard);
+    let ponder = put_in(&mut state, P1, "Ponder", Zone::Graveyard);
+    let saga = put_in(&mut state, P0, "Summon: Esper Valigarmanda", Zone::Hand);
+    let mut offered = Vec::new();
+    drive(&mut state, |s, d| match d {
+        _ if s.stack.is_empty() && s.exiled_with.len() == 2 => None,
+        Decision::CastSpellOrPass { castable_spells, .. } if castable_spells.contains(&saga) => Some(Action::CastSpell(saga)),
+        Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+        // Player 1's graveyard has two: the controller picks one.
+        Decision::ChooseEffectTargets { legal_targets, .. } => {
+            offered = legal_targets.clone();
+            Some(Action::ChooseEffectTarget(Target::Object(analysis)))
+        }
+        other => panic!("unhandled decision {other:?}"),
+    });
+    assert_eq!(offered, vec![Target::Object(analysis), Target::Object(ponder)]);
+    assert_eq!((zone(&state, bolt), zone(&state, analysis), zone(&state, ponder)), (Zone::Exile, Zone::Exile, Zone::Graveyard));
+    assert_eq!(state.objects.get(saga).counters.lore, 1);
+
+    // Next turn, chapter II adds {R}{R}; Deep Analysis ({3}{U}) is paid with red.
+    let hand = state.players[0].hand.len();
+    let mut cards = Vec::new();
+    pass_until(&mut state, |s, d| match d {
+        _ if zone(s, analysis) == Zone::Graveyard => Some(None),
+        Decision::ChooseCastFromExile { cards: c, .. } => {
+            cards = c.clone();
+            Some(Some(Action::ChooseCastFromExile(Some(analysis))))
+        }
+        Decision::ChooseTargets { .. } => Some(Some(Action::ChooseTarget(Target::Player(P0)))),
+        _ => None,
+    });
+    cards.sort();
+    assert_eq!(cards, vec![bolt, analysis]);
+    assert_eq!(state.objects.get(saga).counters.lore, 2);
+    assert_eq!(state.players[0].hand.len(), hand + 3, "the draw step and Deep Analysis");
+}
+
+#[test]
+fn esper_valigarmanda_casts_during_chapter_four_before_it_is_sacrificed() {
+    let mut state = game();
+    let saga = put(&mut state, P0, "Summon: Esper Valigarmanda");
+    state.objects.get_mut(saga).counters.lore = 3;
+    let bolt = exiled_with(&mut state, saga, P1, "Lightning Bolt");
+    let mut targets = Vec::new();
+    pass_until(&mut state, |s, d| match d {
+        _ if zone(s, bolt) == Zone::Graveyard => Some(None),
+        Decision::ChooseCastFromExile { .. } => Some(Some(Action::ChooseCastFromExile(Some(bolt)))),
+        Decision::ChooseTargets { legal_targets, .. } => {
+            targets = legal_targets.clone();
+            Some(Some(Action::ChooseTarget(Target::Object(saga))))
+        }
+        _ => None,
+    });
+    assert!(targets.contains(&Target::Object(saga)), "still on the battlefield during the cast");
+    assert_ne!(zone(&state, saga), Zone::Battlefield, "sacrificed after chapter IV");
+    assert_eq!(state.players[1].life, 40);
+    assert_eq!(state.players[0].mana_pool[ManaColor::R.pool_index()], 3, "four {{R}}, one spent on the Bolt");
+}
+
+#[test]
+fn esper_valigarmanda_chapter_two_uses_last_known_lore_after_it_leaves() {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    let saga = put(&mut state, P0, "Summon: Esper Valigarmanda");
+    state.objects.get_mut(saga).counters.lore = 1;
+    let bolt = exiled_with(&mut state, saga, P0, "Lightning Bolt");
+    // To player 0's next turn, chapter II on the stack.
+    pass_until(&mut state, |s, _| (s.active_player == P0 && s.turn > 2 && !s.stack.is_empty()).then_some(None));
+    assert_eq!(state.stack.len(), 1);
+    propose_and_commit(&mut state, ProposedEvent::zone_change(saga, Zone::Graveyard));
+    pass_until(&mut state, |s, d| match d {
+        _ if zone(s, bolt) == Zone::Graveyard => Some(None),
+        Decision::ChooseCastFromExile { .. } => Some(Some(Action::ChooseCastFromExile(Some(bolt)))),
+        Decision::ChooseTargets { .. } => Some(Some(Action::ChooseTarget(Target::Player(P1)))),
+        _ => None,
+    });
+    assert_eq!(state.players[1].life, 37);
+    assert_eq!(state.players[0].mana_pool[ManaColor::R.pool_index()], 1, "two lore counters as it left");
+}

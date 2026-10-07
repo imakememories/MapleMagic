@@ -81,6 +81,7 @@ fn kind_of(d: &Decision) -> Kind {
         | Decision::ChooseCommanderZone { .. }
         | Decision::ChooseRiot { .. }
         | Decision::ChooseCascadeCast { .. }
+        | Decision::ChooseCastFromExile { .. }
         | Decision::ChooseCastMethod { .. }
         | Decision::ChooseColor { .. }
         | Decision::ChooseEffectTargets { .. }
@@ -176,6 +177,7 @@ fn run_goldfish(state: &mut GameState) -> (Vec<Kind>, Vec<i32>, Vec<CommittedEve
             | Decision::ChooseCommanderZone { .. }
             | Decision::ChooseRiot { .. }
         | Decision::ChooseCascadeCast { .. }
+        | Decision::ChooseCastFromExile { .. }
         | Decision::ChooseCastMethod { .. }
         | Decision::ChooseColor { .. }
             | Decision::ChooseEffectTargets { .. }

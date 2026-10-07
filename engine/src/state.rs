@@ -71,6 +71,25 @@ pub struct PendingCascadeV1 {
     pub waiting_triggers: Vec<crate::trigger::PendingTrigger>,
 }
 
+/// A card exiled with a source incarnation, for its linked "cards exiled
+/// with this" ability (607.2a). The link outlives the source leaving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ExiledWithV1 {
+    pub source: ObjectLinkV4,
+    pub card: ObjectLinkV4,
+}
+
+/// A resolving ability lets `player` cast one of `offers` from exile now,
+/// with mana of any type (Summon: Esper Valigarmanda). The rest of the
+/// resolution's checkpoint waits until that cast is done or declined.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PendingExileCastV1 {
+    pub player: PlayerId,
+    pub source: ObjectId,
+    pub offers: Vec<ObjectLinkV4>,
+    pub answered: bool,
+}
+
 /// Raging River: `attacker` can't be blocked this combat except by
 /// creatures with flying and creatures in `pile`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -628,6 +647,8 @@ pub enum SpellCastRouteV4 {
     Cascade,
     /// From its owner's graveyard by retrace.
     GraveyardRetrace,
+    /// From exile while an ability resolved (Summon: Esper Valigarmanda).
+    ResolutionOffer,
 }
 
 /// Incarnation-local cast provenance stored on the physical source object
@@ -1467,6 +1488,16 @@ pub struct GameState {
     /// Raging River's blocking restrictions for this combat.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub river_blocks: Vec<RiverBlockV1>,
+    /// See [`ExiledWithV1`]; links whose card left exile are pruned each turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exiled_with: Vec<ExiledWithV1>,
+    /// Lore counters a permanent had as it left the battlefield (last known
+    /// information), cleared at cleanup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub last_known_lore: Vec<(ObjectLinkV4, i16)>,
+    /// See [`PendingExileCastV1`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_exile_cast: Option<PendingExileCastV1>,
     /// While a cast pays: whether floating artifact mana goes first (a
     /// creature spell), and the artifact mana spent so far.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1581,6 +1612,15 @@ impl Hash for GameState {
         }
         if !self.river_blocks.is_empty() {
             self.river_blocks.hash(state);
+        }
+        if !self.exiled_with.is_empty() {
+            self.exiled_with.hash(state);
+        }
+        if !self.last_known_lore.is_empty() {
+            self.last_known_lore.hash(state);
+        }
+        if self.pending_exile_cast.is_some() {
+            self.pending_exile_cast.hash(state);
         }
         if self.pending_cascade.is_some() {
             self.pending_cascade.hash(state);
@@ -1761,6 +1801,9 @@ impl GameState {
             restricted_mana: [[0; 6]; 2],
             pending_color_choice: Vec::new(),
             river_blocks: Vec::new(),
+            exiled_with: Vec::new(),
+            last_known_lore: Vec::new(),
+            pending_exile_cast: None,
             pending_cascade: None,
             granted_flashback: Vec::new(),
             spell_mana_values_this_turn: [0; 2],

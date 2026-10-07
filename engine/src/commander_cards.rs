@@ -103,6 +103,14 @@ pub fn vandalblast() -> Option<EffectOp> {
     Some(EffectOp::DestroyObject { object: ObjectRef::Target(0) })
 }
 
+pub fn valigarmanda_exile() -> EffectOp {
+    EffectOp::ExileInstantOrSorceryFromEachGraveyard
+}
+
+pub fn valigarmanda_cast() -> EffectOp {
+    EffectOp::AddRedPerLoreThenMayCastExiled
+}
+
 pub fn redirect_lightning() -> Option<EffectOp> {
     Some(EffectOp::ChangeTheTargetOfTargetSpellOrAbility)
 }

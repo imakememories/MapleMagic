@@ -12083,7 +12083,7 @@
     },
     {
       "name": "Summon: Esper Valigarmanda",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{3}{R}",
       "mana_value": 4,
       "colors": [

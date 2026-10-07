@@ -999,6 +999,13 @@ pub enum EffectOp {
     /// flying into a left and a right pile, then the controller picks a
     /// pile for each of their attackers.
     RagingRiver,
+    /// "Exile an instant or sorcery card from each graveyard", linked to
+    /// this ability's source (Summon: Esper Valigarmanda's chapter I).
+    ExileInstantOrSorceryFromEachGraveyard,
+    /// "Add {R} for each lore counter on this Saga. You may cast an instant
+    /// or sorcery card exiled with this Saga, and mana of any type can be
+    /// spent to cast that spell."
+    AddRedPerLoreThenMayCastExiled,
     /// The card gains flashback until end of turn, its mana cost as the
     /// flashback cost (Flashback).
     GrantFlashbackUntilEndOfTurn {
@@ -1317,6 +1324,13 @@ pub enum EffectFrame {
         player: PlayerId,
         selected: EffectObjectBinding,
     },
+    /// Picking an instant or sorcery card from each graveyard in `players`
+    /// order; `chosen` so far. Exiled together once all are picked.
+    GraveyardInstantOrSorceryPicks {
+        players: Vec<PlayerId>,
+        chosen: Vec<EffectObjectBinding>,
+        canonical_path: Vec<u16>,
+    },
     /// Raging River's piles are made; next the attackers get labels.
     RiverPiles {
         left: Vec<EffectObjectBinding>,
@@ -1571,6 +1585,14 @@ pub enum EffectTargetSelectionPurpose {
     /// The target of replicate copy number `copy` (from 1).
     ReplicateCopyTarget {
         copy: u8,
+        canonical_path: Vec<u16>,
+    },
+    /// The instant or sorcery card to exile from `player`'s graveyard.
+    GraveyardInstantOrSorceryPick {
+        player: PlayerId,
+        candidates: Vec<EffectObjectBinding>,
+        players: Vec<PlayerId>,
+        chosen: Vec<EffectObjectBinding>,
         canonical_path: Vec<u16>,
     },
     /// Raging River: the defending player's creatures for the left pile.
@@ -1974,6 +1996,7 @@ pub fn contains_player_choice(op: &EffectOp) -> bool {
         | EffectOp::ChangeTheTargetOfTargetSpellOrAbility
         | EffectOp::ChooseNewTargetsForTargetSpellOrAbility
         | EffectOp::RagingRiver
+        | EffectOp::ExileInstantOrSorceryFromEachGraveyard
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand
@@ -2949,6 +2972,13 @@ fn complete_resumable_target_selection(
             continuation.frames.push(EffectFrame::ReplicateCopy { copy, target, canonical_path });
         }
         EffectTargetSelectionPurpose::NewStackTarget { .. } => unreachable!("answered above"),
+        EffectTargetSelectionPurpose::GraveyardInstantOrSorceryPick { players, mut chosen, canonical_path, .. } => {
+            if path != canonical_path || objects.len() != 1 {
+                return Err("graveyard pick changed shape".to_string());
+            }
+            chosen.push(objects[0]);
+            continuation.frames.push(EffectFrame::GraveyardInstantOrSorceryPicks { players, chosen, canonical_path });
+        }
         EffectTargetSelectionPurpose::RiverLeftPile { creatures, canonical_path, .. } => {
             if path != canonical_path {
                 return Err("Raging River pile choice changed shape".to_string());
@@ -5273,6 +5303,19 @@ pub fn validate_pending_effect_choice(state: &GameState) -> Result<(), String> {
                         return Err("replicate choice has a noncanonical shape".to_string());
                     }
                 }
+                EffectTargetSelectionPurpose::GraveyardInstantOrSorceryPick { player, candidates, canonical_path, .. } => {
+                    let offered: Vec<EffectObjectBinding> =
+                        legal.iter().filter_map(|candidate| candidate.expected_object).collect();
+                    if *chooser != pending.ctx.controller
+                        || path != canonical_path
+                        || (*min_targets, *max_targets, *ordered) != (1, 1, false)
+                        || !selected.is_empty()
+                        || offered != *candidates
+                        || graveyard_instants_and_sorceries(state, *player) != *candidates
+                    {
+                        return Err("graveyard pick has a noncanonical shape".to_string());
+                    }
+                }
                 EffectTargetSelectionPurpose::RiverLeftPile { defender, creatures, canonical_path } => {
                     let offered: Vec<EffectObjectBinding> =
                         selected.iter().chain(legal).filter_map(|candidate| candidate.expected_object).collect();
@@ -7078,6 +7121,41 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                     }
                     crate::engine::threaten(state, selected.object, continuation.ctx.controller);
                 }
+                EffectFrame::GraveyardInstantOrSorceryPicks { mut players, mut chosen, canonical_path } => {
+                    if players.is_empty() {
+                        exile_linked_to_ability_source(state, &continuation.ctx, &chosen)?;
+                    } else {
+                        let player = players.remove(0);
+                        let candidates = graveyard_instants_and_sorceries(state, player);
+                        match candidates.len() {
+                            0 => continuation.frames.push(EffectFrame::GraveyardInstantOrSorceryPicks { players, chosen, canonical_path }),
+                            1 => {
+                                chosen.push(candidates[0]);
+                                continuation.frames.push(EffectFrame::GraveyardInstantOrSorceryPicks { players, chosen, canonical_path });
+                            }
+                            _ => {
+                                continuation.choice = Some(PendingEffectChoice::SelectTargets {
+                                    player: continuation.ctx.controller,
+                                    path: canonical_path.clone(),
+                                    selected: Vec::new(),
+                                    legal: bound_candidates(&candidates),
+                                    min_targets: 1,
+                                    max_targets: 1,
+                                    ordered: false,
+                                    purpose: EffectTargetSelectionPurpose::GraveyardInstantOrSorceryPick {
+                                        player,
+                                        candidates,
+                                        players,
+                                        chosen,
+                                        canonical_path,
+                                    },
+                                });
+                                state.engine.pending_effect = Some(continuation);
+                                return Ok(ResumableProgress::Suspended);
+                            }
+                        }
+                    }
+                }
                 EffectFrame::RiverPiles { left, right, canonical_path } => {
                     let attackers = river_attackers(state, continuation.ctx.controller);
                     if left.is_empty() && right.is_empty() {
@@ -8380,6 +8458,14 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                         canonical_path: path,
                     });
                 }
+            }
+            EffectOp::ExileInstantOrSorceryFromEachGraveyard => {
+                let me = continuation.ctx.controller;
+                continuation.frames.push(EffectFrame::GraveyardInstantOrSorceryPicks {
+                    players: vec![me, me.opponent()],
+                    chosen: Vec::new(),
+                    canonical_path: path,
+                });
             }
             EffectOp::RagingRiver => {
                 let defender = continuation.ctx.controller.opponent();
@@ -10338,6 +10424,48 @@ fn stage_replicate_copy_target(continuation: &mut EffectContinuation, state: &Ga
     });
 }
 
+/// The instant and sorcery cards in `player`'s graveyard.
+fn graveyard_instants_and_sorceries(state: &GameState, player: PlayerId) -> Vec<EffectObjectBinding> {
+    state.players[player.index()]
+        .graveyard
+        .iter()
+        .copied()
+        .filter(|&id| {
+            let def = &crate::card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
+            def.has_type(CardType::Instant) || def.has_type(CardType::Sorcery)
+        })
+        .map(|id| EffectObjectBinding {
+            object: id,
+            expected_zone: Zone::Graveyard,
+            expected_zone_change_count: state.objects.get(id).zone_change_count,
+        })
+        .collect()
+}
+
+/// Exiles `cards` at once, linked to the ability's source incarnation.
+fn exile_linked_to_ability_source(state: &mut GameState, ctx: &ExecCtx, cards: &[EffectObjectBinding]) -> Result<(), String> {
+    let source = ctx.ability_source_contract.ok_or("a linked exile needs its ability's source")?;
+    let source = ObjectLinkV4 { object: source.source, zone_change_count: source.zone_change_count };
+    let live: Vec<ObjectId> = cards
+        .iter()
+        .filter(|b| {
+            let o = state.objects.get(b.object);
+            o.zone == b.expected_zone && o.zone_change_count == b.expected_zone_change_count
+        })
+        .map(|b| b.object)
+        .collect();
+    let events = live.iter().map(|&id| event::ProposedEvent::zone_change(id, Zone::Exile)).collect();
+    event::propose_and_commit_batch(state, events);
+    for id in live {
+        let o = state.objects.get(id);
+        if o.zone == Zone::Exile {
+            let card = ObjectLinkV4 { object: id, zone_change_count: o.zone_change_count };
+            state.exiled_with.push(crate::state::ExiledWithV1 { source, card });
+        }
+    }
+    Ok(())
+}
+
 /// Raging River's pile candidates: the creatures without flying `defender`
 /// controls.
 fn river_pile_candidates(state: &GameState, defender: PlayerId) -> Vec<EffectObjectBinding> {
@@ -11289,6 +11417,51 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         EffectOp::CantBlockThisTurn { object } => {
             let object = ctx.resolve_object(*object);
             crate::engine::forbid_blocking(state, object);
+        }
+        EffectOp::AddRedPerLoreThenMayCastExiled => {
+            let Some(contract) = ctx.ability_source_contract else {
+                crate::engine::note_halt(file!(), line!());
+                state.engine.halted = Some((crate::engine::UnsupportedMechanic::InvalidEffectContinuation, ctx.source));
+                return;
+            };
+            let saga = ObjectLinkV4 { object: contract.source, zone_change_count: contract.zone_change_count };
+            let live = state.objects.get(saga.object);
+            let lore = if live.zone == Zone::Battlefield && live.zone_change_count == saga.zone_change_count {
+                live.counters.lore
+            } else {
+                state.last_known_lore.iter().find(|(l, _)| *l == saga).map_or(0, |(_, n)| *n)
+            };
+            if lore > 0 {
+                event::propose_and_commit(
+                    state,
+                    event::ProposedEvent::mana_add_from(
+                        ctx.controller,
+                        vec![crate::mana::ManaColor::R; usize::try_from(lore).unwrap_or(0)],
+                        saga.object,
+                    ),
+                );
+            }
+            let offers: Vec<ObjectLinkV4> = state
+                .exiled_with
+                .iter()
+                .filter(|e| e.source == saga)
+                .map(|e| e.card)
+                .filter(|card| {
+                    let o = state.objects.get(card.object);
+                    let def = &crate::card_def::CARD_DEFS[o.card_def as usize];
+                    o.zone == Zone::Exile
+                        && o.zone_change_count == card.zone_change_count
+                        && (def.has_type(CardType::Instant) || def.has_type(CardType::Sorcery))
+                })
+                .collect();
+            if !offers.is_empty() {
+                state.pending_exile_cast = Some(crate::state::PendingExileCastV1 {
+                    player: ctx.controller,
+                    source: saga.object,
+                    offers,
+                    answered: false,
+                });
+            }
         }
         EffectOp::TargetCreaturesCantBlockThisTurn => {
             for (index, &target) in ctx.targets.iter().enumerate() {
@@ -12432,6 +12605,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         | EffectOp::ChangeTheTargetOfTargetSpellOrAbility
         | EffectOp::ChooseNewTargetsForTargetSpellOrAbility
         | EffectOp::RagingRiver
+        | EffectOp::ExileInstantOrSorceryFromEachGraveyard
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand

@@ -1175,6 +1175,11 @@ fn commit_zone_change(
         let charge = state.objects.get(id).counters.charge;
         state.last_known_charge.push((link, charge));
     }
+    if from_zone == Zone::Battlefield && state.objects.get(id).counters.lore != 0 {
+        let link = crate::state::ObjectLinkV4 { object: id, zone_change_count: state.objects.get(id).zone_change_count };
+        let lore = state.objects.get(id).counters.lore;
+        state.last_known_lore.push((link, lore));
+    }
     remove_from_zone(state, owner, id, from_zone);
     state.forget_hand_object(id);
     state.clear_object_relations(id);

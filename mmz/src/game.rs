@@ -871,6 +871,13 @@ impl Game {
                     out.push(mk(ActFeat::new(Kind::EffectOption, d, 0, i as u16), Exec::Engine(Action::ChooseColor(color))));
                 }
             }
+            Decision::ChooseCastFromExile { player, source, cards } => {
+                self.actor = player;
+                out.push(mk(ActFeat::new(Kind::Pass, def_of(st, source), 0, 0), Exec::Engine(Action::ChooseCastFromExile(None))));
+                for card in cards {
+                    out.push(mk(cast_feat(st, card, player), Exec::Engine(Action::ChooseCastFromExile(Some(card)))));
+                }
+            }
             Decision::ChooseCascadeCast { player, card } => {
                 self.actor = player;
                 yes_no(&mut out, def_of(st, card), 13, Action::ChooseCascadeCast);

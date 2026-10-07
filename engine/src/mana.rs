@@ -257,6 +257,42 @@ impl Drop for SpellPaymentScope {
     }
 }
 
+thread_local! {
+    /// While set, mana of any type can be spent on the cost being paid.
+    static ANY_MANA_TYPE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While alive, "mana of any type can be spent" applies to payments.
+pub struct AnyManaTypeScope(bool);
+
+impl AnyManaTypeScope {
+    pub fn enter(on: bool) -> Option<AnyManaTypeScope> {
+        on.then(|| AnyManaTypeScope(ANY_MANA_TYPE.with(|c| c.replace(true))))
+    }
+}
+
+impl Drop for AnyManaTypeScope {
+    fn drop(&mut self) {
+        ANY_MANA_TYPE.with(|c| c.set(self.0));
+    }
+}
+
+fn any_mana_type() -> bool {
+    ANY_MANA_TYPE.with(|c| c.get())
+}
+
+/// The pips the solver must match by color, plus the generic mana the rest
+/// count as: with mana of any type, colored and hybrid pips are generic and
+/// a Phyrexian pip takes any mana or 2 life.
+fn color_bound_pips(pips: &[Pip]) -> (std::borrow::Cow<'_, [Pip]>, u32) {
+    if !any_mana_type() {
+        return (std::borrow::Cow::Borrowed(pips), 0);
+    }
+    let phyrexian: Vec<Pip> = pips.iter().copied().filter(|p| matches!(p, Pip::Phyrexian(_))).collect();
+    let generic = (pips.len() - phyrexian.len()) as u32;
+    (std::borrow::Cow::Owned(phyrexian), generic)
+}
+
 /// The single color restricted mana may pay for now, if any.
 pub fn restricted_mana_color_allowed() -> Option<usize> {
     let mask = SPELL_COLORS.with(|c| c.get())?;
@@ -292,8 +328,9 @@ pub fn can_pay_combined(
 ) -> Option<PaymentPlan> {
     let sources = gather_sources(player, state);
     let pool = usable_pool(player, state);
-    let combined_pips: Vec<Pip> = costs.iter().flat_map(|c| c.pips.iter().copied()).collect();
-    let generic: u32 = costs.iter().map(|c| c.generic as u32).sum();
+    let all_pips: Vec<Pip> = costs.iter().flat_map(|c| c.pips.iter().copied()).collect();
+    let (combined_pips, pip_generic) = color_bound_pips(&all_pips);
+    let generic: u32 = costs.iter().map(|c| c.generic as u32).sum::<u32>() + pip_generic;
     let x_count: u32 = costs.iter().map(|c| c.x_count as u32).sum();
 
     let mut plan = PaymentPlan::default();
@@ -407,9 +444,10 @@ pub fn solve(
     let mut plan = PaymentPlan::default();
     let mut pool_remaining = pool;
     let mut used = vec![false; sources.len()];
+    let (pips, pip_generic) = color_bound_pips(cost.pips);
 
     if !solve_pips(
-        cost.pips,
+        &pips,
         0,
         sources,
         &mut used,
@@ -419,7 +457,8 @@ pub fn solve(
         return None;
     }
 
-    let generic_needed = u32::from(cost.generic) + u32::from(cost.x_count) * u32::from(x_value);
+    let generic_needed =
+        u32::from(cost.generic) + u32::from(cost.x_count) * u32::from(x_value) + pip_generic;
     if !pay_generic(
         generic_needed,
         sources,
@@ -469,6 +508,9 @@ fn solve_pips(
     let candidate_colors: Vec<ManaColor> = match *pip {
         Pip::Colored(c) => vec![c],
         Pip::Hybrid(a, b) => vec![a, b],
+        Pip::Phyrexian(_) if any_mana_type() => {
+            vec![ManaColor::W, ManaColor::U, ManaColor::B, ManaColor::R, ManaColor::G, ManaColor::C]
+        }
         Pip::Phyrexian(c) => vec![c],
     };
 

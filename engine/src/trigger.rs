@@ -1677,16 +1677,22 @@ pub fn sba_fixed_point(state: &mut GameState) {
     sba_fixed_point_with_protected_triggers(state, &[]);
 }
 
-fn saga_final_chapter_is_pending(
+/// 704.5s: whether a chapter ability of this Saga incarnation has triggered
+/// and not yet left the stack.
+fn saga_chapter_is_pending(
     state: &GameState,
     source: ObjectId,
     source_zone_change_count: u32,
-    final_effect: &EffectOp,
     protected_triggers: &[PendingTrigger],
 ) -> bool {
+    let chapters = crate::card_def::CARD_DEFS[state.objects.get(source).card_def as usize]
+        .saga
+        .as_ref()
+        .map_or(&[][..], |saga| saga.chapter_effects);
+    let is_chapter = |effect: &EffectOp| chapters.iter().any(|chapter| chapter() == *effect);
     let matches_pending = |pending: &PendingTrigger| {
         pending.source == source
-            && pending.effect == *final_effect
+            && is_chapter(&pending.effect)
             && pending
                 .source_contract
                 .is_some_and(|contract| contract.zone_change_count == source_zone_change_count)
@@ -1696,7 +1702,7 @@ fn saga_final_chapter_is_pending(
         || state.stack.iter().any(|item| {
             item.source == source
                 && item.kind == crate::state::StackItemKind::TriggeredAbility
-                && item.inline_effect.as_ref() == Some(final_effect)
+                && item.inline_effect.as_ref().is_some_and(is_chapter)
                 && item
                     .v4
                     .ability_source_contract
@@ -1712,11 +1718,8 @@ fn saga_final_chapter_is_pending(
                     ..
                 } if *event_source == source
                     && *event_generation == source_zone_change_count
-                    && usize::from(*chapter)
-                        == crate::card_def::CARD_DEFS[state.objects.get(source).card_def as usize]
-                            .saga
-                            .as_ref()
-                            .map_or(0, |saga| saga.chapter_effects.len())
+                    && usize::from(*chapter) >= 1
+                    && usize::from(*chapter) <= chapters.len()
             )
         })
 }
@@ -1817,14 +1820,7 @@ fn sba_fixed_point_with_protected_triggers(
                 if object.counters.lore < saga.chapter_effects.len() as i16 {
                     return None;
                 }
-                let final_effect = (saga.chapter_effects.last().copied()?)();
-                (!saga_final_chapter_is_pending(
-                    state,
-                    id,
-                    object.zone_change_count,
-                    &final_effect,
-                    protected_triggers,
-                ))
+                (!saga_chapter_is_pending(state, id, object.zone_change_count, protected_triggers))
                 .then_some(id)
             })
             .collect::<Vec<_>>();
