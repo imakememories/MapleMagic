@@ -1728,6 +1728,10 @@ pub struct GameState {
     /// cleared at each untap.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ability_uses: Vec<(ObjectLinkV4, AbilityUseV4)>,
+    /// Tokens that left the battlefield since the last state-based action
+    /// check, which makes them cease to exist (111.8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ceasing_tokens: Vec<ObjectId>,
     /// Creatures that attack this turn if able (Gogo), cleared at cleanup.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub must_attack: Vec<ObjectLinkV4>,
@@ -1871,6 +1875,9 @@ impl Hash for GameState {
         }
         if !self.pending_copy_entry.is_empty() {
             self.pending_copy_entry.hash(state);
+        }
+        if !self.ceasing_tokens.is_empty() {
+            self.ceasing_tokens.hash(state);
         }
         if !self.must_attack.is_empty() {
             self.must_attack.hash(state);
@@ -2064,6 +2071,7 @@ impl GameState {
             goads: Vec::new(),
             ability_uses: Vec::new(),
             pending_copy_entry: Vec::new(),
+            ceasing_tokens: Vec::new(),
             must_attack: Vec::new(),
             copy_effects: Vec::new(),
             copy_history: Vec::new(),

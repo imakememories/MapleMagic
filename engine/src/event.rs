@@ -1304,6 +1304,9 @@ fn commit_zone_change(
             obj.summoning_sick = false;
         }
     }
+    if to_zone != Zone::Battlefield && state.objects.get(id).v4.is_token {
+        state.ceasing_tokens.push(id);
+    }
     if to_zone == Zone::Library {
         let position = state.players[owner.index()]
             .library

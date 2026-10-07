@@ -1776,20 +1776,17 @@ fn sba_fixed_point_with_protected_triggers(
                 return false;
             }
             let toughness = crate::engine::effective_toughness(state, id);
-            let indestructible = crate::engine::has_effective_keyword(
-                state,
-                id,
-                crate::card_def::Keywords::INDESTRUCTIBLE,
-            );
             // 704.5g is a put-into-graveyard action and ignores
             // indestructible. 704.5h destroys for lethal damage, so
             // indestructible prevents only that branch.
-            creature_dies_to_state_based_actions(
-                toughness,
-                obj.damage as i32,
-                obj.v4.deathtouch_damage,
-                indestructible,
-            )
+            toughness <= 0
+                || obj.damage > 0
+                    && creature_dies_to_state_based_actions(
+                        toughness,
+                        obj.damage as i32,
+                        obj.v4.deathtouch_damage,
+                        crate::engine::has_effective_keyword(state, id, crate::card_def::Keywords::INDESTRUCTIBLE),
+                    )
         });
         for id in dying {
             crate::event::commit(
@@ -1870,14 +1867,9 @@ fn sba_fixed_point_with_protected_triggers(
         // the real v3 corpus: `kernel_gy` carrying a stray "Blood Token"
         // entry the trace's own graveyard snapshot never has, many turns
         // after the token was created and then activated/sacrificed).
-        let leaving: Vec<ObjectId> = state
-            .objects
-            .iter()
-            .filter(|(_, obj)| obj.zone != Zone::Battlefield && obj.v4.is_token)
-            .map(|(id, _)| id)
-            .collect();
-        for id in leaving {
-            if crate::event::cease_to_exist(state, id) {
+        for id in std::mem::take(&mut state.ceasing_tokens) {
+            let obj = state.objects.get(id);
+            if obj.zone != Zone::Battlefield && obj.v4.is_token && crate::event::cease_to_exist(state, id) {
                 changed = true;
             }
         }
