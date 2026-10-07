@@ -342,6 +342,29 @@ impl Game {
         self.deal(observer, seed, keep_own_library, Some(hand));
     }
 
+    /// What determinizing this game for `observer` hands out; the same for
+    /// every copy of it.
+    pub fn deal_plan(&self, observer: PlayerId, keep_own_library: bool) -> DealPlan {
+        DealPlan {
+            keep_own_library,
+            owners: [PlayerId::P0, PlayerId::P1].map(|owner| {
+                let slots = unseen_slots(&self.state, observer, owner, keep_own_library && owner == observer);
+                let mut defs: Vec<u16> = slots.iter().map(|&id| self.state.objects.get(id).card_def).collect();
+                sort_card_ids(&mut defs);
+                let foretold = (0..slots.len())
+                    .filter(|&i| self.state.face_down(slots[i]).is_some_and(|f| f.foretold_turn.is_some()))
+                    .collect();
+                (slots, defs, foretold)
+            }),
+        }
+    }
+
+    /// [`Self::determinize_with`] or [`Self::determinize_with_hand`] with a
+    /// plan made from this game or an unchanged copy of it.
+    pub fn determinize_planned(&mut self, plan: &DealPlan, observer: PlayerId, seed: u64, hand: Option<&[u16]>) {
+        self.deal_planned(plan, observer, seed, hand);
+    }
+
     /// The opponent's unknown hand cards and its other unseen cards, as card definitions.
     pub fn hidden_pool(&self, observer: PlayerId) -> (Vec<u16>, Vec<u16>) {
         let opp = observer.opponent();
@@ -352,11 +375,16 @@ impl Game {
     }
 
     fn deal(&mut self, observer: PlayerId, seed: u64, keep_own_library: bool, hand: Option<&[u16]>) {
+        let plan = self.deal_plan(observer, keep_own_library);
+        self.deal_planned(&plan, observer, seed, hand);
+    }
+
+    fn deal_planned(&mut self, plan: &DealPlan, observer: PlayerId, seed: u64, hand: Option<&[u16]>) {
+        let keep_own_library = plan.keep_own_library;
         let mut rng = SplitMix64::seed(seed);
         for owner in [PlayerId::P0, PlayerId::P1] {
-            let slots = unseen_slots(&self.state, observer, owner, keep_own_library && owner == observer);
-            let mut defs: Vec<u16> = slots.iter().map(|&id| self.state.objects.get(id).card_def).collect();
-            sort_card_ids(&mut defs);
+            let (slots, defs, foretold) = &plan.owners[owner.index()];
+            let mut defs = defs.clone();
             let fixed = match hand {
                 Some(h) if owner != observer => {
                     assert_eq!(h.len(), unseen_hand(&self.state, observer, owner).len(), "hand size");
@@ -372,10 +400,10 @@ impl Game {
             };
             // A foretold card is known to have foretell: deal those slots from foretell cards first.
             let mut pinned = Vec::new();
-            for (k, &id) in slots.iter().skip(fixed.len()).enumerate() {
-                if !self.state.face_down(id).is_some_and(|f| f.foretold_turn.is_some()) {
+            for &i in foretold {
+                let Some(k) = i.checked_sub(fixed.len()) else {
                     continue;
-                }
+                };
                 let eligible: Vec<usize> = (0..defs.len()).filter(|&j| CARD_DEFS[defs[j] as usize].foretell_cost.is_some()).collect();
                 if eligible.is_empty() {
                     break; // a pinned hand took them; leave the slot unconstrained
@@ -390,7 +418,7 @@ impl Game {
             for (k, d) in pinned {
                 defs.insert(k, d);
             }
-            for (id, def) in slots.into_iter().zip(fixed.into_iter().chain(defs)) {
+            for (&id, def) in slots.iter().zip(fixed.into_iter().chain(defs)) {
                 set_card(&mut self.state, id, def);
             }
             // A commander in a hidden spot is a known card; only where it is
@@ -1052,6 +1080,15 @@ pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerI
         );
     }
     slots
+}
+
+/// What a deal hands out, per owner: the slots hidden from the observer,
+/// their cards in a canonical order (so a deal depends only on what the
+/// observer can see), and which slots are foretold cards.
+#[derive(Debug, Clone)]
+pub struct DealPlan {
+    keep_own_library: bool,
+    owners: [(Vec<ObjectId>, Vec<u16>, Vec<usize>); 2],
 }
 
 /// Sorts card ids (all below `CARD_DEFS.len()`) by counting.

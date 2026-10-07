@@ -223,6 +223,8 @@ struct PendingSim {
 
 pub struct Search {
     root: Game,
+    /// The root's deal plans, without and with the observer's library kept.
+    deal_plans: [Option<crate::game::DealPlan>; 2],
     observer: PlayerId,
     cfg: Config,
     nodes: Vec<Node>,
@@ -282,6 +284,7 @@ impl Search {
         let mut s = Search {
             observer,
             root: root.clone(),
+            deal_plans: [None, None],
             nodes: vec![Node::new(observer)],
             rng: SplitMix64::seed(seed),
             pending: Vec::new(),
@@ -483,13 +486,16 @@ impl Search {
     /// One determinization, retried keeping the observer's library if resampling it breaks the root.
     fn determinize_root(&mut self, hand: Option<&[u16]>) -> Option<Game> {
         let seed = self.rng.next_u64();
-        let ok = |g: &Game| !g.is_over() && g.to_act() == self.observer;
+        let observer = self.observer;
+        let ok = |g: &Game| !g.is_over() && g.to_act() == observer;
         for keep_own_library in [false, true] {
-            let mut g = self.root.clone();
-            match hand {
-                Some(h) => g.determinize_with_hand(self.observer, seed, keep_own_library, h),
-                None => g.determinize_with(self.observer, seed, keep_own_library),
+            let k = usize::from(keep_own_library);
+            if self.deal_plans[k].is_none() {
+                self.deal_plans[k] = Some(self.root.deal_plan(self.observer, keep_own_library));
             }
+            let plan = self.deal_plans[k].as_ref().expect("made above");
+            let mut g = self.root.clone();
+            g.determinize_planned(plan, self.observer, seed, hand);
             if ok(&g) {
                 return Some(g);
             }
