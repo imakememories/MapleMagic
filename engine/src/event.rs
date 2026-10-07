@@ -1250,13 +1250,11 @@ fn commit_zone_change(
                 };
                 obj.v4.face_index = face_index;
                 obj.v4.effective_color_mask = crate::card_def::mana_colors_mask(face.colors);
-                obj.v4.effective_subtype_ids = face
-                    .subtypes
-                    .iter()
-                    .map(|subtype| subtype.stable_id())
-                    .collect();
-                obj.v4.effective_subtype_ids.sort_unstable();
-                obj.v4.effective_subtype_ids.dedup();
+                let mut subtype_ids: Vec<u16> =
+                    face.subtypes.iter().map(|subtype| subtype.stable_id()).collect();
+                subtype_ids.sort_unstable();
+                subtype_ids.dedup();
+                obj.v4.effective_subtype_ids = subtype_ids.into();
                 obj.name = face.name.into();
             }
             obj.tapped = enters_battlefield_tapped;

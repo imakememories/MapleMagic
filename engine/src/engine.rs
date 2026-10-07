@@ -11769,7 +11769,7 @@ pub fn effective_subtype_ids(state: &GameState, id: ObjectId) -> Vec<u16> {
     let Some(object) = state.objects.try_get(id) else {
         return Vec::new();
     };
-    let mut subtype_ids = object.v4.effective_subtype_ids.clone();
+    let mut subtype_ids = object.v4.effective_subtype_ids.to_vec();
     subtype_ids.extend(
         attached_equipment_profiles(state, id)
             .filter_map(|(_, equipment)| equipment.add_subtype.map(|subtype| subtype.stable_id())),

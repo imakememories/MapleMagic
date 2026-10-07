@@ -247,7 +247,7 @@ pub struct ObjectStateV4 {
     pub face_index: u8,
     pub effective_color_mask: u8,
     /// Sorted, unique `card_def::Subtype::stable_id()` values.
-    pub effective_subtype_ids: Vec<u16>,
+    pub effective_subtype_ids: SubtypeIds,
     pub chosen_color: Option<ManaColor>,
     pub entered_battlefield_turn: Option<u32>,
     /// Sorted by `(ability_kind, ability_index)`; absent abilities have zero uses.
@@ -289,28 +289,37 @@ pub struct ObjectStateV4 {
     pub finalized_cast_binding: Option<FinalizedCastBindingV1>,
 }
 
+/// An object's subtype ids: its card's own list unless an effect changed it.
+pub type SubtypeIds = std::borrow::Cow<'static, [u16]>;
+
+static CARD_SUBTYPE_IDS: std::sync::LazyLock<Vec<Vec<u16>>> = std::sync::LazyLock::new(|| {
+    crate::card_def::CARD_DEFS
+        .iter()
+        .map(|def| {
+            let mut subtype_ids: Vec<u16> =
+                def.subtypes.iter().map(|subtype| subtype.stable_id()).collect();
+            if def.changeling {
+                subtype_ids.extend(
+                    crate::card_def::Subtype::CREATURE_TYPES
+                        .iter()
+                        .map(|subtype| subtype.stable_id()),
+                );
+            }
+            subtype_ids.sort_unstable();
+            subtype_ids.dedup();
+            subtype_ids
+        })
+        .collect()
+});
+
 impl ObjectStateV4 {
     pub fn from_card_def(card_def: u16) -> ObjectStateV4 {
         let def = &crate::card_def::CARD_DEFS[card_def as usize];
-        let mut subtype_ids: Vec<u16> = def
-            .subtypes
-            .iter()
-            .map(|subtype| subtype.stable_id())
-            .collect();
-        if def.changeling {
-            subtype_ids.extend(
-                crate::card_def::Subtype::CREATURE_TYPES
-                    .iter()
-                    .map(|subtype| subtype.stable_id()),
-            );
-        }
-        subtype_ids.sort_unstable();
-        subtype_ids.dedup();
         ObjectStateV4 {
             is_token: def.is_token,
             face_index: 0,
             effective_color_mask: crate::card_def::mana_colors_mask(def.colors),
-            effective_subtype_ids: subtype_ids,
+            effective_subtype_ids: SubtypeIds::Borrowed(&CARD_SUBTYPE_IDS[card_def as usize]),
             chosen_color: None,
             entered_battlefield_turn: None,
             ability_uses_this_turn: Vec::new(),
@@ -2026,7 +2035,7 @@ impl GameState {
                         .collect::<Vec<_>>();
                     subtype_ids.sort_unstable();
                     subtype_ids.dedup();
-                    candidate.v4.effective_subtype_ids = subtype_ids;
+                    candidate.v4.effective_subtype_ids = subtype_ids.into();
                 }
             }
             if candidate

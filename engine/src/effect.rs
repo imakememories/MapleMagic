@@ -12422,7 +12422,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             };
             state.objects.get_mut(ctx.source).v4.attached_to = Some(link);
             state.objects.get_mut(ctx.source).v4.effective_subtype_ids =
-                vec![crate::card_def::Subtype::Aura.stable_id()];
+                vec![crate::card_def::Subtype::Aura.stable_id()].into();
             if !state.objects.get(target).attachments.contains(&ctx.source) {
                 state.objects.get_mut(target).attachments.push(ctx.source);
             }
