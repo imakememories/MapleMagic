@@ -57,6 +57,20 @@ pub struct Arena<T> {
     items: Vec<T>,
 }
 
+impl<T: Clone> Arena<T> {
+    /// A copy of this arena in `buffer`'s allocation.
+    pub fn clone_into_buffer(&self, mut buffer: Vec<T>) -> Arena<T> {
+        buffer.clear();
+        buffer.extend_from_slice(&self.items);
+        Arena { items: buffer }
+    }
+
+    /// Takes the arena's allocation, leaving it empty.
+    pub fn take_buffer(&mut self) -> Vec<T> {
+        std::mem::take(&mut self.items)
+    }
+}
+
 impl<T> Arena<T> {
     pub fn new() -> Self {
         Arena { items: Vec::new() }

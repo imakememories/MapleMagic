@@ -13675,9 +13675,9 @@ fn expected_spell_copy(
 fn create_spell_copy(state: &mut GameState, pending: &PendingSpellCopy) -> (ObjectId, StackItemId) {
     let (_, parent) = pending_spell_copy_parent(state, pending)
         .expect("validated immediately before paying; no action can interleave");
-    let original = state.objects.get(parent.source);
+    let original = *state.objects.get(parent.source);
     let copy_source = state.objects.push(expected_spell_copy_source_object(
-        original, &parent, pending,
+        &original, &parent, pending,
     ));
     let copy_stack_item = next_stack_item_id(state);
     let source_contract = StackSourceContractV4::capture(state, copy_source, CastMethodV4::Normal);

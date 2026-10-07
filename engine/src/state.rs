@@ -474,6 +474,52 @@ pub struct GameObject {
     pub zone_change_count: u32,
 }
 
+/// The game's objects. A search clones and drops a game per simulation, so
+/// a clone takes a buffer dropped earlier on the same thread: no allocation,
+/// already warm, and big enough for the tokens a game creates.
+#[derive(Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Objects(Arena<GameObject>);
+
+thread_local! {
+    static OBJECT_BUFFERS: std::cell::RefCell<Vec<Vec<GameObject>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+impl Clone for Objects {
+    fn clone(&self) -> Self {
+        let buffer = OBJECT_BUFFERS.try_with(|b| b.borrow_mut().pop()).ok().flatten();
+        let buffer = buffer.unwrap_or_else(|| Vec::with_capacity(self.0.len() + 16));
+        Objects(self.0.clone_into_buffer(buffer))
+    }
+}
+
+impl Drop for Objects {
+    fn drop(&mut self) {
+        let buffer = self.0.take_buffer();
+        if buffer.capacity() != 0 {
+            let _ = OBJECT_BUFFERS.try_with(|b| {
+                let mut b = b.borrow_mut();
+                if b.len() < 32 {
+                    b.push(buffer);
+                }
+            });
+        }
+    }
+}
+
+impl std::ops::Deref for Objects {
+    type Target = Arena<GameObject>;
+    fn deref(&self) -> &Arena<GameObject> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Objects {
+    fn deref_mut(&mut self) -> &mut Arena<GameObject> {
+        &mut self.0
+    }
+}
+
 /// An object's display name: a card's static name (or one interned when a
 /// state is deserialized), so objects stay `Copy`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1520,7 +1566,7 @@ pub(crate) struct LibraryShuffleToken {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GameState {
-    pub objects: Arena<GameObject>,
+    pub objects: Objects,
     pub players: [PlayerState; 2],
     pub turn: u32,
     pub active_player: PlayerId,
@@ -1959,7 +2005,7 @@ impl GameState {
         player1.library = library1;
 
         GameState {
-            objects,
+            objects: Objects(objects),
             players: [player0, player1],
             turn: 1,
             active_player: starting_player,
