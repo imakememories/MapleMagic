@@ -1032,6 +1032,7 @@ pub fn stack_target_contract_is_structurally_valid(
                 | TargetSpec::ArtifactPermanent
                 | TargetSpec::EnchantmentPermanent
                 | TargetSpec::ControlledCreature
+                | TargetSpec::AnotherControlledCreature
                 | TargetSpec::OpponentControlledCreature
                 | TargetSpec::UpToOneOpponentControlledCreature
                 | TargetSpec::UpToOneArtifact
@@ -1597,6 +1598,14 @@ pub struct GameState {
     /// they were cast (X included). Call Forth the Tempest.
     #[serde(default, skip_serializing_if = "no_tokens_created")]
     pub spell_mana_values_this_turn: [u16; 2],
+    /// Permanents that entered and still need their "as this enters, you may
+    /// have it become a copy" choice (Cursed Mirror). While any wait, the
+    /// trigger and state-based action checkpoint is deferred.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_copy_entry: Vec<ObjectLinkV4>,
+    /// Creatures that attack this turn if able (Gogo), cleared at cleanup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub must_attack: Vec<ObjectLinkV4>,
     /// Copy effects on permanents, see [`CopyEffectV1`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub copy_effects: Vec<CopyEffectV1>,
@@ -1725,6 +1734,12 @@ impl Hash for GameState {
         }
         if !no_tokens_created(&self.spell_mana_values_this_turn) {
             self.spell_mana_values_this_turn.hash(state);
+        }
+        if !self.pending_copy_entry.is_empty() {
+            self.pending_copy_entry.hash(state);
+        }
+        if !self.must_attack.is_empty() {
+            self.must_attack.hash(state);
         }
         if !self.copy_effects.is_empty() {
             self.copy_effects.hash(state);
@@ -1911,6 +1926,8 @@ impl GameState {
             pending_cascade: None,
             granted_flashback: Vec::new(),
             spell_mana_values_this_turn: [0; 2],
+            pending_copy_entry: Vec::new(),
+            must_attack: Vec::new(),
             copy_effects: Vec::new(),
             copy_history: Vec::new(),
             last_known_defs: Vec::new(),

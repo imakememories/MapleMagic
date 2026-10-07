@@ -2748,3 +2748,232 @@ fn the_fire_crystal_makes_a_token_copy_that_enters_and_is_sacrificed_at_the_end_
     assert!(!state.players[0].graveyard.contains(&token), "and gone");
     assert_eq!(zone(&state, epicure), Zone::Battlefield);
 }
+
+/// Goes to player 0's beginning of combat, targets `target` with Gogo's
+/// trigger and answers its "may".
+fn gogo_combat(state: &mut GameState, target: ObjectId, yes: bool) {
+    advance(state, |s, d| s.step == Step::BeginCombat && matches!(d, Decision::ChooseTargets { .. }));
+    engine::step(state, Action::ChooseTarget(Target::Object(target))).unwrap();
+    loop {
+        let a = match engine::advance_until_decision(state) {
+            Decision::ChooseEffectOption { option_count: 2, .. } => Action::ChooseEffectOption(u16::from(yes)),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => return,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(state, a).unwrap();
+    }
+}
+
+#[test]
+fn gogo_becomes_a_copy_keeping_its_name_and_both_get_two_power_haste_and_must_attack() {
+    let mut state = game();
+    let gogo = put(&mut state, P0, "Gogo, Mysterious Mime");
+    let dragon = put(&mut state, P0, "Goldspan Dragon");
+    gogo_combat(&mut state, dragon, true);
+    assert_eq!(state.objects.get(gogo).card_def, id("Goldspan Dragon"));
+    assert_eq!(state.objects.get(gogo).name, "Gogo, Mysterious Mime");
+    assert_eq!((effective_power(&state, gogo), effective_power(&state, dragon)), (6, 6));
+    assert!(engine::has_effective_keyword(&state, gogo, mtg_kernel::card_def::Keywords::FLYING));
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    assert!(engine::step(&mut state, Action::DeclareAttackers(vec![])).is_err(), "both attack if able");
+    assert!(engine::step(&mut state, Action::DeclareAttackers(vec![dragon])).is_err());
+    engine::step(&mut state, Action::DeclareAttackers(vec![gogo, dragon])).unwrap();
+    advance(&mut state, |s, _| s.step == Step::Main2);
+    assert_eq!(named(&state, P0, "Treasure Token").len(), 2, "each Dragon's attack trigger");
+    assert_eq!(state.players[1].life, 28);
+    end_turn(&mut state);
+    assert_eq!(state.objects.get(gogo).card_def, id("Gogo, Mysterious Mime"), "until end of turn");
+    assert_eq!(effective_power(&state, gogo), 2);
+}
+
+#[test]
+fn gogo_may_decline_and_then_nothing_happens() {
+    let mut state = game();
+    let gogo = put(&mut state, P0, "Gogo, Mysterious Mime");
+    let dragon = put(&mut state, P0, "Goldspan Dragon");
+    gogo_combat(&mut state, dragon, false);
+    assert_eq!(state.objects.get(gogo).card_def, id("Gogo, Mysterious Mime"));
+    assert_eq!(effective_power(&state, dragon), 4);
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    engine::step(&mut state, Action::DeclareAttackers(vec![])).unwrap();
+}
+
+#[test]
+fn gogo_copying_a_legend_keeps_its_name_but_a_copy_of_it_is_a_second_gogo() {
+    let mut state = game();
+    let gogo = put(&mut state, P0, "Gogo, Mysterious Mime");
+    let captain = put(&mut state, P0, "Captain Lannery Storm");
+    gogo_combat(&mut state, captain, true);
+    assert_eq!((zone(&state, gogo), zone(&state, captain)), (Zone::Battlefield, Zone::Battlefield), "different names");
+
+    // A token copy of Gogo copies its copiable values, the name included: two
+    // legendary Gogos.
+    let crystal = put(&mut state, P0, "The Fire Crystal");
+    lands(&mut state, P0, 6);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { activatable_abilities, .. } if activatable_abilities.contains(&(crystal, 0))));
+    engine::step(&mut state, Action::ActivateAbility(crystal, 0)).unwrap();
+    let mut legends = Vec::new();
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseTargets { .. } => Action::ChooseTarget(Target::Object(gogo)),
+            Decision::ChooseLegendToKeep { legends: l, .. } => {
+                legends = l.clone();
+                Action::ChooseLegendToKeep(gogo)
+            }
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(legends.len(), 2, "{legends:?}");
+    assert!(legends.contains(&gogo) && !legends.contains(&captain));
+    assert_eq!(zone(&state, gogo), Zone::Battlefield);
+}
+
+#[test]
+fn a_copy_that_dies_has_the_copied_creatures_dies_trigger() {
+    let mut state = game();
+    let gogo = put(&mut state, P0, "Gogo, Mysterious Mime");
+    let percussionist = put(&mut state, P0, "Clockwork Percussionist");
+    gogo_combat(&mut state, percussionist, true);
+    let library = state.players[0].library.len();
+    lands(&mut state, P0, 1);
+    cast(&mut state, "Lightning Bolt", Some(Target::Object(gogo)), 0);
+    assert_eq!(zone(&state, gogo), Zone::Graveyard);
+    assert_eq!(state.objects.get(gogo).card_def, id("Gogo, Mysterious Mime"), "its own card in the graveyard");
+    assert_eq!(state.players[0].library.len(), library - 1, "the copy's dies trigger exiled the top card");
+}
+
+#[test]
+fn a_copy_dealt_lethal_damage_still_has_the_copied_creatures_damage_trigger() {
+    let mut state = game();
+    let gogo = put(&mut state, P0, "Gogo, Mysterious Mime");
+    let nemesis = put(&mut state, P0, "Screaming Nemesis");
+    gogo_combat(&mut state, nemesis, true);
+    lands(&mut state, P0, 1);
+    let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(bolt)).unwrap();
+    let mut picks = [Target::Object(gogo), Target::Player(P1)].into_iter();
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseTargets { .. } => Action::ChooseTarget(picks.next().expect("two target choices")),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(zone(&state, gogo), Zone::Graveyard, "five power, three toughness");
+    assert_eq!(state.players[1].life, 37, "the copy's damage trigger dealt the three damage");
+}
+
+/// Casts Cursed Mirror from player 0's hand and answers its copy choice.
+fn cast_mirror(state: &mut GameState, copy: Option<ObjectId>) -> ObjectId {
+    let mirror = put_in(state, P0, "Cursed Mirror", Zone::Hand);
+    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(state, Action::CastSpell(mirror)).unwrap();
+    let mut asked = false;
+    loop {
+        let a = match engine::advance_until_decision(state) {
+            Decision::ChooseCopy { permanent, creatures, .. } => {
+                assert_eq!(permanent, mirror);
+                assert!(copy.is_none_or(|c| creatures.contains(&c)), "{creatures:?}");
+                asked = true;
+                Action::ChooseCopy(copy)
+            }
+            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(state, a).unwrap();
+    }
+    assert!(asked, "the copy choice was offered");
+    mirror
+}
+
+#[test]
+fn cursed_mirror_taps_for_red_and_may_enter_as_nothing_else() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let mirror = cast_mirror(&mut state, None);
+    assert_eq!(state.objects.get(mirror).card_def, id("Cursed Mirror"));
+    assert_eq!(engine::available_mana_ability_choices(P0, mirror, &state), vec![ManaColor::R]);
+}
+
+#[test]
+fn cursed_mirror_enters_as_a_hasty_copy_until_end_of_turn() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let dragon = put(&mut state, P1, "Goldspan Dragon");
+    let mirror = cast_mirror(&mut state, Some(dragon));
+    assert_eq!(state.objects.get(mirror).card_def, id("Goldspan Dragon"));
+    assert_eq!(state.objects.get(mirror).name, "Goldspan Dragon");
+    assert!(engine::has_effective_keyword(&state, mirror, mtg_kernel::card_def::Keywords::HASTE));
+    assert!(engine::available_mana_ability_choices(P0, mirror, &state).is_empty(), "no {{T}}: Add {{R}} while a copy");
+    attack_with(&mut state, vec![mirror]);
+    assert_eq!(state.players[1].life, 36);
+    assert_eq!(named(&state, P0, "Treasure Token").len(), 1, "the copied attack trigger");
+    end_turn(&mut state);
+    assert_eq!(state.objects.get(mirror).card_def, id("Cursed Mirror"));
+    assert!(!engine::has_effective_keyword(&state, mirror, mtg_kernel::card_def::Keywords::HASTE));
+}
+
+#[test]
+fn cursed_mirror_has_the_enters_abilities_of_what_it_copies() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let epicure = put(&mut state, P0, "Voldaren Epicure");
+    cast_mirror(&mut state, Some(epicure));
+    assert_eq!(state.players[1].life, 39);
+    assert_eq!(named(&state, P0, "Blood Token").len(), 1);
+}
+
+#[test]
+fn cursed_mirror_copying_a_legend_is_a_second_one() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let captain = put(&mut state, P0, "Captain Lannery Storm");
+    let mirror = put_in(&mut state, P0, "Cursed Mirror", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(mirror)).unwrap();
+    let mut legends = Vec::new();
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseCopy { .. } => Action::ChooseCopy(Some(captain)),
+            Decision::ChooseLegendToKeep { legends: l, .. } => {
+                legends = l.clone();
+                Action::ChooseLegendToKeep(mirror)
+            }
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(legends.len(), 2);
+    assert_eq!(zone(&state, captain), Zone::Graveyard);
+    assert_eq!(zone(&state, mirror), Zone::Battlefield);
+}
+
+#[test]
+fn coin_of_mastery_counts_a_mirror_that_enters_as_a_creature() {
+    let mut state = game();
+    put(&mut state, P0, "Coin of Mastery");
+    put(&mut state, P0, "Sol Ring");
+    lands(&mut state, P0, 1);
+    let epicure = put(&mut state, P0, "Voldaren Epicure");
+    let mirror = cast_mirror(&mut state, Some(epicure));
+    assert_eq!(state.objects.get(mirror).counters.plus1_plus1, 2, "two mana from Sol Ring");
+
+    let mut state = game();
+    put(&mut state, P0, "Coin of Mastery");
+    put(&mut state, P0, "Sol Ring");
+    lands(&mut state, P0, 1);
+    put(&mut state, P0, "Voldaren Epicure");
+    let mirror = cast_mirror(&mut state, None);
+    assert_eq!(state.objects.get(mirror).counters.plus1_plus1, 0, "not a creature");
+}

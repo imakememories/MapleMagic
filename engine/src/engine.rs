@@ -1358,6 +1358,14 @@ pub enum Decision {
         player: PlayerId,
         creature: ObjectId,
     },
+    /// "As this enters, you may have it become a copy of any creature on the
+    /// battlefield" (Cursed Mirror): one of `creatures`, or none
+    /// (`Action::ChooseCopy`).
+    ChooseCopy {
+        player: PlayerId,
+        permanent: ObjectId,
+        creatures: Vec<ObjectId>,
+    },
     /// Cascade (702.85a): cast the exiled `card` without paying its mana cost?
     ChooseCascadeCast {
         player: PlayerId,
@@ -1473,6 +1481,8 @@ pub enum Action {
     /// Answers `Decision::ChooseRiot`: true for haste, false for a +1/+1
     /// counter.
     ChooseRiot(bool),
+    /// Answers `Decision::ChooseCopy`.
+    ChooseCopy(Option<ObjectId>),
     /// Answers `Decision::ChooseCascadeCast`.
     ChooseCascadeCast(bool),
     /// Answers `Decision::ChooseCastMethod`.
@@ -1570,7 +1580,8 @@ fn target_count(spec: TargetSpec) -> u8 {
         | TargetSpec::OpponentArtifactOrEnchantmentPermanent
         | TargetSpec::SpellOrAbility
         | TargetSpec::SpellOrAbilityWithSingleTarget
-        | TargetSpec::CreatureOtherThanSource => 1,
+        | TargetSpec::CreatureOtherThanSource
+        | TargetSpec::AnotherControlledCreature => 1,
         TargetSpec::OneOrTwoCreatures
         | TargetSpec::PlayerThenTheirCreature
         | TargetSpec::PlayerThenUpToOneCreature
@@ -2944,6 +2955,19 @@ fn legal_targets_for_controller_from_source(
             })
             .map(Target::Object)
             .collect(),
+        TargetSpec::AnotherControlledCreature => {
+            let mut ids: Vec<ObjectId> = state.players[controller.index()]
+                .battlefield
+                .iter()
+                .copied()
+                .filter(|&id| {
+                    source.is_none_or(|source| id != source.object)
+                        && object_has_type(state, id, CardType::Creature)
+                })
+                .collect();
+            ids.sort_unstable();
+            ids.into_iter().map(Target::Object).collect()
+        }
         TargetSpec::UpToOneTappedCreature => battlefield_objects(state)
             .filter(|&id| {
                 let object = state.objects.get(id);
@@ -6398,18 +6422,19 @@ fn goad_is_active(state: &GameState, goad: &crate::state::GoadStateV4) -> bool {
         || (goad.expires_at_turn == state.turn && state.active_player != goad.player)
 }
 
-pub fn required_goaded_attackers(state: &GameState, eligible: &[ObjectId]) -> Vec<ObjectId> {
+/// The eligible attackers that must attack (508.1d): goaded ones, and ones
+/// that attack this turn if able.
+pub fn required_attackers(state: &GameState, eligible: &[ObjectId]) -> Vec<ObjectId> {
     eligible
         .iter()
         .copied()
-        .filter(|id| {
-            state
-                .objects
-                .get(*id)
-                .v4
-                .goaded_by
-                .iter()
-                .any(|goad| goad_is_active(state, goad))
+        .filter(|&id| {
+            let object = state.objects.get(id);
+            object.v4.goaded_by.iter().any(|goad| goad_is_active(state, goad))
+                || state
+                    .must_attack
+                    .iter()
+                    .any(|l| l.object == id && l.zone_change_count == object.zone_change_count)
         })
         .collect()
 }
@@ -6577,6 +6602,22 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
         // library draw must become GameOver at the top of the loop before
         // any ordinary priority decision can escape.
         if had_pending_effect {
+            continue;
+        }
+
+        // Cursed Mirror's copy choice, before state-based actions and
+        // triggers, which see the copy.
+        if let Some(link) = state.pending_copy_entry.first().copied() {
+            let live = state.objects.get(link.object);
+            if live.zone == Zone::Battlefield && live.zone_change_count == link.zone_change_count {
+                return Decision::ChooseCopy {
+                    player: live.controller,
+                    permanent: link.object,
+                    creatures: copy_entry_candidates(state, link.object),
+                };
+            }
+            state.pending_copy_entry.remove(0);
+            collect_and_queue_triggers(state);
             continue;
         }
 
@@ -6897,6 +6938,19 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
     }
 }
 
+/// The creatures a permanent entering as a copy may copy: those already on
+/// the battlefield, in id order.
+fn copy_entry_candidates(state: &GameState, permanent: ObjectId) -> Vec<ObjectId> {
+    let mut creatures: Vec<ObjectId> = state
+        .players
+        .iter()
+        .flat_map(|p| p.battlefield.iter().copied())
+        .filter(|&id| id != permanent && object_has_type(state, id, CardType::Creature))
+        .collect();
+    creatures.sort_unstable();
+    creatures
+}
+
 fn reset_priority(state: &mut GameState) {
     state.engine.priority_passes = [false, false];
     state.priority_player = state.active_player;
@@ -6910,6 +6964,10 @@ fn reset_priority(state: &mut GameState) {
 }
 
 fn collect_and_queue_triggers(state: &mut GameState) {
+    // Deferred until an entering permanent is what it entered as.
+    if !state.pending_copy_entry.is_empty() {
+        return;
+    }
     let triggers = trigger::collect_and_process(state);
     state.engine.pending_triggers.extend(triggers);
 }
@@ -9602,7 +9660,9 @@ fn validate_pending_trigger(state: &GameState, pending: &PendingTrigger) -> Resu
         .objects
         .try_get(pending.source)
         .ok_or("pending targeted trigger source is missing")?;
-    let expected = trigger::target_spec_for_trigger(source.card_def, &pending.effect)
+    // The ability is its card's even if a copy effect has since ended.
+    let card_def = pending.source_contract.map_or(source.card_def, |contract| contract.card_def);
+    let expected = trigger::target_spec_for_trigger(card_def, &pending.effect)
         .ok_or("pending targeted trigger has no matching definition-owned ability")?;
     if pending.target_spec != expected {
         return Err("pending trigger target specification changed".to_string());
@@ -11355,6 +11415,8 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
         Step::BeginCombat => {
             state.engine.combat = CombatState::default();
             state.river_blocks.clear();
+            event::log_combat_began(state, state.active_player);
+            collect_and_queue_triggers(state);
         }
         Step::CombatDamage => {
             deal_combat_damage(state);
@@ -11392,6 +11454,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             state.last_known_lore.clear();
             state.type_additions.retain(|a| !a.until_end_of_turn);
             crate::copy::end_until_end_of_turn(state);
+            state.must_attack.clear();
             state.extra_combats = 0;
             state.granted_flashback.clear();
             let returns: Vec<(ObjectId, u32, PlayerId)> = state
@@ -12694,6 +12757,27 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
             }
             state.pending_color_choice.remove(0);
             state.objects.get_mut(link.object).v4.chosen_color = Some(color);
+            Ok(())
+        }
+        Action::ChooseCopy(choice) => {
+            let link = *state.pending_copy_entry.first().ok_or("no copy choice is pending")?;
+            if choice.is_some_and(|creature| !copy_entry_candidates(state, link.object).contains(&creature)) {
+                return Err("not a creature on the battlefield to copy".to_string());
+            }
+            state.pending_copy_entry.remove(0);
+            match choice {
+                Some(creature) if state.objects.get(creature).v4.face_index != 0 => {
+                    crate::engine::note_halt(file!(), line!());
+                    state.engine.halted = Some((UnsupportedMechanic::CopyOfBackFace, link.object));
+                }
+                Some(creature) => {
+                    let values = crate::copy::CopiableValues { haste: true, ..crate::copy::copiable_values(state, creature) };
+                    crate::copy::become_copy(state, link.object, values, true);
+                    event::entered_as_copy(state, link.object);
+                }
+                None => crate::statics::coin_of_mastery_counters(state, link.object),
+            }
+            collect_and_queue_triggers(state);
             Ok(())
         }
         Action::ChooseRiot(haste) => {
@@ -14264,7 +14348,7 @@ pub(crate) fn validate_declare_attackers(
     if !attackers.iter().all(|a| eligible.contains(a)) {
         return Err("one or more declared attackers is not an eligible attacker".to_string());
     }
-    let required = required_goaded_attackers(state, &eligible);
+    let required = required_attackers(state, &eligible);
     if !required.iter().all(|attacker| attackers.contains(attacker)) {
         return Err("one or more goaded creatures able to attack was omitted".to_string());
     }

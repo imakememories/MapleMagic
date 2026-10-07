@@ -584,6 +584,8 @@ pub enum TargetSpec {
     SpellOrAbilityWithSingleTarget,
     /// One or two distinct creatures (Untimely Malfunction).
     OneOrTwoCreatures,
+    /// Another creature the controller controls (Gogo, Mysterious Mime).
+    AnotherControlledCreature,
 }
 
 impl TargetSpec {
@@ -641,6 +643,7 @@ impl TargetSpec {
             TargetSpec::SpellOrAbility => 46,
             TargetSpec::SpellOrAbilityWithSingleTarget => 47,
             TargetSpec::OneOrTwoCreatures => 48,
+            TargetSpec::AnotherControlledCreature => 49,
         }
     }
 }
@@ -1656,6 +1659,7 @@ mod tests {
             (TargetSpec::SpellOrAbility, 46),
             (TargetSpec::SpellOrAbilityWithSingleTarget, 47),
             (TargetSpec::OneOrTwoCreatures, 48),
+            (TargetSpec::AnotherControlledCreature, 49),
         ];
         for (target_spec, ordinal) in stable_ordinals {
             assert_eq!(target_spec.stable_id(), ordinal);
@@ -1675,7 +1679,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0xfc81_a966_3253_d188);
+        assert_eq!(KERNEL_CARDDB_HASH, 0xf846_e272_755c_6368);
     }
 
     #[test]

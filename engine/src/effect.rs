@@ -982,6 +982,10 @@ pub enum EffectOp {
     /// Create a token that's a copy of target creature, and sacrifice it at
     /// the beginning of the next end step (The Fire Crystal).
     CreateTokenCopyOfTargetSacrificeAtEndStep,
+    /// Gogo, still on the battlefield, becomes a copy of the target until end
+    /// of turn keeping its name; then both get +2/+0 and haste until end of
+    /// turn and attack this turn if able.
+    MimicTargetUntilEndOfTurn,
     /// Gain control of a creature `player` controls until end of turn, chosen
     /// by this effect's controller without targeting; untap it, and it gains
     /// haste (Seize the Spotlight's fame).
@@ -3733,11 +3737,16 @@ fn validated_definition_owned_root_effect(
     // Annihilator is a keyword trigger, printed or granted.
     let keyword_trigger = *root == crate::trigger::annihilator_effect();
     if pending.resolving_item.kind == crate::state::StackItemKind::TriggeredAbility && !keyword_trigger {
-        let card_def = state
+        let live_card_def = state
             .objects
             .try_get(pending.resolving_item.source)
             .ok_or("answered trigger frame lost its source object")?
             .card_def;
+        let card_def = pending
+            .resolving_item
+            .v4
+            .ability_source_contract
+            .map_or(live_card_def, |contract| contract.card_def);
         if !crate::trigger::trigger_effect_matches(card_def, &root)
             && !crate::trigger::triggers_for(card_def)
             .iter()
@@ -11409,6 +11418,40 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 objects: vec![token],
                 source_contract,
             });
+        }
+        EffectOp::MimicTargetUntilEndOfTurn => {
+            let Some(source) = ctx.ability_source_contract else {
+                crate::engine::note_halt(file!(), line!());
+                state.engine.halted = Some((crate::engine::UnsupportedMechanic::InvalidEffectContinuation, ctx.source));
+                return;
+            };
+            let gogo = state.objects.get(ctx.source);
+            if gogo.zone != Zone::Battlefield || gogo.zone_change_count != source.zone_change_count {
+                return;
+            }
+            let target = ctx.resolve_object(ObjectRef::Target(0));
+            if state.objects.get(target).v4.face_index != 0 || gogo.v4.face_index != 0 {
+                crate::engine::note_halt(file!(), line!());
+                state.engine.halted = Some((crate::engine::UnsupportedMechanic::CopyOfBackFace, ctx.source));
+                return;
+            }
+            let values = crate::copy::CopiableValues { name: source.card_def, ..crate::copy::copiable_values(state, target) };
+            crate::copy::become_copy(state, ctx.source, values, true);
+            for object in [ctx.source, target] {
+                let zone_change_count = state.objects.get(object).zone_change_count;
+                let timestamp = crate::engine::next_timestamp(state);
+                state.engine.until_end_of_turn.push(crate::engine::UntilEndOfTurnEffect::ResolvedObjectEffect {
+                    object_id: object,
+                    object_zone_change_count: zone_change_count,
+                    layer: crate::engine::Layers::POWER_TOUGHNESS,
+                    timestamp,
+                    duration: crate::engine::EffectDuration::EndOfTurn,
+                    power: 2,
+                    toughness: 0,
+                    grant_haste: true,
+                });
+                state.must_attack.push(crate::state::ObjectLinkV4 { object, zone_change_count });
+            }
         }
         EffectOp::CreateTappedToken {
             token_def,

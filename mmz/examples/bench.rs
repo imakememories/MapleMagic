@@ -1,17 +1,16 @@
 //! Random-policy throughput through the `Game` wrapper (auto-pay, flattened
 //! combat), single thread and N threads.
-use mmz::game::{deck_names, Game};
+use mmz::game::{deck_pairs, Game};
 use mmz::mtg_kernel::state::SplitMix64;
 use std::time::{Duration, Instant};
 
 fn run(secs: f64, tid: u64) -> (u64, u64) {
-    let decks = deck_names();
+    let pairs = deck_pairs();
     let end = Instant::now() + Duration::from_secs_f64(secs);
     let (mut games, mut decisions) = (0u64, 0u64);
     let mut rng = SplitMix64::seed(tid.wrapping_mul(0x9E37) + 1);
     while Instant::now() < end {
-        let a = decks[(rng.next_u64() % decks.len() as u64) as usize];
-        let b = decks[(rng.next_u64() % decks.len() as u64) as usize];
+        let (a, b) = pairs[(rng.next_u64() % pairs.len() as u64) as usize];
         let mut g = Game::new(a, b, rng.next_u64()).unwrap();
         g.playout(&mut rng);
         games += 1;

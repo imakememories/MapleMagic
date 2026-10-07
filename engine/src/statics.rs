@@ -123,6 +123,15 @@ pub fn legend_rule_violation(state: &GameState) -> Option<(PlayerId, Vec<ObjectI
     None
 }
 
+static MIRRORS: LazyLock<Vec<bool>> =
+    LazyLock::new(|| CARD_DEFS.iter().map(|def| def.name == "Cursed Mirror").collect());
+
+/// "As this enters, you may have it become a copy of any creature on the
+/// battlefield" (Cursed Mirror).
+pub fn copies_on_entry(state: &GameState, id: ObjectId) -> bool {
+    MIRRORS[state.objects.get(id).card_def as usize]
+}
+
 static THRONES: LazyLock<Vec<bool>> =
     LazyLock::new(|| CARD_DEFS.iter().map(|def| def.name == "Throne of Eldraine").collect());
 

@@ -218,6 +218,7 @@ fn run_goldfish(state: &mut GameState) -> RunResult {
             | Decision::ChooseEffectBoolean { .. }
             | Decision::ChooseCommanderZone { .. }
             | Decision::ChooseRiot { .. }
+        | Decision::ChooseCopy { .. }
             | Decision::ChooseCascadeCast { .. }
         | Decision::ChooseLegendToKeep { .. }
         | Decision::ChooseCastFromExile { .. }

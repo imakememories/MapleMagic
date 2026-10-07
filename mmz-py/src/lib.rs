@@ -2,7 +2,7 @@
 //! zero-padded uint16 numpy arrays with a length per row.
 
 use mmz::features::{action_vocab, token_vocab, ACTION_FIELDS, MAX_TOKENS, TOKEN_FIELDS};
-use mmz::game::{deck_names, Outcome};
+use mmz::game::{deck_names, deck_pairs, Outcome};
 use mmz::history::{hist_vocab, HIST_FIELDS, MAX_HIST};
 use mmz::ismcts::{Config, Eval, MapleSelect, WorldSampler, RETENTION_BUCKETS};
 use mmz::mtg_kernel::card_def::{CardType, CARD_DEFS};
@@ -407,6 +407,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("TOKEN_VOCAB", token_vocab().to_vec())?;
     m.add("ACTION_VOCAB", action_vocab().to_vec())?;
     m.add("DECKS", deck_names())?;
+    m.add("DECK_PAIRS", deck_pairs())?;
     m.add("HIST_FIELDS", HIST_FIELDS)?;
     m.add("MAX_HIST", MAX_HIST)?;
     m.add("HIST_VOCAB", hist_vocab().to_vec())?;

@@ -137,6 +137,22 @@ pub fn deck_names() -> Vec<&'static str> {
     RUNTIME_DECKS.iter().map(|d| d.id).chain(commander).collect()
 }
 
+/// Every pairing of [`deck_names`] in the same format: runtime decks with
+/// runtime decks, Commander decks with Commander decks.
+pub fn deck_pairs() -> Vec<(&'static str, &'static str)> {
+    let names = deck_names();
+    let commander = |n: &str| commander::list_names().iter().any(|c| c.eq_ignore_ascii_case(n));
+    let mut pairs = Vec::new();
+    for &a in &names {
+        for &b in &names {
+            if commander(a) == commander(b) {
+                pairs.push((a, b));
+            }
+        }
+    }
+    pairs
+}
+
 pub fn obj_sig(state: &GameState, id: ObjectId, viewer: PlayerId) -> u32 {
     let o = state.objects.get(id);
     let mine = (o.controller == viewer) as u32;
@@ -886,6 +902,14 @@ impl Game {
                 self.actor = player;
                 yes_no(&mut out, def_of(st, creature), 12, Action::ChooseRiot);
             }
+            Decision::ChooseCopy { player, permanent, creatures } => {
+                self.actor = player;
+                out.push(mk(ActFeat::new(Kind::FinishTargets, def_of(st, permanent), 0, 3), Exec::Engine(Action::ChooseCopy(None))));
+                for id in creatures {
+                    let feat = ActFeat::new(Kind::EffectTarget, def_of(st, id), obj_sig(st, id, player), 3).with_role(obj_role(st, id));
+                    push_unique(&mut out, mk(feat, Exec::Engine(Action::ChooseCopy(Some(id)))));
+                }
+            }
             Decision::ChooseLegendToKeep { player, legends } => {
                 self.actor = player;
                 for id in legends {
@@ -905,7 +929,7 @@ impl Game {
             Decision::DeclareAttackers { player, eligible } => {
                 self.actor = player;
                 // Goaded creatures must attack: pre-commit them.
-                let chosen = engine::required_goaded_attackers(st, &eligible);
+                let chosen = engine::required_attackers(st, &eligible);
                 let eligible = eligible.into_iter().filter(|id| !chosen.contains(id)).collect();
                 self.pending = Pending::Attack { eligible, next: 0, chosen };
             }
@@ -1258,20 +1282,17 @@ mod tests {
 
     #[test]
     fn random_games_finish_for_every_deck_pair() {
-        let decks = deck_names();
         let mut rng = SplitMix64::seed(7);
         let mut aborted = 0;
         let mut total = 0;
-        for a in &decks {
-            for b in &decks {
-                for s in 0..3 {
-                    let mut g = Game::new(a, b, total * 31 + s).unwrap();
-                    if g.playout(&mut rng) == Outcome::Aborted {
-                        eprintln!("{a} vs {b}: {}", g.abort_reason.as_deref().unwrap_or("?"));
-                        aborted += 1;
-                    }
-                    total += 1;
+        for (a, b) in deck_pairs() {
+            for s in 0..3 {
+                let mut g = Game::new(a, b, total * 31 + s).unwrap();
+                if g.playout(&mut rng) == Outcome::Aborted {
+                    eprintln!("{a} vs {b}: {}", g.abort_reason.as_deref().unwrap_or("?"));
+                    aborted += 1;
                 }
+                total += 1;
             }
         }
         assert!(aborted * 50 <= total, "{aborted}/{total} games aborted");
@@ -1395,21 +1416,19 @@ mod tests {
     fn copies_that_differ_are_separate_choices() {
         let mut rng = SplitMix64::seed(11);
         let mut split = 0;
-        for a in deck_names() {
-            for b in deck_names() {
-                let mut g = Game::new(a, b, 1).unwrap();
-                while !g.is_over() {
-                    let cs = g.choices();
-                    for (i, x) in cs.iter().enumerate() {
-                        for y in &cs[i + 1..] {
-                            assert_ne!(x.key, y.key);
-                            let same = (x.feat.kind, x.feat.src, x.feat.tgt, x.feat.arg) == (y.feat.kind, y.feat.src, y.feat.tgt, y.feat.arg);
-                            split += same as u32;
-                        }
+        for (a, b) in deck_pairs() {
+            let mut g = Game::new(a, b, 1).unwrap();
+            while !g.is_over() {
+                let cs = g.choices();
+                for (i, x) in cs.iter().enumerate() {
+                    for y in &cs[i + 1..] {
+                        assert_ne!(x.key, y.key);
+                        let same = (x.feat.kind, x.feat.src, x.feat.tgt, x.feat.arg) == (y.feat.kind, y.feat.src, y.feat.tgt, y.feat.arg);
+                        split += same as u32;
                     }
-                    let n = cs.len();
-                    g.apply((rng.next_u64() % n as u64) as usize);
                 }
+                let n = cs.len();
+                g.apply((rng.next_u64() % n as u64) as usize);
             }
         }
         assert!(split > 0, "no decision offered two copies of one card that differ");
@@ -1511,28 +1530,25 @@ mod tests {
 
     #[test]
     fn autopay_skip_loses_nothing() {
-        let decks = deck_names();
         let mut rng = SplitMix64::seed(17);
         let (mut skipped, mut searched) = (0, 0);
-        for (i, a) in decks.iter().enumerate() {
-            for b in &decks {
-                let mut g = Game::new(a, b, i as u64).unwrap();
-                while !g.is_over() {
-                    if let Decision::CastSpellOrPass { player, castable_spells, mana_abilities, activatable_abilities, .. } =
-                        engine::advance_until_decision(&mut g.state.clone())
-                    {
-                        let st = &g.state;
-                        if has_uncounted_free_source(st, &mana_abilities) {
-                            searched += 1;
-                        } else {
-                            skipped += 1;
-                            let goals = autopay_search(st, player, &mana_abilities, &castable_spells, &activatable_abilities);
-                            assert!(goals.is_empty(), "{a} vs {b}: skipping lost {:?}", goals.iter().map(|g| &g.0).collect::<Vec<_>>());
-                        }
+        for (i, (a, b)) in deck_pairs().into_iter().enumerate() {
+            let mut g = Game::new(a, b, i as u64).unwrap();
+            while !g.is_over() {
+                if let Decision::CastSpellOrPass { player, castable_spells, mana_abilities, activatable_abilities, .. } =
+                    engine::advance_until_decision(&mut g.state.clone())
+                {
+                    let st = &g.state;
+                    if has_uncounted_free_source(st, &mana_abilities) {
+                        searched += 1;
+                    } else {
+                        skipped += 1;
+                        let goals = autopay_search(st, player, &mana_abilities, &castable_spells, &activatable_abilities);
+                        assert!(goals.is_empty(), "{a} vs {b}: skipping lost {:?}", goals.iter().map(|g| &g.0).collect::<Vec<_>>());
                     }
-                    let n = g.choices().len();
-                    g.apply((rng.next_u64() % n as u64) as usize);
                 }
+                let n = g.choices().len();
+                g.apply((rng.next_u64() % n as u64) as usize);
             }
         }
         assert!(skipped > 1000, "only {skipped} skipped decisions checked ({searched} searched)");

@@ -6380,7 +6380,7 @@
     },
     {
       "name": "Cursed Mirror",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}{R}",
       "mana_value": 3,
       "colors": [
@@ -6394,13 +6394,17 @@
       "power": null,
       "toughness": null,
       "is_land": false,
-      "produces_mana": [],
+      "produces_mana": [
+        "R"
+      ],
       "decks": [
         "Commander - Ognis"
       ],
       "sideboard_only": false,
       "complexity": "commander",
-      "mechanics": [],
+      "mechanics": [
+        "mana_ability"
+      ],
       "keywords": [],
       "oracle": "{T}: Add {R}.\nAs this artifact enters, you may have it become a copy of any creature on the battlefield until end of turn, except it has haste.",
       "layout": "normal",
@@ -8025,7 +8029,7 @@
     },
     {
       "name": "Gogo, Mysterious Mime",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{3}{R}",
       "mana_value": 4,
       "colors": [

@@ -71,6 +71,7 @@ fn kind_of(d: &Decision) -> Kind {
         | Decision::ChooseEffectBoolean { .. }
         | Decision::ChooseCommanderZone { .. }
         | Decision::ChooseRiot { .. }
+        | Decision::ChooseCopy { .. }
         | Decision::ChooseCascadeCast { .. }
         | Decision::ChooseLegendToKeep { .. }
         | Decision::ChooseCastFromExile { .. }
@@ -335,6 +336,7 @@ fn run_combat_game(state: &mut GameState) -> (Vec<Kind>, u32, Vec<CommittedEvent
             | Decision::ChooseEffectBoolean { .. }
             | Decision::ChooseCommanderZone { .. }
             | Decision::ChooseRiot { .. }
+        | Decision::ChooseCopy { .. }
         | Decision::ChooseCascadeCast { .. }
         | Decision::ChooseLegendToKeep { .. }
         | Decision::ChooseCastFromExile { .. }

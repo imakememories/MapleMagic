@@ -121,7 +121,7 @@ impl History {
 mod tests {
     use super::*;
     use crate::features::observe;
-    use crate::game::deck_names;
+    use crate::game::deck_pairs;
     use mtg_kernel::state::SplitMix64;
 
     #[test]
@@ -137,37 +137,35 @@ mod tests {
     fn activated_cards_are_ones_the_other_player_has_seen() {
         let mut rng = SplitMix64::seed(3);
         let (mut logged, mut hidden) = (0, Vec::new());
-        for a in deck_names() {
-            for b in deck_names() {
-                let mut g = Game::new(a, b, 7).unwrap();
-                let mut h = History::default();
-                // Logged cards the other player hasn't been shown yet. A card
-                // activated from hand is revealed once the activation is
-                // complete (602.2a), which may take more choices.
-                let mut awaiting: Vec<(u16, PlayerId)> = Vec::new();
-                let shown = |g: &Game, card: u16, actor: PlayerId| observe(g, actor.opponent()).iter().any(|t| t[0] == card);
-                while !g.is_over() {
-                    let n = g.choices().len();
-                    let i = (rng.next_u64() % n as u64) as usize;
-                    let before = h.events.len();
-                    h.record(&g, i);
-                    if let Some(e) = h.events[before..].iter().rev().find(|e| e.kind == Kind::Activate as u16 + 1 && e.card != 0) {
-                        logged += 1;
-                        awaiting.push((e.card, e.actor));
-                    }
-                    awaiting.retain(|&(card, actor)| !shown(&g, card, actor));
-                    g.apply(i);
-                    awaiting.retain(|&(card, actor)| !shown(&g, card, actor));
+        for (a, b) in deck_pairs() {
+            let mut g = Game::new(a, b, 7).unwrap();
+            let mut h = History::default();
+            // Logged cards the other player hasn't been shown yet. A card
+            // activated from hand is revealed once the activation is
+            // complete (602.2a), which may take more choices.
+            let mut awaiting: Vec<(u16, PlayerId)> = Vec::new();
+            let shown = |g: &Game, card: u16, actor: PlayerId| observe(g, actor.opponent()).iter().any(|t| t[0] == card);
+            while !g.is_over() {
+                let n = g.choices().len();
+                let i = (rng.next_u64() % n as u64) as usize;
+                let before = h.events.len();
+                h.record(&g, i);
+                if let Some(e) = h.events[before..].iter().rev().find(|e| e.kind == Kind::Activate as u16 + 1 && e.card != 0) {
+                    logged += 1;
+                    awaiting.push((e.card, e.actor));
                 }
-                hidden.extend(awaiting.iter().map(|&(card, _)| format!("{a} vs {b}: {}", CARD_DEFS[card as usize - 1].name)));
-                let vocab = hist_vocab();
-                for p in [PlayerId::P0, PlayerId::P1] {
-                    let toks = h.tokens(p, g.state.turn);
-                    assert!(toks.len() <= MAX_HIST);
-                    for t in toks {
-                        for (f, &v) in t.iter().enumerate() {
-                            assert!((v as usize) < vocab[f], "field {f} = {v}");
-                        }
+                awaiting.retain(|&(card, actor)| !shown(&g, card, actor));
+                g.apply(i);
+                awaiting.retain(|&(card, actor)| !shown(&g, card, actor));
+            }
+            hidden.extend(awaiting.iter().map(|&(card, _)| format!("{a} vs {b}: {}", CARD_DEFS[card as usize - 1].name)));
+            let vocab = hist_vocab();
+            for p in [PlayerId::P0, PlayerId::P1] {
+                let toks = h.tokens(p, g.state.turn);
+                assert!(toks.len() <= MAX_HIST);
+                for t in toks {
+                    for (f, &v) in t.iter().enumerate() {
+                        assert!((v as usize) < vocab[f], "field {f} = {v}");
                     }
                 }
             }

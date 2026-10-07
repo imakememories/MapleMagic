@@ -481,6 +481,10 @@ pub enum CommittedEvent {
     UpkeepBegan {
         player: PlayerId,
     },
+    /// 507.1: a beginning of combat step began on `player`'s turn.
+    CombatBegan {
+        player: PlayerId,
+    },
     /// A permanent entered the battlefield tapped.
     EnteredTapped {
         object: ObjectId,
@@ -889,7 +893,11 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
             *n = (*n + 1).min(2);
         }
     }
-    if let CommittedEvent::ZoneChange { object, from: Zone::Stack, to: Zone::Battlefield, .. } = &committed {
+    if let Some(object) = entered.filter(|&o| crate::statics::copies_on_entry(state, o)) {
+        // What it enters as waits for the copy choice.
+        let link = crate::state::ObjectLinkV4 { object, zone_change_count: state.objects.get(object).zone_change_count };
+        state.pending_copy_entry.push(link);
+    } else if let CommittedEvent::ZoneChange { object, from: Zone::Stack, to: Zone::Battlefield, .. } = &committed {
         crate::statics::coin_of_mastery_counters(state, *object);
     }
     if let Some(object) = entered.filter(|&o| crate::statics::chooses_color_on_entry(state, o)) {
@@ -914,6 +922,32 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
             u8::try_from(*lore).expect("a supported Saga chapter fits u8")
         };
         log_saga_chapter(state, source, chapter);
+    }
+}
+
+/// What happens as a permanent enters that depends on what it is, for a
+/// permanent that entered as a copy (614.12): enters-with counters and
+/// choices, entering tapped, a Saga's first lore counter.
+pub fn entered_as_copy(state: &mut GameState, object: ObjectId) {
+    crate::statics::coin_of_mastery_counters(state, object);
+    let link = crate::state::ObjectLinkV4 { object, zone_change_count: state.objects.get(object).zone_change_count };
+    if crate::statics::chooses_color_on_entry(state, object) {
+        state.pending_color_choice.push(link);
+    }
+    if crate::statics::has_riot(state, object) {
+        state.pending_riot.push(link);
+    }
+    let controller = state.objects.get(object).controller;
+    if !state.objects.get(object).tapped && permanent_enters_battlefield_tapped(state, object, controller) {
+        state.objects.get_mut(object).tapped = true;
+        log_entered_tapped(state, object);
+    }
+    let o = state.objects.get(object);
+    if o.v4.face_index == 0 && crate::card_def::CARD_DEFS[o.card_def as usize].saga.is_some() {
+        let lore = &mut state.objects.get_mut(object).counters.lore;
+        *lore = lore.checked_add(1).expect("a newly entered Saga's first lore counter fits i16");
+        let chapter = u8::try_from(*lore).expect("a supported Saga chapter fits u8");
+        log_saga_chapter(state, object, chapter);
     }
 }
 
@@ -1090,6 +1124,12 @@ pub fn log_expended(state: &mut GameState, player: PlayerId, before: u16, after:
 
 pub fn log_upkeep_began(state: &mut GameState, player: PlayerId) {
     let committed = CommittedEvent::UpkeepBegan { player };
+    state.engine.event_log.push(committed.clone());
+    state.engine.event_history.push(committed);
+}
+
+pub fn log_combat_began(state: &mut GameState, player: PlayerId) {
+    let committed = CommittedEvent::CombatBegan { player };
     state.engine.event_log.push(committed.clone());
     state.engine.event_history.push(committed);
 }

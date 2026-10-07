@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import yaml
 
-from . import DECKS, MAX_TOKENS, SelfPlay
+from . import DECK_PAIRS, MAX_TOKENS, SelfPlay
 from .model import EvalPlan, Net, evaluate, load, losses, plan_eval, save
 
 MAX_ACTIONS = 96
@@ -73,7 +73,7 @@ class Config:
 
     def pairing_list(self) -> list[tuple[str, str]]:
         if self.pairings == "all":
-            return [(a, b) for a in DECKS for b in DECKS]
+            return [tuple(p) for p in DECK_PAIRS]
         return [tuple(p) for p in self.pairings]
 
     def search_settings(self) -> dict:

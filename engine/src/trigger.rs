@@ -97,6 +97,8 @@ pub enum TriggerCondition {
     ThisOrAnotherControlledArtifactEnters,
     /// "At the beginning of each opponent's upkeep".
     BeginningOfOpponentsUpkeep,
+    /// "At the beginning of combat on your turn".
+    BeginningOfCombatOnYourTurn,
     /// "Whenever one or more Warriors you control attack a player": once
     /// per declaration.
     OneOrMoreControlledWarriorsAttack,
@@ -1250,6 +1252,18 @@ const REPLICATE_TRIGGERS: [TriggeredAbilityDef; 1] = [TriggeredAbilityDef {
     effect: replicate_effect,
 }];
 
+/// Gogo: "you may have Gogo become a copy of another target creature you
+/// control until end of turn, except its name is Gogo, Mysterious Mime. If
+/// you do, ..."
+fn gogo_effect() -> EffectOp {
+    EffectOp::Choice {
+        controller: crate::effect::PlayerRef::Controller,
+        options: vec![EffectOp::Sequence(vec![]), EffectOp::MimicTargetUntilEndOfTurn],
+    }
+}
+
+const GOGO_TRIGGERS: [TriggeredAbilityDef; 1] = [trigger(TriggerCondition::BeginningOfCombatOnYourTurn, gogo_effect)];
+
 fn jurin_attack_effect() -> EffectOp {
     EffectOp::PumpAttackersPerDefendingCreature
 }
@@ -1409,6 +1423,7 @@ fn triggers_by_name(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Hideous Taskmaster" => &HIDEOUS_TASKMASTER_TRIGGERS,
         "Shattering Spree" => &REPLICATE_TRIGGERS,
         "Jurin, Leading the Charge" => &JURIN_TRIGGERS,
+        "Gogo, Mysterious Mime" => &GOGO_TRIGGERS,
         "Raging River" => &RAGING_RIVER_TRIGGERS,
         "Pyreswipe Hawk" => &PYRESWIPE_HAWK_TRIGGERS,
         "Urabrask, Heretic Praetor" => &URABRASK_TRIGGERS,
@@ -1446,6 +1461,7 @@ pub fn trigger_target_spec(card_def: u16) -> TargetSpec {
         "Screaming Nemesis" => TargetSpec::AnyTargetOtherThanSource,
         "Gornog, the Red Reaper" => TargetSpec::OpponentControlledCreature,
         "Hideous Taskmaster" => TargetSpec::UpToOneOpponentControlledCreature,
+        "Gogo, Mysterious Mime" => TargetSpec::AnotherControlledCreature,
         _ => TargetSpec::None,
     }
 }
@@ -2631,6 +2647,7 @@ fn trigger_matches(
                 && crate::engine::object_has_type(state, *object, crate::card_def::CardType::Artifact)
         }
         (TriggerCondition::BeginningOfOpponentsUpkeep, CommittedEvent::UpkeepBegan { player }) => *player != controller,
+        (TriggerCondition::BeginningOfCombatOnYourTurn, CommittedEvent::CombatBegan { player }) => *player == controller,
         (TriggerCondition::YouExpend(n), CommittedEvent::Expended { player, before, after }) => {
             *player == controller && *before < n && *after >= n
         }
