@@ -6313,6 +6313,24 @@ pub(crate) fn minimum_blockers_required(state: &GameState, attacker: ObjectId) -
     )
 }
 
+/// Raging River: only creatures with flying and creatures in the chosen
+/// pile may block `attacker`.
+fn river_allows(state: &GameState, attacker: ObjectId, blocker: ObjectId) -> bool {
+    if state.river_blocks.is_empty() {
+        return true;
+    }
+    let attacker_generation = state.objects.get(attacker).zone_change_count;
+    let blocker_generation = state.objects.get(blocker).zone_change_count;
+    state
+        .river_blocks
+        .iter()
+        .filter(|r| r.attacker.object == attacker && r.attacker.zone_change_count == attacker_generation)
+        .all(|r| {
+            r.pile.iter().any(|l| l.object == blocker && l.zone_change_count == blocker_generation)
+                || has_effective_keyword(state, blocker, Keywords::FLYING)
+        })
+}
+
 fn legal_blockers_for(state: &GameState, attacker: ObjectId) -> Vec<ObjectId> {
     let attacker_obj = state.objects.get(attacker);
     let defender = attacker_obj.controller.opponent();
@@ -6346,6 +6364,9 @@ fn legal_blockers_for(state: &GameState, attacker: ObjectId) -> Vec<ObjectId> {
                 return false;
             }
             if cant_block(state, id) || crate::statics::coward_cant_block(state, id, attacker) {
+                return false;
+            }
+            if !river_allows(state, attacker, id) {
                 return false;
             }
             if has_effective_keyword(state, attacker, Keywords::PROTECTION_FROM_MONOCOLORED)
@@ -11172,11 +11193,13 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
         }
         Step::BeginCombat => {
             state.engine.combat = CombatState::default();
+            state.river_blocks.clear();
         }
         Step::CombatDamage => {
             deal_combat_damage(state);
         }
         Step::End => {
+            state.river_blocks.clear();
             // 603.7: delayed "at the beginning of the next end step" triggers.
             for delayed in std::mem::take(&mut state.delayed_sacrifices) {
                 state.engine.pending_triggers.push(PendingTrigger {

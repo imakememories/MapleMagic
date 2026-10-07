@@ -10783,7 +10783,7 @@
     },
     {
       "name": "Raging River",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{R}{R}",
       "mana_value": 2,
       "colors": [

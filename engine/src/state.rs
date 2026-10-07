@@ -71,6 +71,14 @@ pub struct PendingCascadeV1 {
     pub waiting_triggers: Vec<crate::trigger::PendingTrigger>,
 }
 
+/// Raging River: `attacker` can't be blocked this combat except by
+/// creatures with flying and creatures in `pile`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct RiverBlockV1 {
+    pub attacker: ObjectLinkV4,
+    pub pile: Vec<ObjectLinkV4>,
+}
+
 /// Cards put on the bottom of `owner`'s library in a random order
 /// (cascade, Fomori Vault): the observers in `known_to` know which cards
 /// they are, but not their order. Stale once any card leaves the library.
@@ -1456,6 +1464,9 @@ pub struct GameState {
     /// a color" choice.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_color_choice: Vec<ObjectLinkV4>,
+    /// Raging River's blocking restrictions for this combat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub river_blocks: Vec<RiverBlockV1>,
     /// While a cast pays: whether floating artifact mana goes first (a
     /// creature spell), and the artifact mana spent so far.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1567,6 +1578,9 @@ impl Hash for GameState {
         }
         if !self.pending_color_choice.is_empty() {
             self.pending_color_choice.hash(state);
+        }
+        if !self.river_blocks.is_empty() {
+            self.river_blocks.hash(state);
         }
         if self.pending_cascade.is_some() {
             self.pending_cascade.hash(state);
@@ -1746,6 +1760,7 @@ impl GameState {
             cast_payment: None,
             restricted_mana: [[0; 6]; 2],
             pending_color_choice: Vec::new(),
+            river_blocks: Vec::new(),
             pending_cascade: None,
             granted_flashback: Vec::new(),
             spell_mana_values_this_turn: [0; 2],

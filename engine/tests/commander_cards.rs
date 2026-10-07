@@ -2468,3 +2468,69 @@ fn replicate_copies_take_the_targets_the_spell_has_when_they_are_made() {
     assert_eq!(zone(&state, theirs[1]), Zone::Graveyard, "the copy");
     assert_eq!(zone(&state, theirs[0]), Zone::Battlefield);
 }
+
+#[test]
+fn raging_river_lets_each_attacker_be_blocked_only_from_its_pile_or_by_flyers() {
+    let mut state = game();
+    put(&mut state, P0, "Raging River");
+    let x = put(&mut state, P0, "Myr Enforcer");
+    let y = put(&mut state, P0, "Myr Enforcer");
+    let a = put(&mut state, P1, "Myr Enforcer");
+    let b = put(&mut state, P1, "Myr Enforcer");
+    let seer = put(&mut state, P1, "Faerie Seer");
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    engine::step(&mut state, Action::DeclareAttackers(vec![x, y])).unwrap();
+    let mut piles = Vec::new();
+    let mut blocks = None;
+    drive(&mut state, |_, d| match d {
+        Decision::DeclareBlockers { legal_blockers, .. } => {
+            blocks = Some(legal_blockers.clone());
+            None
+        }
+        // Player 1 puts A in the left pile; player 0 sends X left.
+        Decision::ChooseEffectTargets { player: P1, selected_count: 0, legal_targets, .. } => {
+            piles = legal_targets.clone();
+            Some(Action::ChooseEffectTarget(Target::Object(a)))
+        }
+        Decision::ChooseEffectTargets { player: P0, selected_count: 0, .. } => Some(Action::ChooseEffectTarget(Target::Object(x))),
+        Decision::ChooseEffectTargets { .. } => Some(Action::FinishEffectSelection),
+        Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+        Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
+        other => panic!("unhandled decision {other:?}"),
+    });
+    assert_eq!(piles, vec![Target::Object(a), Target::Object(b)], "creatures with flying aren't divided");
+    let blocks = blocks.unwrap();
+    let of = |attacker: ObjectId| {
+        let mut v = blocks.iter().find(|(o, _)| *o == attacker).map(|(_, v)| v.clone()).unwrap_or_default();
+        v.sort();
+        v
+    };
+    let sorted = |mut v: Vec<ObjectId>| {
+        v.sort();
+        v
+    };
+    assert_eq!(of(x), sorted(vec![a, seer]));
+    assert_eq!(of(y), sorted(vec![b, seer]));
+    assert!(engine::step(&mut state.clone(), Action::DeclareBlockers(vec![(b, x)])).is_err());
+    engine::step(&mut state, Action::DeclareBlockers(vec![(a, x), (b, y)])).unwrap();
+    end_turn(&mut state);
+    assert!(state.river_blocks.is_empty(), "this combat only");
+}
+
+#[test]
+fn raging_river_with_no_creatures_to_divide_lets_only_flyers_block() {
+    let mut state = game();
+    put(&mut state, P0, "Raging River");
+    let x = put(&mut state, P0, "Myr Enforcer");
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    engine::step(&mut state, Action::DeclareAttackers(vec![x])).unwrap();
+    advance(&mut state, |s, _| !s.river_blocks.is_empty());
+    // A creature arriving after the piles are made is in neither.
+    let late = put(&mut state, P1, "Myr Enforcer");
+    let seer = put(&mut state, P1, "Faerie Seer");
+    let d = advance(&mut state, |_, d| matches!(d, Decision::DeclareBlockers { .. }));
+    let Decision::DeclareBlockers { legal_blockers, .. } = d else { unreachable!() };
+    let of_x: Vec<ObjectId> = legal_blockers.iter().find(|(o, _)| *o == x).map(|(_, v)| v.clone()).unwrap_or_default();
+    assert_eq!(of_x, vec![seer]);
+    assert!(!of_x.contains(&late));
+}

@@ -1256,6 +1256,15 @@ fn jurin_attack_effect() -> EffectOp {
 
 const JURIN_TRIGGERS: [TriggeredAbilityDef; 1] = [trigger(TriggerCondition::Attacks, jurin_attack_effect)];
 
+fn raging_river_effect() -> EffectOp {
+    EffectOp::RagingRiver
+}
+
+const RAGING_RIVER_TRIGGERS: [TriggeredAbilityDef; 1] = [trigger(
+    TriggerCondition::OneOrMoreControlledCreaturesAttack { entered_this_turn: false },
+    raging_river_effect,
+)];
+
 const WEATHER_THE_STORM_TRIGGERS: [TriggeredAbilityDef; 1] = [TriggeredAbilityDef {
     condition: TriggerCondition::CastSelf,
     home_zone: Zone::Stack,
@@ -1400,6 +1409,7 @@ fn triggers_by_name(card_def: u16) -> &'static [TriggeredAbilityDef] {
         "Hideous Taskmaster" => &HIDEOUS_TASKMASTER_TRIGGERS,
         "Shattering Spree" => &REPLICATE_TRIGGERS,
         "Jurin, Leading the Charge" => &JURIN_TRIGGERS,
+        "Raging River" => &RAGING_RIVER_TRIGGERS,
         "Pyreswipe Hawk" => &PYRESWIPE_HAWK_TRIGGERS,
         "Urabrask, Heretic Praetor" => &URABRASK_TRIGGERS,
         "Cavern-Hoard Dragon" => &CAVERN_HOARD_DRAGON_TRIGGERS,

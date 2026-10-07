@@ -995,6 +995,10 @@ pub enum EffectOp {
     ChooseNewTargetsForTargetSpellOrAbility,
     /// Each target creature still legal can't block this turn.
     TargetCreaturesCantBlockThisTurn,
+    /// Raging River: the defending player splits their creatures without
+    /// flying into a left and a right pile, then the controller picks a
+    /// pile for each of their attackers.
+    RagingRiver,
     /// The card gains flashback until end of turn, its mana cost as the
     /// flashback cost (Flashback).
     GrantFlashbackUntilEndOfTurn {
@@ -1313,6 +1317,20 @@ pub enum EffectFrame {
         player: PlayerId,
         selected: EffectObjectBinding,
     },
+    /// Raging River's piles are made; next the attackers get labels.
+    RiverPiles {
+        left: Vec<EffectObjectBinding>,
+        right: Vec<EffectObjectBinding>,
+        canonical_path: Vec<u16>,
+    },
+    /// Raging River's restrictions: attackers in `left_attackers` may be
+    /// blocked from the left pile, the rest from the right.
+    RiverBlocks {
+        left: Vec<EffectObjectBinding>,
+        right: Vec<EffectObjectBinding>,
+        attackers: Vec<EffectObjectBinding>,
+        left_attackers: Vec<EffectObjectBinding>,
+    },
     /// Changing the targets of stack item `item`: `chosen` holds a choice
     /// per target so far (`None` keeps it). `forced` is "change the
     /// target"; `change_next` means the player chose to change the next one.
@@ -1553,6 +1571,19 @@ pub enum EffectTargetSelectionPurpose {
     /// The target of replicate copy number `copy` (from 1).
     ReplicateCopyTarget {
         copy: u8,
+        canonical_path: Vec<u16>,
+    },
+    /// Raging River: the defending player's creatures for the left pile.
+    RiverLeftPile {
+        defender: PlayerId,
+        creatures: Vec<EffectObjectBinding>,
+        canonical_path: Vec<u16>,
+    },
+    /// Raging River: the attackers labeled "left".
+    RiverLeftAttackers {
+        left: Vec<EffectObjectBinding>,
+        right: Vec<EffectObjectBinding>,
+        attackers: Vec<EffectObjectBinding>,
         canonical_path: Vec<u16>,
     },
     /// The new target for target `chosen.len()` of stack item `item`.
@@ -1942,6 +1973,7 @@ pub fn contains_player_choice(op: &EffectOp) -> bool {
         | EffectOp::ReplicateCopies { .. }
         | EffectOp::ChangeTheTargetOfTargetSpellOrAbility
         | EffectOp::ChooseNewTargetsForTargetSpellOrAbility
+        | EffectOp::RagingRiver
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand
@@ -2917,6 +2949,19 @@ fn complete_resumable_target_selection(
             continuation.frames.push(EffectFrame::ReplicateCopy { copy, target, canonical_path });
         }
         EffectTargetSelectionPurpose::NewStackTarget { .. } => unreachable!("answered above"),
+        EffectTargetSelectionPurpose::RiverLeftPile { creatures, canonical_path, .. } => {
+            if path != canonical_path {
+                return Err("Raging River pile choice changed shape".to_string());
+            }
+            let right = creatures.iter().filter(|c| !objects.contains(c)).copied().collect();
+            continuation.frames.push(EffectFrame::RiverPiles { left: objects, right, canonical_path });
+        }
+        EffectTargetSelectionPurpose::RiverLeftAttackers { left, right, attackers, canonical_path } => {
+            if path != canonical_path {
+                return Err("Raging River label choice changed shape".to_string());
+            }
+            continuation.frames.push(EffectFrame::RiverBlocks { left, right, attackers, left_attackers: objects });
+        }
         EffectTargetSelectionPurpose::ThreatenChosenCreature { player, canonical_path } => {
             if path != canonical_path || objects.len() != 1 {
                 return Err("threaten choice changed shape".to_string());
@@ -5228,6 +5273,33 @@ pub fn validate_pending_effect_choice(state: &GameState) -> Result<(), String> {
                         return Err("replicate choice has a noncanonical shape".to_string());
                     }
                 }
+                EffectTargetSelectionPurpose::RiverLeftPile { defender, creatures, canonical_path } => {
+                    let offered: Vec<EffectObjectBinding> =
+                        selected.iter().chain(legal).filter_map(|candidate| candidate.expected_object).collect();
+                    if chooser != defender
+                        || *defender != pending.ctx.controller.opponent()
+                        || path != canonical_path
+                        || (*min_targets, usize::from(*max_targets), *ordered) != (0, creatures.len(), false)
+                        || offered.len() != creatures.len()
+                        || !creatures.iter().all(|c| offered.contains(c))
+                        || river_pile_candidates(state, *defender) != *creatures
+                    {
+                        return Err("Raging River pile choice has a noncanonical shape".to_string());
+                    }
+                }
+                EffectTargetSelectionPurpose::RiverLeftAttackers { attackers, canonical_path, .. } => {
+                    let offered: Vec<EffectObjectBinding> =
+                        selected.iter().chain(legal).filter_map(|candidate| candidate.expected_object).collect();
+                    if *chooser != pending.ctx.controller
+                        || path != canonical_path
+                        || (*min_targets, usize::from(*max_targets), *ordered) != (0, attackers.len(), false)
+                        || offered.len() != attackers.len()
+                        || !attackers.iter().all(|a| offered.contains(a))
+                        || river_attackers(state, pending.ctx.controller) != *attackers
+                    {
+                        return Err("Raging River label choice has a noncanonical shape".to_string());
+                    }
+                }
                 EffectTargetSelectionPurpose::NewStackTarget { item, chosen, forced, canonical_path } => {
                     let expected = crate::engine::new_targets_step(state, *item, chosen, *forced, true)?;
                     let offered: Vec<Target> = legal.iter().map(|candidate| candidate.target).collect();
@@ -7006,6 +7078,44 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                     }
                     crate::engine::threaten(state, selected.object, continuation.ctx.controller);
                 }
+                EffectFrame::RiverPiles { left, right, canonical_path } => {
+                    let attackers = river_attackers(state, continuation.ctx.controller);
+                    if left.is_empty() && right.is_empty() {
+                        // No pile to choose: only creatures with flying can block.
+                        continuation.frames.push(EffectFrame::RiverBlocks {
+                            left,
+                            right,
+                            attackers,
+                            left_attackers: Vec::new(),
+                        });
+                    } else if !attackers.is_empty() {
+                        continuation.choice = Some(PendingEffectChoice::SelectTargets {
+                            player: continuation.ctx.controller,
+                            path: canonical_path.clone(),
+                            selected: Vec::new(),
+                            legal: bound_candidates(&attackers),
+                            min_targets: 0,
+                            max_targets: u16::try_from(attackers.len()).unwrap_or(u16::MAX),
+                            ordered: false,
+                            purpose: EffectTargetSelectionPurpose::RiverLeftAttackers { left, right, attackers, canonical_path },
+                        });
+                        state.engine.pending_effect = Some(continuation);
+                        return Ok(ResumableProgress::Suspended);
+                    }
+                }
+                EffectFrame::RiverBlocks { left, right, attackers, left_attackers } => {
+                    let link = |b: &EffectObjectBinding| crate::state::ObjectLinkV4 {
+                        object: b.object,
+                        zone_change_count: b.expected_zone_change_count,
+                    };
+                    for attacker in &attackers {
+                        let pile = if left_attackers.contains(attacker) { &left } else { &right };
+                        state.river_blocks.push(crate::state::RiverBlockV1 {
+                            attacker: link(attacker),
+                            pile: pile.iter().map(link).collect(),
+                        });
+                    }
+                }
                 EffectFrame::NewStackTargets { item, mut chosen, forced, change_next, canonical_path } => {
                     // 608.2: the resolving spell is still on the stack, so
                     // it can become the new target.
@@ -8269,6 +8379,30 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                         change_next: false,
                         canonical_path: path,
                     });
+                }
+            }
+            EffectOp::RagingRiver => {
+                let defender = continuation.ctx.controller.opponent();
+                let creatures = river_pile_candidates(state, defender);
+                if creatures.is_empty() {
+                    continuation.frames.push(EffectFrame::RiverPiles {
+                        left: Vec::new(),
+                        right: Vec::new(),
+                        canonical_path: path,
+                    });
+                } else {
+                    continuation.choice = Some(PendingEffectChoice::SelectTargets {
+                        player: defender,
+                        path: path.clone(),
+                        selected: Vec::new(),
+                        legal: bound_candidates(&creatures),
+                        min_targets: 0,
+                        max_targets: u16::try_from(creatures.len()).unwrap_or(u16::MAX),
+                        ordered: false,
+                        purpose: EffectTargetSelectionPurpose::RiverLeftPile { defender, creatures, canonical_path: path },
+                    });
+                    state.engine.pending_effect = Some(continuation);
+                    return Ok(ResumableProgress::Suspended);
                 }
             }
             EffectOp::ThreatenChosenCreature { player } => {
@@ -10202,6 +10336,52 @@ fn stage_replicate_copy_target(continuation: &mut EffectContinuation, state: &Ga
         ordered: false,
         purpose: EffectTargetSelectionPurpose::ReplicateCopyTarget { copy, canonical_path },
     });
+}
+
+/// Raging River's pile candidates: the creatures without flying `defender`
+/// controls.
+fn river_pile_candidates(state: &GameState, defender: PlayerId) -> Vec<EffectObjectBinding> {
+    state.players[defender.index()]
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|&id| {
+            crate::engine::object_has_type(state, id, CardType::Creature)
+                && !crate::engine::has_effective_keyword(state, id, crate::card_def::Keywords::FLYING)
+        })
+        .map(|id| EffectObjectBinding {
+            object: id,
+            expected_zone: Zone::Battlefield,
+            expected_zone_change_count: state.objects.get(id).zone_change_count,
+        })
+        .collect()
+}
+
+/// The attacking creatures `player` controls.
+fn river_attackers(state: &GameState, player: PlayerId) -> Vec<EffectObjectBinding> {
+    state
+        .engine
+        .combat
+        .attackers
+        .iter()
+        .copied()
+        .filter(|&id| {
+            let o = state.objects.get(id);
+            o.zone == Zone::Battlefield && o.controller == player
+        })
+        .map(|id| EffectObjectBinding {
+            object: id,
+            expected_zone: Zone::Battlefield,
+            expected_zone_change_count: state.objects.get(id).zone_change_count,
+        })
+        .collect()
+}
+
+fn bound_candidates(bindings: &[EffectObjectBinding]) -> Vec<EffectTargetCandidate> {
+    bindings
+        .iter()
+        .map(|&binding| EffectTargetCandidate { target: Target::Object(binding.object), expected_object: Some(binding) })
+        .collect()
 }
 
 /// A new target offered for a stack item, bound to its incarnation if it's
@@ -12251,6 +12431,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         | EffectOp::ReplicateCopies { .. }
         | EffectOp::ChangeTheTargetOfTargetSpellOrAbility
         | EffectOp::ChooseNewTargetsForTargetSpellOrAbility
+        | EffectOp::RagingRiver
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand
