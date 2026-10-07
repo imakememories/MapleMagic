@@ -13600,7 +13600,7 @@ pub(crate) fn create_replicate_copy(
     let owner = state.objects.get(parent.object).owner;
     let copy_source = state.objects.push(crate::state::GameObject {
         card_def,
-        name: card_def::CARD_DEFS[card_def as usize].name.to_string(),
+        name: card_def::CARD_DEFS[card_def as usize].name.into(),
         owner,
         controller,
         zone: Zone::Stack,
@@ -15945,7 +15945,7 @@ mod tests {
             card_id_by_name(card_name).unwrap_or_else(|| panic!("{card_name} not in CARD_DEFS"));
         let obj_id = state.objects.push(crate::state::GameObject {
             card_def: card_id,
-            name: card_name.to_string(),
+            name: card_name.to_string().into(),
             owner: player,
             controller: player,
             zone: Zone::Battlefield,
@@ -15968,7 +15968,7 @@ mod tests {
             card_id_by_name(card_name).unwrap_or_else(|| panic!("{card_name} not in CARD_DEFS"));
         let obj_id = state.objects.push(crate::state::GameObject {
             card_def: card_id,
-            name: card_name.to_string(),
+            name: card_name.to_string().into(),
             owner: player,
             controller: player,
             zone: Zone::Hand,
@@ -15991,7 +15991,7 @@ mod tests {
             card_id_by_name(card_name).unwrap_or_else(|| panic!("{card_name} not in CARD_DEFS"));
         let obj_id = state.objects.push(crate::state::GameObject {
             card_def: card_id,
-            name: card_name.to_string(),
+            name: card_name.to_string().into(),
             owner: player,
             controller: player,
             zone: Zone::Graveyard,
@@ -16793,7 +16793,7 @@ mod tests {
         });
         let obj_id = state.objects.push(crate::state::GameObject {
             card_def: card_id,
-            name: card_name.to_string(),
+            name: card_name.to_string().into(),
             owner: player,
             controller: player,
             zone: Zone::Stack,
@@ -17272,7 +17272,7 @@ mod tests {
         for _ in 0..2 {
             let id = state.objects.push(crate::state::GameObject {
                 card_def: mountain,
-                name: "Mountain".to_string(),
+                name: "Mountain".into(),
                 owner: PlayerId::P0,
                 controller: PlayerId::P0,
                 zone: Zone::Library,
@@ -18681,7 +18681,7 @@ mod tests {
             card_id_by_name(card_name).unwrap_or_else(|| panic!("{card_name} not in CARD_DEFS"));
         let obj_id = state.objects.push(crate::state::GameObject {
             card_def: card_id,
-            name: card_name.to_string(),
+            name: card_name.to_string().into(),
             owner: player,
             controller: player,
             zone: Zone::Library,

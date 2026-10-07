@@ -366,7 +366,7 @@ pub struct GameObject {
     /// Index into the (not-yet-built) card database.
     pub card_def: u16,
     /// Debug-only display name; not used for gameplay logic.
-    pub name: String,
+    pub name: ObjectName,
     pub owner: PlayerId,
     pub controller: PlayerId,
     pub zone: Zone,
@@ -406,8 +406,11 @@ pub struct GameObject {
     pub zone_change_count: u32,
 }
 
+/// A card's name is static, so cloning a game copies no strings.
+pub type ObjectName = std::borrow::Cow<'static, str>;
+
 impl GameObject {
-    fn new_in_library(card_def: u16, name: String, owner: PlayerId) -> GameObject {
+    fn new_in_library(card_def: u16, name: ObjectName, owner: PlayerId) -> GameObject {
         GameObject {
             card_def,
             name,
@@ -1703,10 +1706,10 @@ impl GameState {
     /// (index 0 = top, matching `GoldenTrace::opening_library`). Arena ids
     /// are assigned contiguously in library order, player 0 first, so the
     /// id assignment is fully determined by the two input vecs.
-    pub fn new_from_libraries(
+    pub fn new_from_libraries<N: Into<ObjectName>>(
         lib0: &[u16],
         lib1: &[u16],
-        names: impl Fn(u16) -> String,
+        names: impl Fn(u16) -> N,
         seed: u64,
     ) -> GameState {
         // Thin wrapper over the starting-player-aware core below, with the
@@ -1726,10 +1729,10 @@ impl GameState {
     /// `new_from_libraries` itself calls this with `PlayerId::P0`, so it is
     /// the exact pre-change literal reproduced structurally, not merely by
     /// convention.
-    pub fn new_from_libraries_with_starting_player_v1(
+    pub fn new_from_libraries_with_starting_player_v1<N: Into<ObjectName>>(
         lib0: &[u16],
         lib1: &[u16],
-        names: impl Fn(u16) -> String,
+        names: impl Fn(u16) -> N,
         seed: u64,
         starting_player: PlayerId,
     ) -> GameState {
@@ -1740,7 +1743,7 @@ impl GameState {
         for &card_def in lib0 {
             let id = objects.push(GameObject::new_in_library(
                 card_def,
-                names(card_def),
+                names(card_def).into(),
                 PlayerId::P0,
             ));
             library0.push(id);
@@ -1748,7 +1751,7 @@ impl GameState {
         for &card_def in lib1 {
             let id = objects.push(GameObject::new_in_library(
                 card_def,
-                names(card_def),
+                names(card_def).into(),
                 PlayerId::P1,
             ));
             library1.push(id);
@@ -1814,11 +1817,11 @@ impl GameState {
     /// A two-player Commander game (903): 40 life each, and each player's
     /// commander (`commanders[i]`, a card definition) starts in the command
     /// zone. The libraries are the other 99 cards, already shuffled.
-    pub fn new_commander_game_v1(
+    pub fn new_commander_game_v1<N: Into<ObjectName>>(
         lib0: &[u16],
         lib1: &[u16],
         commanders: [u16; 2],
-        names: impl Fn(u16) -> String,
+        names: impl Fn(u16) -> N,
         seed: u64,
         starting_player: PlayerId,
     ) -> GameState {
@@ -1828,7 +1831,7 @@ impl GameState {
             let card_def = commanders[owner.index()];
             let id = state
                 .objects
-                .push(GameObject::new_in_library(card_def, names(card_def), owner));
+                .push(GameObject::new_in_library(card_def, names(card_def).into(), owner));
             state.objects.get_mut(id).zone = Zone::Command;
             state.command.push(id);
             id

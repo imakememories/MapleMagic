@@ -243,7 +243,7 @@ impl Game {
         let state = GameState::new_from_libraries_with_starting_player_v1(
             &lib0,
             &lib1,
-            |id| CARD_DEFS[id as usize].name.to_string(),
+            |id| CARD_DEFS[id as usize].name,
             rng.next_u64(),
             first,
         );
@@ -260,7 +260,7 @@ impl Game {
             &lib0,
             &lib1,
             [d0.commander, d1.commander],
-            |id| CARD_DEFS[id as usize].name.to_string(),
+            |id| CARD_DEFS[id as usize].name,
             rng.next_u64(),
             first,
         );
@@ -1023,7 +1023,7 @@ pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerI
 pub(crate) fn set_card(state: &mut GameState, id: ObjectId, def: u16) {
     let o = state.objects.get_mut(id);
     o.card_def = def;
-    o.name = CARD_DEFS[def as usize].name.to_string();
+    o.name = CARD_DEFS[def as usize].name.into();
     o.v4 = ObjectStateV4::from_card_def(def);
     // A permission to play an exiled card plays it as whatever it now is.
     let land = CARD_DEFS[def as usize].is_playable_land();

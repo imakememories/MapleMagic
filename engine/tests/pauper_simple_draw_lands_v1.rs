@@ -19,7 +19,7 @@ fn put_object(state: &mut GameState, name: &str, zone: Zone) -> ObjectId {
     let card_def = card_id_by_name(name).unwrap_or_else(|| panic!("{name} in CARD_DEFS"));
     let id = state.objects.push(GameObject {
         card_def,
-        name: name.to_string(),
+        name: name.to_string().into(),
         owner: PlayerId::P0,
         controller: PlayerId::P0,
         zone,

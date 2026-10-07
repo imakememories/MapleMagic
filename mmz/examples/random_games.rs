@@ -87,7 +87,7 @@ fn replay(a: &CommanderDeck, b: &CommanderDeck, seed: u64, check: bool) {
         let f = g.choices()[i].feat;
         let card = if f.src == u16::MAX { "-" } else { CARD_DEFS[f.src as usize].name };
         let st = &g.state;
-        let stack: Vec<&str> = st.stack.iter().map(|it| st.objects.get(it.source).name.as_str()).collect();
+        let stack: Vec<&str> = st.stack.iter().map(|it| st.objects.get(it.source).name.as_ref()).collect();
         log.push(format!("turn {} {:?} {me:?}: {:?} {card} (arg {}) | stack {stack:?}", st.turn, st.step, f.kind, f.arg));
         g.apply(i);
     }

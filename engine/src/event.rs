@@ -815,7 +815,7 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
             state.tokens_created_this_turn[t.controller.index()] =
                 state.tokens_created_this_turn[t.controller.index()].saturating_add(1);
             let token_def = &crate::card_def::CARD_DEFS[t.token_def as usize];
-            let name = token_def.object_name.to_string();
+            let name: crate::state::ObjectName = token_def.object_name.into();
             let object = state.objects.push(crate::state::GameObject {
                 card_def: t.token_def,
                 name,
@@ -1235,9 +1235,7 @@ fn commit_zone_change(
         // zone-specific special case.
         obj.zone_change_count += 1;
         obj.v4.reset_for_zone_change(obj.card_def, to_zone, turn);
-        obj.name = crate::card_def::CARD_DEFS[obj.card_def as usize]
-            .object_name
-            .to_string();
+        obj.name = crate::card_def::CARD_DEFS[obj.card_def as usize].object_name.into();
         obj.damage = 0;
         obj.counters = Default::default();
         obj.attachments.clear();
@@ -1259,7 +1257,7 @@ fn commit_zone_change(
                     .collect();
                 obj.v4.effective_subtype_ids.sort_unstable();
                 obj.v4.effective_subtype_ids.dedup();
-                obj.name = face.name.to_string();
+                obj.name = face.name.into();
             }
             obj.tapped = enters_battlefield_tapped;
             obj.summoning_sick = true;
@@ -1731,7 +1729,7 @@ mod tests {
     fn push_object_into(state: &mut GameState, owner: PlayerId, zone: Zone) -> ObjectId {
         state.objects.push(crate::state::GameObject {
             card_def: 0,
-            name: "fixture".to_string(),
+            name: "fixture".into(),
             owner,
             controller: owner,
             zone,

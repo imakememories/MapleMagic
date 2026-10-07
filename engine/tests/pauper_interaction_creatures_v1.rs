@@ -41,7 +41,7 @@ fn put_object(state: &mut GameState, player: PlayerId, name: &str, zone: Zone) -
     let card_def = card_id(name);
     let id = state.objects.push(GameObject {
         card_def,
-        name: name.to_string(),
+        name: name.to_string().into(),
         owner: player,
         controller: player,
         zone,

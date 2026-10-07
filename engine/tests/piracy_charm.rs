@@ -29,7 +29,7 @@ fn put_object(state: &mut GameState, player: PlayerId, name: &str, zone: Zone) -
     let card_def = card_id(name);
     let object = state.objects.push(GameObject {
         card_def,
-        name: name.to_owned(),
+        name: name.to_owned().into(),
         owner: player,
         controller: player,
         zone,

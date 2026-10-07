@@ -37,7 +37,7 @@ fn put_in(state: &mut GameState, player: PlayerId, name: &str, zone: Zone) -> Ob
     let card_def = id(name);
     let obj = state.objects.push(GameObject {
         card_def,
-        name: name.to_string(),
+        name: name.to_string().into(),
         owner: player,
         controller: player,
         zone,
@@ -1460,7 +1460,7 @@ fn library_card(state: &mut GameState, player: PlayerId, position: usize, name: 
     let o = state.players[player.index()].library[position];
     let obj = state.objects.get_mut(o);
     obj.card_def = id(name);
-    obj.name = name.to_string();
+    obj.name = name.to_string().into();
     obj.v4 = ObjectStateV4::from_card_def(id(name));
     o
 }
