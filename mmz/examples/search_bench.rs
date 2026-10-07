@@ -80,21 +80,26 @@ fn report(label: &str, ps: &[Game]) {
         w.apply((s % w.choices().len() as u64) as usize);
         black_box(w);
     });
+    // The digest of every root visit count tells whether two builds search alike.
     let search = |cfg: Config, sims: u32| {
         let t = Instant::now();
-        let (mut n, mut evals) = (0u64, 0u64);
+        let (mut n, mut evals, mut digest) = (0u64, 0u64, 0xcbf2_9ce4_8422_2325u64);
         for (i, g) in ps.iter().enumerate() {
             let mut s = Search::new(g, cfg.clone(), i as u64);
             s.run(sims, 8, &mut HeuristicEval);
             n += s.simulations as u64;
             evals += s.stats.unique_leaves;
+            for v in s.root_visits() {
+                digest = (digest ^ u64::from(v.to_bits())).wrapping_mul(0x100_0000_01b3);
+            }
         }
-        (t.elapsed().as_secs_f64() * 1e6 / n as f64, evals as f64 / n as f64)
+        (t.elapsed().as_secs_f64() * 1e6 / n as f64, evals as f64 / n as f64, digest)
     };
-    let (ismcts, _) = search(Config::default(), 200);
-    let (maple, maple_evals) = search(Config { maple_worlds: 5, maple_select: MapleSelect::RefWorld, ..Config::default() }, 64);
+    let (ismcts, _, ismcts_digest) = search(Config::default(), 200);
+    let (maple, maple_evals, maple_digest) =
+        search(Config { maple_worlds: 5, maple_select: MapleSelect::RefWorld, ..Config::default() }, 64);
     println!(
-        "{label:<22} {:>7.0} {:>7.1} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>9.1} {:>8.1} ({maple_evals:.1} evals/sim)",
+        "{label:<22} {:>7.0} {:>7.1} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>9.1} {:>8.1} ({maple_evals:.1} evals/sim) {:04x}{:04x}",
         objects,
         choices,
         clone,
@@ -103,6 +108,8 @@ fn report(label: &str, ps: &[Game]) {
         step,
         ismcts,
         maple,
+        (ismcts_digest >> 48) ^ (ismcts_digest >> 32) & 0xffff,
+        (maple_digest >> 48) ^ (maple_digest >> 32) & 0xffff,
     );
 }
 
