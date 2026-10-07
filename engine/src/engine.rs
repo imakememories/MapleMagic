@@ -19663,7 +19663,8 @@ mod tests {
         ));
 
         let mut lower_item = state.stack.last().unwrap().clone();
-        let lower_source = state.objects.push(state.objects.get(chain).clone());
+        let chain_object = *state.objects.get(chain);
+        let lower_source = state.objects.push(chain_object);
         lower_item.source = lower_source;
         state.stack.insert(0, lower_item);
         state
