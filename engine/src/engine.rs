@@ -1379,6 +1379,12 @@ pub enum Decision {
         source: ObjectId,
         cards: Vec<ObjectId>,
     },
+    /// The legend rule (704.5j): `player` keeps one of `legends`, all with
+    /// the same name; the rest go to their owners' graveyards.
+    ChooseLegendToKeep {
+        player: PlayerId,
+        legends: Vec<ObjectId>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1472,6 +1478,8 @@ pub enum Action {
     ChooseColor(ManaColor),
     /// Answers `Decision::ChooseCastFromExile`: the card to cast, if any.
     ChooseCastFromExile(Option<ObjectId>),
+    /// Answers `Decision::ChooseLegendToKeep`.
+    ChooseLegendToKeep(ObjectId),
 }
 
 const CHAIN_COPY_COST: Cost = Cost {
@@ -6604,6 +6612,11 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
             }
         }
 
+        // 704.5j, a state-based action with a choice: before triggers go on
+        // the stack.
+        if let Some((player, legends)) = crate::statics::legend_rule_violation(state) {
+            return Decision::ChooseLegendToKeep { player, legends };
+        }
         // 903.9: after state-based actions, before triggers go on the stack.
         if let Some((player, commander)) = crate::commander::pending_zone_choice(state) {
             return Decision::ChooseCommanderZone { player, commander };
@@ -12625,6 +12638,20 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
             } else {
                 state.objects.get_mut(link.object).counters.plus1_plus1 += 1;
             }
+            Ok(())
+        }
+        Action::ChooseLegendToKeep(keep) => {
+            let (_, legends) = crate::statics::legend_rule_violation(state).ok_or("the legend rule doesn't apply")?;
+            if !legends.contains(&keep) {
+                return Err(format!("{keep} isn't one of the legends to choose from"));
+            }
+            let events = legends
+                .into_iter()
+                .filter(|&id| id != keep)
+                .map(|id| ProposedEvent::zone_change(id, Zone::Graveyard))
+                .collect();
+            event::propose_and_commit_batch(state, events);
+            collect_and_queue_triggers(state);
             Ok(())
         }
         Action::ChooseCommanderZone(to_command_zone) => {

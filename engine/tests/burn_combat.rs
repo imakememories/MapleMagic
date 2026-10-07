@@ -72,6 +72,7 @@ fn kind_of(d: &Decision) -> Kind {
         | Decision::ChooseCommanderZone { .. }
         | Decision::ChooseRiot { .. }
         | Decision::ChooseCascadeCast { .. }
+        | Decision::ChooseLegendToKeep { .. }
         | Decision::ChooseCastFromExile { .. }
         | Decision::ChooseCastMethod { .. }
         | Decision::ChooseColor { .. }
@@ -335,6 +336,7 @@ fn run_combat_game(state: &mut GameState) -> (Vec<Kind>, u32, Vec<CommittedEvent
             | Decision::ChooseCommanderZone { .. }
             | Decision::ChooseRiot { .. }
         | Decision::ChooseCascadeCast { .. }
+        | Decision::ChooseLegendToKeep { .. }
         | Decision::ChooseCastFromExile { .. }
         | Decision::ChooseCastMethod { .. }
         | Decision::ChooseColor { .. }

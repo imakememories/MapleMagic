@@ -886,6 +886,13 @@ impl Game {
                 self.actor = player;
                 yes_no(&mut out, def_of(st, creature), 12, Action::ChooseRiot);
             }
+            Decision::ChooseLegendToKeep { player, legends } => {
+                self.actor = player;
+                for id in legends {
+                    let feat = ActFeat::new(Kind::EffectTarget, def_of(st, id), obj_sig(st, id, player), 1).with_role(obj_role(st, id));
+                    push_unique(&mut out, mk(feat, Exec::Engine(Action::ChooseLegendToKeep(id))));
+                }
+            }
             Decision::ChooseCommanderZone { player, commander } => {
                 self.actor = player;
                 let zone = zone_code(st.objects.get(commander).zone) as u16;

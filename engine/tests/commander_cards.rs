@@ -2648,3 +2648,56 @@ fn esper_valigarmanda_chapter_two_uses_last_known_lore_after_it_leaves() {
     assert_eq!(state.players[1].life, 37);
     assert_eq!(state.players[0].mana_pool[ManaColor::R.pool_index()], 1, "two lore counters as it left");
 }
+
+#[test]
+fn legend_rule_keeps_one_of_a_players_same_named_legends() {
+    let mut state = game();
+    // Each player may control their own: no choice.
+    put(&mut state, P1, "Captain Lannery Storm");
+    let first = put(&mut state, P0, "Captain Lannery Storm");
+    assert!(matches!(engine::advance_until_decision(&mut state), Decision::CastSpellOrPass { .. }));
+    let second = put(&mut state, P0, "Captain Lannery Storm");
+    let mut offered = Vec::new();
+    drive(&mut state, |_, d| match d {
+        Decision::ChooseLegendToKeep { player: P0, legends } => {
+            offered = legends.clone();
+            Some(Action::ChooseLegendToKeep(second))
+        }
+        _ => None,
+    });
+    assert_eq!(offered, vec![first, second]);
+    assert_eq!(zone(&state, first), Zone::Graveyard);
+    assert_eq!(zone(&state, second), Zone::Battlefield);
+}
+
+#[test]
+fn zealous_conscripts_taking_the_opposing_ognis_makes_the_legend_rule_apply() {
+    let mut state = game();
+    lands(&mut state, P0, 5);
+    let ognis = |s: &GameState, p: PlayerId| s.commander.as_ref().unwrap().commanders[p.index()];
+    for p in [P0, P1] {
+        let o = ognis(&state, p);
+        mtg_kernel::event::propose_and_commit(&mut state, mtg_kernel::event::ProposedEvent::zone_change(o, Zone::Battlefield));
+    }
+    let (mine, theirs) = (ognis(&state, P0), ognis(&state, P1));
+    let conscripts = put_in(&mut state, P0, "Zealous Conscripts", Zone::Hand);
+    let mut kept = false;
+    drive(&mut state, |s, d| match d {
+        _ if kept => None,
+        Decision::CastSpellOrPass { player: P0, castable_spells, .. } if castable_spells.contains(&conscripts) => {
+            Some(Action::CastSpell(conscripts))
+        }
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Object(theirs))),
+        Decision::ChooseLegendToKeep { player: P0, legends } => {
+            assert!(legends.contains(&mine) && legends.contains(&theirs));
+            kept = true;
+            Some(Action::ChooseLegendToKeep(theirs))
+        }
+        Decision::ChooseCommanderZone { .. } => Some(Action::ChooseCommanderZone(true)),
+        Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
+        other => panic!("unhandled decision {other:?}"),
+    });
+    assert_ne!(zone(&state, mine), Zone::Battlefield);
+    assert_eq!(state.objects.get(theirs).controller, P0);
+}

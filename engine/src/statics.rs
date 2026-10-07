@@ -88,6 +88,35 @@ pub fn coin_of_mastery_counters(state: &mut GameState, object: ObjectId) {
     *counters = counters.saturating_add(added);
 }
 
+static LEGENDARY: LazyLock<Vec<bool>> = LazyLock::new(|| {
+    CARD_DEFS.iter().map(|def| def.supertypes.contains(&crate::card_def::Supertype::Legendary)).collect()
+});
+
+/// 704.5j: a player controlling two or more legendary permanents with the
+/// same name, and those permanents (the first such group found).
+pub fn legend_rule_violation(state: &GameState) -> Option<(PlayerId, Vec<ObjectId>)> {
+    for player in [PlayerId::P0, PlayerId::P1] {
+        let legends: Vec<ObjectId> = state.players[player.index()]
+            .battlefield
+            .iter()
+            .copied()
+            .filter(|&id| LEGENDARY[state.objects.get(id).card_def as usize])
+            .collect();
+        for (i, &a) in legends.iter().enumerate() {
+            let name = CARD_DEFS[state.objects.get(a).card_def as usize].name;
+            let same: Vec<ObjectId> = legends[i..]
+                .iter()
+                .copied()
+                .filter(|&b| CARD_DEFS[state.objects.get(b).card_def as usize].name == name)
+                .collect();
+            if same.len() >= 2 {
+                return Some((player, same));
+            }
+        }
+    }
+    None
+}
+
 static THRONES: LazyLock<Vec<bool>> =
     LazyLock::new(|| CARD_DEFS.iter().map(|def| def.name == "Throne of Eldraine").collect());
 
