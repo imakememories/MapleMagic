@@ -418,6 +418,61 @@ pub struct GameObject {
 /// A card's name is static, so cloning a game copies no strings.
 pub type ObjectName = std::borrow::Cow<'static, str>;
 
+// `clone_items` copies objects bitwise and then re-clones only the fields
+// that can own heap memory. A new field changes these sizes: add it there
+// if it can own memory, then update them.
+const _: () = assert!(std::mem::size_of::<GameObject>() == 272);
+const _: () = assert!(std::mem::size_of::<ObjectStateV4>() == 168);
+const _: fn() = || {
+    fn copy<T: Copy>() {}
+    copy::<Counters>();
+    copy::<Option<SpellCopyOriginV4>>();
+    copy::<Option<SpellCastOriginV4>>();
+    copy::<Option<FinalizedCastBindingV1>>();
+    copy::<Option<ObjectLinkV4>>();
+    copy::<Option<ManaColor>>();
+    copy::<Zone>();
+};
+
+impl crate::ids::ArenaClone for GameObject {
+    /// One bitwise copy of every object, then a real clone of each field
+    /// that owns heap memory.
+    fn clone_items(items: &[GameObject]) -> Vec<GameObject> {
+        use std::borrow::Cow;
+        use std::ptr::addr_of_mut;
+        let mut out: Vec<GameObject> = Vec::with_capacity(items.len());
+        // SAFETY: `out` has room for `items.len()` objects. After the copy,
+        // every field owning heap memory (an owned `Cow` or a `Vec` with
+        // capacity) is overwritten without being dropped, so no allocation is
+        // shared. The length is set only once all of them are fixed.
+        unsafe {
+            let dst = out.as_mut_ptr();
+            std::ptr::copy_nonoverlapping(items.as_ptr(), dst, items.len());
+            for (i, object) in items.iter().enumerate() {
+                let d = dst.add(i);
+                if let Cow::Owned(_) = object.name {
+                    addr_of_mut!((*d).name).write(object.name.clone());
+                }
+                if object.attachments.capacity() != 0 {
+                    addr_of_mut!((*d).attachments).write(object.attachments.clone());
+                }
+                let v4 = &object.v4;
+                if let Cow::Owned(_) = v4.effective_subtype_ids {
+                    addr_of_mut!((*d).v4.effective_subtype_ids).write(v4.effective_subtype_ids.clone());
+                }
+                if v4.ability_uses_this_turn.capacity() != 0 {
+                    addr_of_mut!((*d).v4.ability_uses_this_turn).write(v4.ability_uses_this_turn.clone());
+                }
+                if v4.goaded_by.capacity() != 0 {
+                    addr_of_mut!((*d).v4.goaded_by).write(v4.goaded_by.clone());
+                }
+            }
+            out.set_len(items.len());
+        }
+        out
+    }
+}
+
 impl GameObject {
     fn new_in_library(card_def: u16, name: ObjectName, owner: PlayerId) -> GameObject {
         GameObject {
@@ -2894,6 +2949,36 @@ mod tests {
 
     fn debug_names(card_def: u16) -> String {
         format!("card-{card_def}")
+    }
+
+    #[test]
+    fn cloned_objects_own_their_heap_fields() {
+        let (lib0, lib1) = two_card_libraries();
+        let mut state = GameState::new_from_libraries(&lib0, &lib1, debug_names, 42);
+        let object = state.objects.get_mut(ObjectId(1));
+        object.attachments.push(ObjectId(2));
+        object.v4.effective_subtype_ids = vec![3, 1].into();
+        object.v4.note_ability_use(AbilityKindV4::Mana, 0);
+        object.v4.goaded_by.push(GoadStateV4 { player: PlayerId::P1, expires_at_turn: 3 });
+        state.objects.get_mut(ObjectId(2)).attachments.reserve(4);
+        let mut copy = state.clone();
+        assert_eq!(copy.objects, state.objects);
+        let cloned = copy.objects.get_mut(ObjectId(1));
+        cloned.name.to_mut().push('!');
+        cloned.attachments.push(ObjectId(3));
+        cloned.v4.effective_subtype_ids.to_mut().push(9);
+        cloned.v4.note_ability_use(AbilityKindV4::Mana, 0);
+        cloned.v4.goaded_by.clear();
+        copy.objects.get_mut(ObjectId(2)).attachments.push(ObjectId(0));
+        let original = state.objects.get(ObjectId(1));
+        assert_eq!(original.name, "card-2");
+        assert_eq!(original.attachments, vec![ObjectId(2)]);
+        assert_eq!(original.v4.effective_subtype_ids, vec![3, 1]);
+        assert_eq!(original.v4.ability_uses_this_turn[0].uses, 1);
+        assert_eq!(original.v4.goaded_by.len(), 1);
+        assert!(state.objects.get(ObjectId(2)).attachments.is_empty());
+        drop(copy);
+        assert_eq!(state.clone().objects, state.objects);
     }
 
     #[test]

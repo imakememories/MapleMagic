@@ -52,9 +52,22 @@ impl PlayerId {
 /// removed (a card moving zones is a mutation of the object at its existing
 /// id, not a relocation). This keeps ids stable across the whole game and
 /// across snapshot/restore without a generation counter.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Arena<T> {
     items: Vec<T>,
+}
+
+/// How an arena clones its items.
+pub trait ArenaClone: Sized {
+    fn clone_items(items: &[Self]) -> Vec<Self>;
+}
+
+impl<T: ArenaClone> Clone for Arena<T> {
+    fn clone(&self) -> Self {
+        Arena {
+            items: T::clone_items(&self.items),
+        }
+    }
 }
 
 impl<T> Arena<T> {
