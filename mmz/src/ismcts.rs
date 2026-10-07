@@ -141,6 +141,50 @@ const NONE: u32 = u32::MAX;
 /// Tries to find a root determinization where the observer is still to act.
 const ROOT_TRIES: u32 = 8;
 
+/// FxHash, as in rustc: fast, and enough to tell a simulation's worlds apart.
+#[derive(Default)]
+struct FxHasher(u64);
+
+impl FxHasher {
+    fn add(&mut self, word: u64) {
+        self.0 = (self.0.rotate_left(5) ^ word).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+}
+
+impl Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut word = [0u8; 8];
+            word[..chunk.len()].copy_from_slice(chunk);
+            self.add(u64::from_le_bytes(word));
+        }
+    }
+
+    fn write_u8(&mut self, n: u8) {
+        self.add(u64::from(n));
+    }
+
+    fn write_u16(&mut self, n: u16) {
+        self.add(u64::from(n));
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.add(u64::from(n));
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.add(n);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.add(n as u64);
+    }
+
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Edge {
     key: u64,
@@ -558,11 +602,15 @@ impl Search {
 
     /// Merge worlds the evaluator can't tell apart.
     fn dedupe(&self, worlds: Vec<Game>) -> (Vec<Game>, Vec<f32>) {
+        if worlds.len() <= 1 {
+            let n = worlds.len();
+            return (worlds, vec![1.0; n]);
+        }
         let mut games: Vec<Game> = Vec::with_capacity(worlds.len());
         let mut hashes: Vec<u64> = Vec::with_capacity(worlds.len());
         let mut weights: Vec<f32> = Vec::with_capacity(worlds.len());
         for w in worlds {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let mut h = FxHasher::default();
             observe_with(&w, w.to_act(), self.cfg.perfect_obs).hash(&mut h);
             choice_fields(&w).hash(&mut h);
             keys_of(&w).hash(&mut h);

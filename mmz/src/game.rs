@@ -595,11 +595,15 @@ impl Game {
 
     /// Submit a finished multi-part decision (true), or build its next part's choices (false).
     fn flush_pending(&mut self) -> bool {
+        if matches!(self.pending, Pending::None) {
+            return false;
+        }
         let viewer = self.actor;
+        let mut out = std::mem::take(&mut self.choices);
+        out.clear();
         let st = &self.state;
-        let mut out = Vec::new();
         let submit: Option<Action> = match &mut self.pending {
-            Pending::None => return false,
+            Pending::None => unreachable!("checked above"),
             Pending::Attack { eligible, next, chosen } => {
                 if *next >= eligible.len() {
                     Some(Action::DeclareAttackers(std::mem::take(chosen)))
@@ -713,8 +717,10 @@ impl Game {
     }
 
     fn build_choices(&mut self, decision: Decision) {
+        // Reuses the last decision's buffer.
+        let mut out = std::mem::take(&mut self.choices);
+        out.clear();
         let st = &self.state;
-        let mut out: Vec<Choice> = Vec::new();
         match decision {
             Decision::CastSpellOrPass {
                 player,
