@@ -44,6 +44,21 @@ pub struct TypeAdditionV1 {
     pub until_end_of_turn: bool,
 }
 
+/// A copy effect on a permanent (707). While it lasts the object's
+/// `card_def` is the copied card; this keeps what the object itself is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CopyEffectV1 {
+    pub object: ObjectLinkV4,
+    /// The object's own card (a token's own copied card).
+    pub printed: u16,
+    /// The card whose name it has (Gogo keeps its own, 707.9b).
+    pub name: u16,
+    /// Haste gained as part of the copy (Cursed Mirror).
+    pub haste: bool,
+    /// Ends at cleanup, otherwise when the object leaves the battlefield.
+    pub until_end_of_turn: bool,
+}
+
 /// "Sacrifice them at the beginning of the next end step" (Depthshaker
 /// Titan): a delayed triggered ability waiting for that end step (603.7).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -341,8 +356,10 @@ impl ObjectStateV4 {
     }
 
     pub fn reset_for_zone_change(&mut self, card_def: u16, to_zone: Zone, turn: u32) {
-        let base = ObjectStateV4::from_card_def(card_def);
-        *self = base;
+        // A token stays a token whatever card it copies.
+        let is_token = self.is_token;
+        *self = ObjectStateV4::from_card_def(card_def);
+        self.is_token = is_token;
         if to_zone == Zone::Battlefield {
             self.entered_battlefield_turn = Some(turn);
         }
@@ -1108,7 +1125,7 @@ pub fn stack_target_contract_is_structurally_valid(
         return true;
     };
     state.objects.try_get(object).is_some_and(|live| {
-        live.card_def == card_def
+        state.def_matches(object, zone_change_count, card_def)
             && live.owner == owner
             && live.spell_copy_origin == spell_copy_origin
             && if spell_copy_origin.is_some() {
@@ -1580,6 +1597,17 @@ pub struct GameState {
     /// they were cast (X included). Call Forth the Tempest.
     #[serde(default, skip_serializing_if = "no_tokens_created")]
     pub spell_mana_values_this_turn: [u16; 2],
+    /// Copy effects on permanents, see [`CopyEffectV1`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copy_effects: Vec<CopyEffectV1>,
+    /// Every card a copy effect made an incarnation, or took it from; pruned
+    /// each turn once that incarnation is gone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copy_history: Vec<(ObjectLinkV4, u16)>,
+    /// The card a copy was as it left the battlefield (last known
+    /// information), for its leave-the-battlefield triggers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub last_known_defs: Vec<(ObjectLinkV4, u16)>,
     /// Priority/stack/turn-structure bookkeeping and the propose-commit
     /// event log, all owned by the `engine`/`event`/`trigger` modules. See
     /// `engine::EngineState`.
@@ -1697,6 +1725,15 @@ impl Hash for GameState {
         }
         if !no_tokens_created(&self.spell_mana_values_this_turn) {
             self.spell_mana_values_this_turn.hash(state);
+        }
+        if !self.copy_effects.is_empty() {
+            self.copy_effects.hash(state);
+        }
+        if !self.copy_history.is_empty() {
+            self.copy_history.hash(state);
+        }
+        if !self.last_known_defs.is_empty() {
+            self.last_known_defs.hash(state);
         }
         if !self.last_known_charge.is_empty() {
             self.last_known_charge.iter().map(|e| e.1).collect::<Vec<_>>().hash(state);
@@ -1874,6 +1911,9 @@ impl GameState {
             pending_cascade: None,
             granted_flashback: Vec::new(),
             spell_mana_values_this_turn: [0; 2],
+            copy_effects: Vec::new(),
+            copy_history: Vec::new(),
+            last_known_defs: Vec::new(),
             engine: crate::engine::EngineState::default(),
         }
     }
@@ -2066,6 +2106,15 @@ impl GameState {
                 self.hand_knowledge[observer.index()][owner.index()].clear();
             }
         }
+    }
+
+    /// Whether incarnation `zone_change_count` of `id` is or was `card_def`:
+    /// a copy effect changes an object's card but not the object (707).
+    pub fn def_matches(&self, id: ObjectId, zone_change_count: u32, card_def: u16) -> bool {
+        self.objects.get(id).card_def == card_def
+            || self.copy_history.iter().any(|&(link, def)| {
+                link.object == id && link.zone_change_count == zone_change_count && def == card_def
+            })
     }
 
     /// Clears zone-incarnation relations from the moving object and all

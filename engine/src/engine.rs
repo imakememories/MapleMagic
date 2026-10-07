@@ -712,6 +712,9 @@ pub enum UnsupportedMechanic {
     /// An Aura would be put onto the battlefield without being cast, which
     /// needs an object to enchant (303.4f); not supported yet.
     AuraEntersWithoutBeingCast,
+    /// A copy of a double-faced permanent showing its back face (707.8);
+    /// not supported yet.
+    CopyOfBackFace,
 }
 
 thread_local! {
@@ -1701,7 +1704,7 @@ fn target_contract_matches_live(
             spell_copy_origin,
             ..
         } => state.objects.try_get(object).is_some_and(|live| {
-            live.card_def == card_def
+            state.def_matches(object, zone_change_count, card_def)
                 && live.owner == owner
                 && live.zone == zone
                 && live.zone_change_count == zone_change_count
@@ -1736,7 +1739,7 @@ fn target_contracts_are_structurally_valid(
                         zone_change_count,
                         spell_copy_origin,
                     } => state.objects.try_get(object).is_some_and(|live| {
-                        live.card_def == card_def
+                        state.def_matches(object, zone_change_count, card_def)
                             && live.owner == owner
                             && live.controller == controller
                             && live.zone == zone
@@ -2152,7 +2155,7 @@ fn validate_historical_ability_source_contract(
         .objects
         .try_get(contract.source)
         .ok_or("ability source object no longer exists")?;
-    if contract.card_def != live.card_def
+    if !state.def_matches(contract.source, contract.zone_change_count, contract.card_def)
         || contract.owner != live.owner
         || live.zone_change_count < contract.zone_change_count
         || (live.zone_change_count == contract.zone_change_count && live.zone != contract.zone)
@@ -2502,7 +2505,7 @@ fn validate_ability_source_contract(
         .try_get(item.source)
         .ok_or("ability source object no longer exists")?;
     if contract.source != item.source
-        || contract.card_def != source.card_def
+        || !state.def_matches(contract.source, contract.zone_change_count, contract.card_def)
         || contract.owner != source.owner
         || contract.controller != item.controller
         || contract.zone == Zone::Stack
@@ -11198,6 +11201,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
                     card.zone == Zone::Exile && card.zone_change_count == e.card.zone_change_count
                 });
             }
+            crate::copy::prune(state);
             // History bindings never outlive a turn; dropping older events
             // keeps state clones small.
             let dropped = u32::try_from(state.engine.event_history.len()).unwrap_or(u32::MAX);
@@ -11387,6 +11391,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             state.last_known_charge.clear();
             state.last_known_lore.clear();
             state.type_additions.retain(|a| !a.until_end_of_turn);
+            crate::copy::end_until_end_of_turn(state);
             state.extra_combats = 0;
             state.granted_flashback.clear();
             let returns: Vec<(ObjectId, u32, PlayerId)> = state
@@ -11710,6 +11715,9 @@ pub fn has_effective_keyword(state: &GameState, id: ObjectId, kw: Keywords) -> b
         return true;
     }
     if kw == Keywords::HASTE && crate::statics::has_riot_haste(state, id) {
+        return true;
+    }
+    if kw == Keywords::HASTE && crate::copy::has_copy_haste(state, id) {
         return true;
     }
     if attached_equipment_profiles(state, id)

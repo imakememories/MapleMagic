@@ -1503,6 +1503,9 @@ pub fn trigger_effect_matches(card_def: u16, effect: &EffectOp) -> bool {
     {
         return true;
     }
+    if card.name == "The Fire Crystal" && matches!(effect, EffectOp::SacrificeBound { .. }) {
+        return true;
+    }
     if card.name == "Cavern-Hoard Dragon" && matches!(effect, EffectOp::CreateTreasurePerArtifactOf { .. }) {
         return true;
     }
@@ -1854,10 +1857,7 @@ fn sba_fixed_point_with_protected_triggers(
         let leaving: Vec<ObjectId> = state
             .objects
             .iter()
-            .filter(|(_, obj)| {
-                obj.zone != Zone::Battlefield
-                    && crate::card_def::CARD_DEFS[obj.card_def as usize].is_token
-            })
+            .filter(|(_, obj)| obj.zone != Zone::Battlefield && obj.v4.is_token)
             .map(|(id, _)| id)
             .collect();
         for id in leaving {
@@ -2015,7 +2015,24 @@ fn triggers_from_events(
                 });
             }
         }
-        for def in triggers_for(obj.card_def) {
+        // A copy that left the battlefield is its own card again; its
+        // leave-the-battlefield abilities are the copy's (603.10a).
+        let lki_card = if state.last_known_defs.is_empty() {
+            None
+        } else {
+            obj.zone_change_count.checked_sub(1).and_then(|g| crate::copy::last_known_def(state, id, g))
+        };
+        let leaves = |def: &&TriggeredAbilityDef| {
+            matches!(def.condition, TriggerCondition::LeftBattlefieldToGraveyard | TriggerCondition::LeftBattlefield)
+        };
+        let current = triggers_for(obj.card_def)
+            .iter()
+            .filter(move |def| lki_card.is_none() || !leaves(def))
+            .map(|def| (obj.card_def, def));
+        let left = lki_card
+            .into_iter()
+            .flat_map(move |card| triggers_for(card).iter().filter(leaves).map(move |def| (card, def)));
+        for (trigger_card, def) in current.chain(left) {
             let uses_leave_lki = matches!(
                 def.condition,
                 TriggerCondition::LeftBattlefieldToGraveyard | TriggerCondition::LeftBattlefield
@@ -2046,14 +2063,11 @@ fn triggers_from_events(
                         continue;
                     }
                     if def.intervening_if_controls_another_source_card {
-                        let source_def = obj.card_def;
                         let controls_another = state.players[event_controller.index()]
                             .battlefield
                             .iter()
                             .copied()
-                            .any(|other| {
-                                other != id && state.objects.get(other).card_def == source_def
-                            });
+                            .any(|other| other != id && crate::copy::name_def(state, other) == trigger_card);
                         if !controls_another {
                             continue;
                         }
@@ -2110,7 +2124,7 @@ fn triggers_from_events(
                         continue;
                     }
                     let required_optional_cost =
-                        required_optional_additional_cost_for_trigger(obj.card_def, &effect);
+                        required_optional_additional_cost_for_trigger(trigger_card, &effect);
                     let (paid_optional_cost, paid_cost_refs) =
                         if let Some(required) = required_optional_cost {
                             let matching = events
@@ -2135,7 +2149,7 @@ fn triggers_from_events(
                             (None, Vec::new())
                         };
                     let target_spec =
-                        target_spec_for_trigger(obj.card_def, &effect).unwrap_or(TargetSpec::None);
+                        target_spec_for_trigger(trigger_card, &effect).unwrap_or(TargetSpec::None);
                     let source_contract = match ev {
                         CommittedEvent::ZoneChange {
                             object,
@@ -2149,7 +2163,7 @@ fn triggers_from_events(
                             };
                             Some(AbilitySourceContractV4 {
                                 source: id,
-                                card_def: obj.card_def,
+                                card_def: trigger_card,
                                 owner: obj.owner,
                                 controller: *controller_before,
                                 zone: *from,
@@ -2444,7 +2458,8 @@ fn trigger_matches(
                 object,
                 to: Zone::Battlefield,
                 ..
-            },
+            }
+            | CommittedEvent::CreateToken { object, .. },
         ) => *object == source,
         (
             TriggerCondition::EtbControlsOtherSubtypeCount {
@@ -2455,7 +2470,8 @@ fn trigger_matches(
                 object,
                 to: Zone::Battlefield,
                 ..
-            },
+            }
+            | CommittedEvent::CreateToken { object, .. },
         ) => {
             if *object != source {
                 return false;

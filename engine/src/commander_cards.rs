@@ -40,6 +40,12 @@ pub fn fomori_vault_effect() -> EffectOp {
     EffectOp::LookTopPutOneInHandRestBottomRandom { player: PlayerRef::Controller, count: DynamicValueDef::ControlledArtifacts }
 }
 
+/// The Fire Crystal: "Create a token that's a copy of target creature you
+/// control. Sacrifice it at the beginning of the next end step."
+pub fn the_fire_crystal_effect() -> EffectOp {
+    EffectOp::CreateTokenCopyOfTargetSacrificeAtEndStep
+}
+
 /// Secluded Starforge: "Target creature gets +X/+0 until end of turn."
 pub fn secluded_starforge_pump_effect() -> EffectOp {
     EffectOp::PumpTargetUntilEndOfTurnDynamic {

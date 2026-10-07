@@ -89,23 +89,25 @@ pub fn coin_of_mastery_counters(state: &mut GameState, object: ObjectId) {
     *counters = counters.saturating_add(added);
 }
 
-/// Per card: `Some(name id)` if legendary, the name id being the first
-/// card with that name.
-static LEGEND_NAME: LazyLock<Vec<Option<u16>>> = LazyLock::new(|| {
+/// Per card: its name id, the first card with that name.
+static NAME_ID: LazyLock<Vec<u16>> = LazyLock::new(|| {
     CARD_DEFS
         .iter()
-        .map(|def| {
-            def.supertypes
-                .contains(&crate::card_def::Supertype::Legendary)
-                .then(|| CARD_DEFS.iter().position(|other| other.name == def.name).unwrap_or(0) as u16)
-        })
+        .map(|def| CARD_DEFS.iter().position(|other| other.name == def.name).unwrap_or(0) as u16)
         .collect()
+});
+
+static LEGENDARY: LazyLock<Vec<bool>> = LazyLock::new(|| {
+    CARD_DEFS.iter().map(|def| def.supertypes.contains(&crate::card_def::Supertype::Legendary)).collect()
 });
 
 /// 704.5j: a player controlling two or more legendary permanents with the
 /// same name, and those permanents (the first such group found).
 pub fn legend_rule_violation(state: &GameState) -> Option<(PlayerId, Vec<ObjectId>)> {
-    let name = |id: ObjectId| LEGEND_NAME[state.objects.get(id).card_def as usize];
+    let name = |id: ObjectId| {
+        LEGENDARY[state.objects.get(id).card_def as usize]
+            .then(|| NAME_ID[crate::copy::name_def(state, id) as usize])
+    };
     for player in [PlayerId::P0, PlayerId::P1] {
         let battlefield = &state.players[player.index()].battlefield;
         for (i, &a) in battlefield.iter().enumerate() {

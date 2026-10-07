@@ -12293,7 +12293,7 @@
     },
     {
       "name": "The Fire Crystal",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}{R}{R}",
       "mana_value": 4,
       "colors": [

@@ -840,6 +840,8 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
                 v4: {
                     let mut v4 = crate::state::ObjectStateV4::from_card_def(t.token_def);
                     v4.entered_battlefield_turn = Some(state.turn);
+                    // A token copy of a card is a token too.
+                    v4.is_token = true;
                     v4
                 },
                 spell_copy_origin: None,
@@ -862,13 +864,14 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
             object,
             to: Zone::Battlefield,
             ..
-        } if state.objects.get(object).v4.face_index == 0
+        }
+        | CommittedEvent::CreateToken { object, .. } if state.objects.get(object).v4.face_index == 0
             && crate::card_def::CARD_DEFS[state.objects.get(object).card_def as usize]
                 .saga
                 .is_some()
     );
     let saga_source = match &committed {
-        CommittedEvent::ZoneChange { object, .. } if saga_entered => Some(*object),
+        CommittedEvent::ZoneChange { object, .. } | CommittedEvent::CreateToken { object, .. } if saga_entered => Some(*object),
         _ => None,
     };
     let entered_tapped = match &committed {
@@ -1032,7 +1035,7 @@ pub fn log_initiative_trigger(
         .objects
         .try_get(source.source)
         .ok_or("Initiative designation source no longer exists")?;
-    if live.card_def != source.card_def
+    if !state.def_matches(source.source, source.zone_change_count, source.card_def)
         || live.owner != source.owner
         || live.zone_change_count < source.zone_change_count
         || (live.zone_change_count == source.zone_change_count && live.zone != source.zone)
@@ -1179,6 +1182,9 @@ fn commit_zone_change(
         let link = crate::state::ObjectLinkV4 { object: id, zone_change_count: state.objects.get(id).zone_change_count };
         let lore = state.objects.get(id).counters.lore;
         state.last_known_lore.push((link, lore));
+    }
+    if from_zone == Zone::Battlefield {
+        crate::copy::leave_battlefield(state, id);
     }
     remove_from_zone(state, owner, id, from_zone);
     state.forget_hand_object(id);

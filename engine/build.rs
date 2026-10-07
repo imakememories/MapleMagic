@@ -3590,6 +3590,15 @@ fn activated_ability_recipes_for(name: &str) -> &'static [ActivatedAbilityRecipe
             activation_target_filter: "TargetSpecOnly",
             max_activations_per_turn: None,
         }],
+        "The Fire Crystal" => &[ActivatedAbilityRecipe {
+            cost: &[AbilityCostRecipe::ManaCost("{4}{R}{R}"), AbilityCostRecipe::Tap],
+            effect: AbilityEffectRecipe::Custom("the_fire_crystal_effect"),
+            activation_zone: "Battlefield",
+            sorcery_speed_only: false,
+            target_spec: "ControlledCreature",
+            activation_target_filter: "TargetSpecOnly",
+            max_activations_per_turn: None,
+        }],
         "Secluded Starforge" => &[
             ActivatedAbilityRecipe {
                 cost: &[

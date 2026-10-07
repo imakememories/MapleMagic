@@ -126,7 +126,7 @@ fn advance(state: &mut GameState, mut stop: impl FnMut(&GameState, &Decision) ->
                 let opponent = Target::Player(P1);
                 Action::ChooseTarget(if legal_targets.contains(&opponent) { opponent } else { legal_targets[0] })
             }
-            other => panic!("unhandled decision {other:?}"),
+            other => panic!("unhandled decision {other:?} (halt site {:?})", engine::last_halt_site()),
         };
         engine::step(state, a).unwrap();
     }
@@ -2716,4 +2716,35 @@ fn zealous_conscripts_taking_the_opposing_ognis_makes_the_legend_rule_apply() {
     });
     assert_ne!(zone(&state, mine), Zone::Battlefield);
     assert_eq!(state.objects.get(theirs).controller, P0);
+}
+
+#[test]
+fn the_fire_crystal_reduces_red_spells_and_gives_your_creatures_haste() {
+    let mut state = game();
+    put(&mut state, P0, "The Fire Crystal");
+    lands(&mut state, P0, 2);
+    let guttersnipe = cast(&mut state, "Guttersnipe", None, 0);
+    assert_eq!(zone(&state, guttersnipe), Zone::Battlefield, "{{2}}{{R}} with two lands");
+    let haste = mtg_kernel::card_def::Keywords::HASTE;
+    assert!(engine::has_effective_keyword(&state, guttersnipe, haste));
+    let theirs = put(&mut state, P1, "Guttersnipe");
+    assert!(!engine::has_effective_keyword(&state, theirs, haste));
+}
+
+#[test]
+fn the_fire_crystal_makes_a_token_copy_that_enters_and_is_sacrificed_at_the_end_step() {
+    let mut state = game();
+    let crystal = put(&mut state, P0, "The Fire Crystal");
+    lands(&mut state, P0, 6);
+    let epicure = put(&mut state, P0, "Voldaren Epicure");
+    activate(&mut state, crystal, 0, Some(Target::Object(epicure)));
+    let token = named(&state, P0, "Voldaren Epicure").into_iter().find(|&c| c != epicure).expect("a token copy");
+    assert!(state.objects.get(token).v4.is_token);
+    assert_eq!(state.players[1].life, 39, "the copy's enters trigger");
+    assert_eq!(named(&state, P0, "Blood Token").len(), 1);
+    assert!(state.objects.get(crystal).tapped);
+    end_turn(&mut state);
+    assert!(!state.players[0].battlefield.contains(&token), "sacrificed at the end step");
+    assert!(!state.players[0].graveyard.contains(&token), "and gone");
+    assert_eq!(zone(&state, epicure), Zone::Battlefield);
 }

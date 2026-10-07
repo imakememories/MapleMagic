@@ -979,6 +979,9 @@ pub enum EffectOp {
     /// the total mana value of the other spells they cast this turn (Call
     /// Forth the Tempest).
     DamageOpponentCreaturesByOtherSpellsCast,
+    /// Create a token that's a copy of target creature, and sacrifice it at
+    /// the beginning of the next end step (The Fire Crystal).
+    CreateTokenCopyOfTargetSacrificeAtEndStep,
     /// Gain control of a creature `player` controls until end of turn, chosen
     /// by this effect's controller without targeting; untap it, and it gains
     /// haste (Seize the Spotlight's fame).
@@ -3434,7 +3437,7 @@ fn validate_counter_unless_pays_generic(
         .objects
         .try_get(ward_source)
         .ok_or("Ward source object no longer exists")?;
-    if live.card_def != card_def
+    if !state.def_matches(ward_source, zone_change_count, card_def)
         || live.owner != owner
         || live.zone_change_count < zone_change_count
         || (live.zone_change_count == zone_change_count && live.zone != Zone::Battlefield)
@@ -4151,7 +4154,7 @@ pub(crate) fn validate_initiative_trigger_binding(
         || binding.source.attached_to.is_some()
         || definition.name != "Avenging Hunter"
         || !definition.is_executable()
-        || source.card_def != binding.source.card_def
+        || !state.def_matches(binding.source.source, binding.source.zone_change_count, binding.source.card_def)
         || source.owner != binding.source.owner
         || source.zone_change_count < binding.source.zone_change_count
         || (source.zone_change_count == binding.source.zone_change_count
@@ -4457,7 +4460,7 @@ fn take_initiative(
         .ok_or("Initiative source object is missing")?;
     if source.zone != Zone::Battlefield
         || source.attached_to.is_some()
-        || live.card_def != source.card_def
+        || !state.def_matches(source.source, source.zone_change_count, source.card_def)
         || live.owner != source.owner
         || live.zone_change_count < source.zone_change_count
         || (live.zone_change_count == source.zone_change_count && live.zone != source.zone)
@@ -8814,7 +8817,7 @@ impl ExecCtx {
             ) => {
                 bound == object
                     && state.objects.try_get(*object).is_some_and(|live| {
-                        live.card_def == *card_def
+                        state.def_matches(*object, *zone_change_count, *card_def)
                             && live.owner == *owner
                             && live.zone_change_count == *zone_change_count
                     })
@@ -11383,6 +11386,30 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 event::ProposedEvent::create_token(*token_def, controller),
             );
         }
+        EffectOp::CreateTokenCopyOfTargetSacrificeAtEndStep => {
+            let target = ctx.resolve_object(ObjectRef::Target(0));
+            if state.objects.get(target).v4.face_index != 0 {
+                crate::engine::note_halt(file!(), line!());
+                state.engine.halted = Some((crate::engine::UnsupportedMechanic::CopyOfBackFace, ctx.source));
+                return;
+            }
+            let values = crate::copy::copiable_values(state, target);
+            event::propose_and_commit(state, event::ProposedEvent::create_token(values.card_def, ctx.controller));
+            let Some(crate::event::CommittedEvent::CreateToken { object, .. }) = state.engine.event_log.last().cloned()
+            else {
+                return;
+            };
+            crate::copy::token_created(state, object, values);
+            let token = crate::state::ObjectLinkV4 { object, zone_change_count: state.objects.get(object).zone_change_count };
+            let mut source_contract = crate::state::AbilitySourceContractV4::capture(state, ctx.source);
+            source_contract.controller = ctx.controller;
+            state.delayed_sacrifices.push(crate::state::DelayedSacrificeV1 {
+                source: ctx.source,
+                controller: ctx.controller,
+                objects: vec![token],
+                source_contract,
+            });
+        }
         EffectOp::CreateTappedToken {
             token_def,
             controller,
@@ -12147,7 +12174,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let Some(live) = state.objects.try_get(source.source) else {
                 return;
             };
-            if live.card_def != source.card_def || live.owner != source.owner {
+            if !state.def_matches(source.source, source.zone_change_count, source.card_def) || live.owner != source.owner {
                 crate::engine::note_halt(file!(), line!());
                 state.engine.halted = Some((
                     crate::engine::UnsupportedMechanic::InvalidEffectContinuation,
@@ -12215,7 +12242,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 return;
             };
             let source_is_live = state.objects.try_get(ctx.source).is_some_and(|source| {
-                source.card_def == source_contract.card_def
+                state.def_matches(ctx.source, source_contract.zone_change_count, source_contract.card_def)
                     && source.owner == source_contract.owner
                     && source.zone == Zone::Battlefield
                     && source.zone_change_count == source_contract.zone_change_count
@@ -12265,7 +12292,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             };
             let same_source_incarnation = |record: &LinkedExileRecordV4| {
                 record.source.source == ctx.source
-                    && record.source.card_def == source_contract.card_def
+                    && state.def_matches(ctx.source, source_contract.zone_change_count, record.source.card_def)
                     && record.source.owner == source_contract.owner
                     && record.source.zone == Zone::Battlefield
                     && record.source.zone_change_count == source_contract.zone_change_count
@@ -12298,7 +12325,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             state
                 .engine
                 .linked_exile_records
-                .retain(|record| !same_source_incarnation(record));
+                .retain(|record| !matching.contains(record));
             let events = matching
                 .iter()
                 .filter(|record| {
@@ -12333,7 +12360,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let Some(source) = state.objects.try_get(ctx.source) else {
                 return;
             };
-            if source.card_def != source_contract.card_def
+            if !state.def_matches(ctx.source, source_contract.zone_change_count, source_contract.card_def)
                 || source.owner != source_contract.owner
                 || source.zone_change_count != source_contract.zone_change_count
                 || source.zone != Zone::Battlefield
@@ -12464,7 +12491,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let live = state.objects.try_get(reference.object);
             let amount = match live {
                 Some(live)
-                    if live.card_def == reference.card_def
+                    if state.def_matches(reference.object, reference.zone_change_count, reference.card_def)
                         && live.owner == reference.owner
                         && live.zone_change_count == reference.zone_change_count
                         && live.zone == reference.zone =>
@@ -12478,7 +12505,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                     }
                 }
                 Some(live)
-                    if live.card_def == reference.card_def
+                    if state.def_matches(reference.object, reference.zone_change_count, reference.card_def)
                         && live.owner == reference.owner
                         && live.zone_change_count > reference.zone_change_count =>
                 {
@@ -12695,7 +12722,7 @@ fn eval_cond(cond: &EffectCond, ctx: &ExecCtx, state: &GameState) -> bool {
                 .battlefield
                 .iter()
                 .copied()
-                .any(|id| id != ctx.source && state.objects.get(id).card_def == source_def)
+                .any(|id| id != ctx.source && crate::copy::name_def(state, id) == source_def)
         }
         EffectCond::WasKicked => ctx.kicked,
         EffectCond::OptionalAdditionalCostPaid(kind) => {
