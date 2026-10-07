@@ -12,7 +12,7 @@ use mtg_kernel::event::{self, ProposedEvent};
 use mtg_kernel::ids::{ObjectId, PlayerId};
 use mtg_kernel::mana::ManaColor;
 use mtg_kernel::runtime_decks::{runtime_deck_by_id, RUNTIME_DECKS};
-use mtg_kernel::state::{CastMethodV4, GameState, ObjectStateV4, SplitMix64, Target, Zone};
+use mtg_kernel::state::{CastMethodV4, GameState, ObjectStateV4, SplitMix64, StackItemKind, Target, Zone};
 
 /// Hard stop for runaway games (loops the engine cannot detect).
 pub const MAX_TURNS: u32 = 60;
@@ -148,6 +148,22 @@ pub fn player_sig(p: PlayerId, viewer: PlayerId) -> u32 {
     (1 << 24) | ((p == viewer) as u32)
 }
 
+/// An ability on the stack: its source's card, whose it is, and its stack
+/// position (two abilities of one card differ).
+pub fn ability_sig(state: &GameState, id: u32, viewer: PlayerId) -> u32 {
+    let Some((pos, item)) = state
+        .stack
+        .iter()
+        .enumerate()
+        .find(|(_, item)| item.kind != StackItemKind::Spell && item.v4.stack_item_id.0 == u64::from(id))
+    else {
+        return 1 << 22;
+    };
+    let def = item.v4.ability_source_contract.map_or(state.objects.get(item.source).card_def, |c| c.card_def);
+    let mine = (item.controller == viewer) as u32;
+    (def as u32) | (mine << 16) | ((zone_code(Zone::Stack) as u32) << 17) | (1 << 22) | ((pos.min(127) as u32) << 25)
+}
+
 pub fn zone_code(z: Zone) -> u8 {
     match z {
         Zone::Library => 0,
@@ -180,7 +196,7 @@ fn obj_role(st: &GameState, id: ObjectId) -> u32 {
 fn target_role(st: &GameState, t: Target) -> u32 {
     match t {
         Target::Object(id) => obj_role(st, id),
-        Target::Player(_) => 0,
+        Target::Player(_) | Target::Ability(_) => 0,
     }
 }
 
@@ -188,6 +204,7 @@ fn target_sig(state: &GameState, t: Target, viewer: PlayerId) -> u32 {
     match t {
         Target::Object(id) => obj_sig(state, id, viewer),
         Target::Player(p) => player_sig(p, viewer),
+        Target::Ability(id) => ability_sig(state, id, viewer),
     }
 }
 

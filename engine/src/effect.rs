@@ -988,6 +988,13 @@ pub enum EffectOp {
     /// Destroys each artifact the controller doesn't control, at once
     /// (overloaded Vandalblast).
     DestroyEachArtifactYouDontControl,
+    /// "Change the target of target spell or ability with a single target"
+    /// (115.7a): another legal target, if there is one.
+    ChangeTheTargetOfTargetSpellOrAbility,
+    /// "You may choose new targets for target spell or ability" (115.7d).
+    ChooseNewTargetsForTargetSpellOrAbility,
+    /// Each target creature still legal can't block this turn.
+    TargetCreaturesCantBlockThisTurn,
     /// The card gains flashback until end of turn, its mana cost as the
     /// flashback cost (Flashback).
     GrantFlashbackUntilEndOfTurn {
@@ -1306,6 +1313,16 @@ pub enum EffectFrame {
         player: PlayerId,
         selected: EffectObjectBinding,
     },
+    /// Changing the targets of stack item `item`: `chosen` holds a choice
+    /// per target so far (`None` keeps it). `forced` is "change the
+    /// target"; `change_next` means the player chose to change the next one.
+    NewStackTargets {
+        item: StackItemId,
+        chosen: Vec<Option<Target>>,
+        forced: bool,
+        change_next: bool,
+        canonical_path: Vec<u16>,
+    },
     /// Puts replicate copy number `copy` on the stack with `target`.
     ReplicateCopy {
         copy: u8,
@@ -1538,6 +1555,13 @@ pub enum EffectTargetSelectionPurpose {
         copy: u8,
         canonical_path: Vec<u16>,
     },
+    /// The new target for target `chosen.len()` of stack item `item`.
+    NewStackTarget {
+        item: StackItemId,
+        chosen: Vec<Option<Target>>,
+        forced: bool,
+        canonical_path: Vec<u16>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1565,6 +1589,12 @@ pub enum LibraryPartitionSelectionStage {
 pub enum EffectBooleanChoicePurpose {
     ShuffleLibrary {
         player: PlayerId,
+    },
+    /// Whether to change target `chosen.len()` of stack item `item`.
+    ChangeStackTarget {
+        item: StackItemId,
+        chosen: Vec<Option<Target>>,
+        canonical_path: Vec<u16>,
     },
     CounterUnlessPaysGeneric {
         ward_target: StackTargetContractV4,
@@ -1910,6 +1940,8 @@ pub fn contains_player_choice(op: &EffectOp) -> bool {
         | EffectOp::LookTopPutOneInHandRestBottomRandom { .. }
         | EffectOp::ThreatenChosenCreature { .. }
         | EffectOp::ReplicateCopies { .. }
+        | EffectOp::ChangeTheTargetOfTargetSpellOrAbility
+        | EffectOp::ChooseNewTargetsForTargetSpellOrAbility
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand
@@ -2336,6 +2368,18 @@ pub fn choose_resumable_boolean(state: &mut GameState, value: bool) -> Result<()
         } => {
             path.push(u16::from(value));
             match purpose {
+                EffectBooleanChoicePurpose::ChangeStackTarget { item, mut chosen, canonical_path } => {
+                    if !value {
+                        chosen.push(None);
+                    }
+                    continuation.frames.push(EffectFrame::NewStackTargets {
+                        item,
+                        chosen,
+                        forced: false,
+                        change_next: value,
+                        canonical_path,
+                    });
+                }
                 EffectBooleanChoicePurpose::ShuffleLibrary {
                     player: library_player,
                 } => {
@@ -2611,6 +2655,23 @@ fn complete_resumable_target_selection(
         continuation.choice = Some(choice);
         return Err("the pending effect is not waiting for a target selection".to_string());
     };
+    if let EffectTargetSelectionPurpose::NewStackTarget { item, mut chosen, forced, canonical_path } = purpose {
+        let [candidate] = selected.as_slice() else {
+            return Err("a new target choice takes exactly one target".to_string());
+        };
+        if path != canonical_path {
+            return Err("new target choice changed shape".to_string());
+        }
+        chosen.push(Some(candidate.target));
+        continuation.frames.push(EffectFrame::NewStackTargets {
+            item,
+            chosen,
+            forced,
+            change_next: false,
+            canonical_path,
+        });
+        return Ok(());
+    }
     let mut objects = selected
         .into_iter()
         .map(|candidate| {
@@ -2855,6 +2916,7 @@ fn complete_resumable_target_selection(
             let target = objects.first().map(|binding| Target::Object(binding.object)).ok_or("replicate copy needs a target")?;
             continuation.frames.push(EffectFrame::ReplicateCopy { copy, target, canonical_path });
         }
+        EffectTargetSelectionPurpose::NewStackTarget { .. } => unreachable!("answered above"),
         EffectTargetSelectionPurpose::ThreatenChosenCreature { player, canonical_path } => {
             if path != canonical_path || objects.len() != 1 {
                 return Err("threaten choice changed shape".to_string());
@@ -5166,6 +5228,18 @@ pub fn validate_pending_effect_choice(state: &GameState) -> Result<(), String> {
                         return Err("replicate choice has a noncanonical shape".to_string());
                     }
                 }
+                EffectTargetSelectionPurpose::NewStackTarget { item, chosen, forced, canonical_path } => {
+                    let expected = crate::engine::new_targets_step(state, *item, chosen, *forced, true)?;
+                    let offered: Vec<Target> = legal.iter().map(|candidate| candidate.target).collect();
+                    if *chooser != pending.ctx.controller
+                        || path != canonical_path
+                        || (*min_targets, *max_targets, *ordered) != (1, 1, false)
+                        || !selected.is_empty()
+                        || expected != crate::engine::NewTargetsStep::Pick(offered)
+                    {
+                        return Err("new target choice has a noncanonical shape".to_string());
+                    }
+                }
                 EffectTargetSelectionPurpose::ThreatenChosenCreature { player: owner, canonical_path } => {
                     let live: Vec<EffectObjectBinding> =
                         legal.iter().filter_map(|candidate| candidate.expected_object).collect();
@@ -5670,6 +5744,14 @@ pub fn validate_pending_effect_choice(state: &GameState) -> Result<(), String> {
             purpose,
             ..
         } => match purpose {
+            EffectBooleanChoicePurpose::ChangeStackTarget { item, chosen, canonical_path } => {
+                if *player != pending.ctx.controller
+                    || path != canonical_path
+                    || crate::engine::new_targets_step(state, *item, chosen, false, false)? != crate::engine::NewTargetsStep::Ask
+                {
+                    return Err("change-target choice has a noncanonical shape".to_string());
+                }
+            }
             EffectBooleanChoicePurpose::ShuffleLibrary {
                 player: library_player,
             } => {
@@ -6924,6 +7006,57 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                     }
                     crate::engine::threaten(state, selected.object, continuation.ctx.controller);
                 }
+                EffectFrame::NewStackTargets { item, mut chosen, forced, change_next, canonical_path } => {
+                    // 608.2: the resolving spell is still on the stack, so
+                    // it can become the new target.
+                    state.stack.push(continuation.resolving_item.clone());
+                    let step = crate::engine::new_targets_step(state, item, &chosen, forced, change_next);
+                    state.stack.pop();
+                    let next = |chosen| EffectFrame::NewStackTargets {
+                        item,
+                        chosen,
+                        forced,
+                        change_next: false,
+                        canonical_path: canonical_path.clone(),
+                    };
+                    match step? {
+                        crate::engine::NewTargetsStep::Done => {
+                            crate::engine::change_stack_item_targets(state, item, &chosen)?;
+                        }
+                        crate::engine::NewTargetsStep::Keep => {
+                            chosen.push(None);
+                            continuation.frames.push(next(chosen));
+                        }
+                        crate::engine::NewTargetsStep::Change(target) => {
+                            chosen.push(Some(target));
+                            continuation.frames.push(next(chosen));
+                        }
+                        crate::engine::NewTargetsStep::Ask => {
+                            continuation.choice = Some(PendingEffectChoice::ChooseBoolean {
+                                player: continuation.ctx.controller,
+                                path: canonical_path.clone(),
+                                default: Some(false),
+                                purpose: EffectBooleanChoicePurpose::ChangeStackTarget { item, chosen, canonical_path },
+                            });
+                            state.engine.pending_effect = Some(continuation);
+                            return Ok(ResumableProgress::Suspended);
+                        }
+                        crate::engine::NewTargetsStep::Pick(targets) => {
+                            continuation.choice = Some(PendingEffectChoice::SelectTargets {
+                                player: continuation.ctx.controller,
+                                path: canonical_path.clone(),
+                                selected: Vec::new(),
+                                legal: targets.into_iter().map(|target| new_target_candidate(state, target)).collect(),
+                                min_targets: 1,
+                                max_targets: 1,
+                                ordered: false,
+                                purpose: EffectTargetSelectionPurpose::NewStackTarget { item, chosen, forced, canonical_path },
+                            });
+                            state.engine.pending_effect = Some(continuation);
+                            return Ok(ResumableProgress::Suspended);
+                        }
+                    }
+                }
                 EffectFrame::LookTopPutOneInHand {
                     player,
                     original_prefix,
@@ -8125,6 +8258,19 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                     Some(_) => {}
                 }
             }
+            EffectOp::ChangeTheTargetOfTargetSpellOrAbility | EffectOp::ChooseNewTargetsForTargetSpellOrAbility => {
+                let forced = op == EffectOp::ChangeTheTargetOfTargetSpellOrAbility;
+                let target = continuation.ctx.targets.first().copied();
+                if let Some(item) = target.and_then(|t| crate::engine::targeted_stack_item(state, t)) {
+                    continuation.frames.push(EffectFrame::NewStackTargets {
+                        item: item.v4.stack_item_id,
+                        chosen: Vec::new(),
+                        forced,
+                        change_next: false,
+                        canonical_path: path,
+                    });
+                }
+            }
             EffectOp::ThreatenChosenCreature { player } => {
                 let player = continuation.ctx.resolve_player(player, state);
                 let creatures = controlled_creature_bindings(state, player);
@@ -8418,7 +8564,7 @@ impl ExecCtx {
             ObjectRef::ThisSource => self.source,
             ObjectRef::Target(i) => match self.targets[i as usize] {
                 Target::Object(id) => id,
-                Target::Player(_) => panic!("effect expected an object target at index {i}"),
+                Target::Player(_) | Target::Ability(_) => panic!("effect expected an object target at index {i}"),
             },
         }
     }
@@ -8462,7 +8608,7 @@ impl ExecCtx {
             PlayerRef::Controller => self.controller,
             PlayerRef::Target(i) => match self.targets[i as usize] {
                 Target::Player(p) => p,
-                Target::Object(_) => panic!("effect expected a player target at index {i}"),
+                Target::Object(_) | Target::Ability(_) => panic!("effect expected a player target at index {i}"),
             },
             PlayerRef::ObjectController(oref) => {
                 state.objects.get(self.resolve_object(oref)).controller
@@ -10042,7 +10188,7 @@ fn stage_replicate_copy_target(continuation: &mut EffectContinuation, state: &Ga
                     expected_zone: state.objects.get(object).zone,
                     expected_zone_change_count: state.objects.get(object).zone_change_count,
                 }),
-                Target::Player(_) => None,
+                Target::Player(_) | Target::Ability(_) => None,
             },
         })
         .collect();
@@ -10056,6 +10202,22 @@ fn stage_replicate_copy_target(continuation: &mut EffectContinuation, state: &Ga
         ordered: false,
         purpose: EffectTargetSelectionPurpose::ReplicateCopyTarget { copy, canonical_path },
     });
+}
+
+/// A new target offered for a stack item, bound to its incarnation if it's
+/// an object.
+fn new_target_candidate(state: &GameState, target: Target) -> EffectTargetCandidate {
+    EffectTargetCandidate {
+        target,
+        expected_object: match target {
+            Target::Object(object) => Some(EffectObjectBinding {
+                object,
+                expected_zone: state.objects.get(object).zone,
+                expected_zone_change_count: state.objects.get(object).zone_change_count,
+            }),
+            Target::Player(_) | Target::Ability(_) => None,
+        },
+    }
 }
 
 /// Creatures `player` controls, in battlefield order.
@@ -10948,6 +11110,17 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let object = ctx.resolve_object(*object);
             crate::engine::forbid_blocking(state, object);
         }
+        EffectOp::TargetCreaturesCantBlockThisTurn => {
+            for (index, &target) in ctx.targets.iter().enumerate() {
+                if let Target::Object(object) = target {
+                    if ctx.target_incarnation_matches(index, state)
+                        && crate::engine::creature_target_still_legal(state, object, ctx.controller, ctx.source)
+                    {
+                        crate::engine::forbid_blocking(state, object);
+                    }
+                }
+            }
+        }
         EffectOp::CreaturesCantBlockThisTurn { player } => {
             let player = ctx.resolve_player(*player, state);
             let creatures: Vec<ObjectId> = state.players[player.index()]
@@ -11013,7 +11186,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let target = ctx.resolve_target(TargetRef::Target(0));
             let before = match target {
                 Target::Player(p) => state.players[p.index()].life,
-                Target::Object(_) => 0,
+                Target::Object(_) | Target::Ability(_) => 0,
             };
             event::propose_and_commit(state, event::ProposedEvent::damage(ctx.source, target, *amount));
             if let Target::Player(p) = target {
@@ -11393,7 +11566,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 .iter()
                 .filter_map(|target| match target {
                     Target::Player(player) => Some(*player),
-                    Target::Object(_) => None,
+                    Target::Object(_) | Target::Ability(_) => None,
                 })
                 .collect::<Vec<_>>();
             players.sort_unstable();
@@ -11558,6 +11731,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let decider = match target {
                 Target::Player(p) => p,
                 Target::Object(id) => state.objects.get(id).controller,
+                Target::Ability(_) => unreachable!("an ability is never a damage target"),
             };
             state.engine.pending_spell_copy = Some(crate::engine::PendingSpellCopy {
                 resolving_stack_item: ctx
@@ -12075,6 +12249,8 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         | EffectOp::LookTopPutOneInHandRestBottomRandom { .. }
         | EffectOp::ThreatenChosenCreature { .. }
         | EffectOp::ReplicateCopies { .. }
+        | EffectOp::ChangeTheTargetOfTargetSpellOrAbility
+        | EffectOp::ChooseNewTargetsForTargetSpellOrAbility
         | EffectOp::RevealTargetHandChooseNoncreatureNonlandDiscard { .. }
         | EffectOp::RevealHandChooseNonlandToLinkedExile { .. }
         | EffectOp::ReturnLinkedExiledCardToOwnersHand

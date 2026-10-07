@@ -2128,3 +2128,343 @@ fn throne_of_eldraine_draws_with_three_mana_of_its_color_only() {
     activate_with(&mut state, throne, 0, &[], &[], &[]);
     assert_eq!(state.players[0].hand.len(), 2);
 }
+
+/// Answers decisions with `policy` until it returns `None`.
+fn drive(state: &mut GameState, mut policy: impl FnMut(&GameState, &Decision) -> Option<Action>) {
+    for _ in 0..500 {
+        let d = engine::advance_until_decision(state);
+        let Some(a) = policy(state, &d) else {
+            return;
+        };
+        engine::step(state, a.clone()).unwrap_or_else(|e| panic!("{a:?} at {d:?}: {e}"));
+    }
+    panic!("no stop after 500 decisions");
+}
+
+/// Player 0 bolts `bolt_target`; player 1 answers with `card` aimed at the
+/// Bolt, choosing additional-cost option `option`; each new target choice
+/// takes `pick`. Stops once the Bolt has left the stack.
+fn bolt_and_answer(state: &mut GameState, bolt_target: Target, card: &str, option: Option<u16>, pick: Target) -> ObjectId {
+    let bolt = put_in(state, P0, "Lightning Bolt", Zone::Hand);
+    let answer = put_in(state, P1, card, Zone::Hand);
+    drive(state, |s, d| match d {
+        _ if zone(s, bolt) != Zone::Hand && zone(s, bolt) != Zone::Stack => None,
+        Decision::CastSpellOrPass { player, castable_spells, .. } => Some(match *player {
+            P0 if castable_spells.contains(&bolt) => Action::CastSpell(bolt),
+            P1 if castable_spells.contains(&answer) => Action::CastSpell(answer),
+            _ => Action::Pass,
+        }),
+        Decision::ChooseTargets { player: P0, .. } => Some(Action::ChooseTarget(bolt_target)),
+        Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Object(bolt))),
+        Decision::ChooseEffectOption { .. } => Some(Action::ChooseEffectOption(option.expect("no additional-cost choice"))),
+        Decision::ChooseCastMode { .. } => Some(Action::ChooseCastMode(mtg_kernel::engine::CastMode::Alternative)),
+        Decision::ChooseEffectBoolean { .. } => Some(Action::ChooseEffectBoolean(true)),
+        Decision::ChooseEffectTargets { legal_targets, .. } => {
+            assert!(legal_targets.contains(&pick), "{pick:?} not in {legal_targets:?}");
+            Some(Action::ChooseEffectTarget(pick))
+        }
+        Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
+        other => panic!("unhandled decision {other:?}"),
+    });
+    answer
+}
+
+/// Whether player 1 is offered `card` in response to a Bolt at them.
+fn offered_against_bolt(state: &mut GameState, card: ObjectId) -> bool {
+    put_in(state, P0, "Lightning Bolt", Zone::Hand);
+    lands(state, P0, 1);
+    let mut offered = false;
+    drive(state, |s, d| match d {
+        Decision::CastSpellOrPass { player: P0, castable_spells, .. } if s.stack.is_empty() => {
+            castable_spells.first().map(|&b| Action::CastSpell(b))
+        }
+        Decision::CastSpellOrPass { player: P1, castable_spells, .. } => {
+            offered = castable_spells.contains(&card);
+            None
+        }
+        Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+        Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Player(P1))),
+        other => panic!("unhandled decision {other:?}"),
+    });
+    offered
+}
+
+#[test]
+fn redirect_lightning_pays_two_or_five_life_and_must_change_the_target() {
+    // {2}: the only other legal target is player 0.
+    let mut state = game();
+    lands(&mut state, P0, 1);
+    lands(&mut state, P1, 3);
+    bolt_and_answer(&mut state, Target::Player(P1), "Redirect Lightning", Some(1), Target::Player(P0));
+    assert_eq!((state.players[0].life, state.players[1].life), (37, 40));
+    assert!(state.players[1].battlefield.iter().all(|&o| state.objects.get(o).tapped));
+
+    // With two lands only 5 life works, so there's no choice.
+    let mut state = game();
+    lands(&mut state, P0, 1);
+    lands(&mut state, P1, 2);
+    bolt_and_answer(&mut state, Target::Player(P1), "Redirect Lightning", None, Target::Player(P0));
+    assert_eq!((state.players[0].life, state.players[1].life), (37, 35));
+
+    // Two lands and 4 life: neither cost can be paid.
+    let mut state = game();
+    lands(&mut state, P1, 2);
+    state.players[1].life = 4;
+    let redirect = put_in(&mut state, P1, "Redirect Lightning", Zone::Hand);
+    assert!(!offered_against_bolt(&mut state, redirect));
+}
+
+#[test]
+fn redirect_lightning_can_point_a_counterspell_at_itself() {
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    put(&mut state, P1, "Island");
+    put(&mut state, P1, "Island");
+    let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+    let counter = put_in(&mut state, P1, "Counterspell", Zone::Hand);
+    let redirect = put_in(&mut state, P0, "Redirect Lightning", Zone::Hand);
+    drive(&mut state, |s, d| match d {
+        _ if zone(s, bolt) == Zone::Graveyard => None,
+        Decision::CastSpellOrPass { player, castable_spells, .. } => Some(match *player {
+            P0 if castable_spells.contains(&bolt) => Action::CastSpell(bolt),
+            P1 if castable_spells.contains(&counter) => Action::CastSpell(counter),
+            P0 if castable_spells.contains(&redirect) && zone(s, counter) == Zone::Stack => Action::CastSpell(redirect),
+            _ => Action::Pass,
+        }),
+        Decision::ChooseTargets { spell, .. } if *spell == bolt => Some(Action::ChooseTarget(Target::Player(P1))),
+        Decision::ChooseTargets { spell, .. } if *spell == counter => Some(Action::ChooseTarget(Target::Object(bolt))),
+        Decision::ChooseTargets { legal_targets, .. } => {
+            assert!(legal_targets.contains(&Target::Object(counter)));
+            assert!(!legal_targets.contains(&Target::Object(redirect)), "not itself");
+            Some(Action::ChooseTarget(Target::Object(counter)))
+        }
+        other => panic!("unhandled decision {other:?}"),
+    });
+    // The only other spell for Counterspell was Redirect, which then left the stack.
+    assert_eq!(state.players[1].life, 37, "Counterspell lost its target");
+    assert_eq!(state.players[0].life, 35);
+    assert_eq!(zone(&state, counter), Zone::Graveyard);
+}
+
+#[test]
+fn deflecting_swat_is_free_with_a_commander_and_may_keep_or_change_each_target() {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    for change in [true, false] {
+        let mut state = game();
+        lands(&mut state, P0, 1);
+        let ognis = state.commander.as_ref().unwrap().commanders[1];
+        propose_and_commit(&mut state, ProposedEvent::zone_change(ognis, Zone::Battlefield));
+        let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+        let swat = put_in(&mut state, P1, "Deflecting Swat", Zone::Hand);
+        drive(&mut state, |s, d| match d {
+            _ if zone(s, bolt) == Zone::Graveyard => None,
+            Decision::CastSpellOrPass { player, castable_spells, .. } => Some(match *player {
+                P0 if castable_spells.contains(&bolt) => Action::CastSpell(bolt),
+                P1 if castable_spells.contains(&swat) => Action::CastSpell(swat),
+                _ => Action::Pass,
+            }),
+            Decision::ChooseTargets { player: P0, .. } => Some(Action::ChooseTarget(Target::Object(ognis))),
+            Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Object(bolt))),
+            Decision::ChooseCastMode { .. } => Some(Action::ChooseCastMode(mtg_kernel::engine::CastMode::Alternative)),
+            Decision::ChooseEffectBoolean { player: P1, .. } => Some(Action::ChooseEffectBoolean(change)),
+            Decision::ChooseEffectTargets { legal_targets, .. } => {
+                assert!(!legal_targets.contains(&Target::Object(ognis)), "not its current target");
+                Some(Action::ChooseEffectTarget(Target::Player(P0)))
+            }
+            other => panic!("unhandled decision {other:?}"),
+        });
+        if change {
+            assert_eq!(state.players[0].life, 37);
+            assert_eq!(state.objects.get(ognis).damage, 0);
+        } else {
+            assert_eq!(state.players[0].life, 40);
+            assert_ne!(zone(&state, ognis), Zone::Battlefield, "Bolt killed the 3/3");
+        }
+    }
+    // Without a commander on the battlefield it costs {2}{R}.
+    let mut state = game();
+    let swat = put_in(&mut state, P1, "Deflecting Swat", Zone::Hand);
+    assert!(!offered_against_bolt(&mut state, swat));
+}
+
+#[test]
+fn deflecting_swat_offers_only_new_targets_that_leave_a_legal_set() {
+    // Cast into the Fire at two of player 1's creatures: swapping them is
+    // legal as a whole (115.7e), but a kept target can't be duplicated.
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let a = put(&mut state, P1, "Myr Enforcer");
+    let b = put(&mut state, P1, "Myr Enforcer");
+    let c = put(&mut state, P0, "Myr Enforcer");
+    let ognis = state.commander.as_ref().unwrap().commanders[1];
+    mtg_kernel::event::propose_and_commit(&mut state, mtg_kernel::event::ProposedEvent::zone_change(ognis, Zone::Battlefield));
+    let fire = put_in(&mut state, P0, "Cast into the Fire", Zone::Hand);
+    let swat = put_in(&mut state, P1, "Deflecting Swat", Zone::Hand);
+    let redirect = put_in(&mut state, P1, "Redirect Lightning", Zone::Hand);
+    lands(&mut state, P1, 3);
+    let mut fire_targets = vec![Target::Object(a), Target::Object(b)].into_iter();
+    let mut picks = vec![Target::Object(b), Target::Object(a)].into_iter();
+    let mut offers = Vec::new();
+    let mut asked = 0;
+    drive(&mut state, |s, d| match d {
+        _ if zone(s, swat) == Zone::Graveyard => None,
+        Decision::CastSpellOrPass { player, castable_spells, .. } => Some(match *player {
+            P0 if castable_spells.contains(&fire) => Action::CastSpell(fire),
+            P1 if castable_spells.contains(&swat) => {
+                assert!(!castable_spells.contains(&redirect), "two targets");
+                Action::CastSpell(swat)
+            }
+            _ => Action::Pass,
+        }),
+        Decision::ChooseSpellMode { .. } => Some(Action::ChooseSpellMode(0)),
+        Decision::ChooseTargets { player: P0, .. } => Some(Action::ChooseTarget(fire_targets.next().unwrap())),
+        Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Object(fire))),
+        Decision::ChooseCastMode { .. } => Some(Action::ChooseCastMode(mtg_kernel::engine::CastMode::Alternative)),
+        Decision::ChooseEffectBoolean { .. } => {
+            asked += 1;
+            Some(Action::ChooseEffectBoolean(true))
+        }
+        Decision::ChooseEffectTargets { legal_targets, .. } => {
+            offers.push(legal_targets.clone());
+            Some(Action::ChooseEffectTarget(picks.next().unwrap()))
+        }
+        other => panic!("unhandled decision {other:?}"),
+    });
+    // First anything but A itself; then the second can't stay B, so it must
+    // change (not asked) to another creature.
+    assert_eq!(asked, 1);
+    assert!(offers[0].contains(&Target::Object(b)) && offers[0].contains(&Target::Object(c)));
+    assert!(!offers[0].contains(&Target::Object(a)));
+    for t in [a, c, ognis] {
+        assert!(offers[1].contains(&Target::Object(t)));
+    }
+    assert!(!offers[1].contains(&Target::Object(b)));
+    assert_eq!(state.stack[0].targets, vec![Target::Object(b), Target::Object(a)]);
+}
+
+#[test]
+fn untimely_malfunction_redirects_an_ability() {
+    // Makeshift Munitions pings player 1; Untimely Malfunction's second
+    // mode moves it to player 0's own Myr Enforcer.
+    let mut state = game();
+    lands(&mut state, P0, 1);
+    lands(&mut state, P1, 2);
+    let munitions = put(&mut state, P0, "Makeshift Munitions");
+    let fodder = put(&mut state, P0, "Sol Ring");
+    let myr = put(&mut state, P0, "Myr Enforcer");
+    let malfunction = put_in(&mut state, P1, "Untimely Malfunction", Zone::Hand);
+    let mut activated = false;
+    drive(&mut state, |s, d| match d {
+        _ if s.stack.is_empty() && zone(s, malfunction) == Zone::Graveyard => None,
+        Decision::CastSpellOrPass { player: P0, activatable_abilities, .. }
+            if !activated && activatable_abilities.contains(&(munitions, 0)) =>
+        {
+            activated = true;
+            Some(Action::ActivateAbility(munitions, 0))
+        }
+        Decision::CastSpellOrPass { player: P1, castable_spells, .. } if castable_spells.contains(&malfunction) => {
+            Some(Action::CastSpell(malfunction))
+        }
+        Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+        Decision::ChooseCostTargets { .. } => Some(Action::ChooseCostTarget(fodder)),
+        Decision::ChooseTargets { player: P0, .. } => Some(Action::ChooseTarget(Target::Player(P1))),
+        Decision::ChooseSpellMode { .. } => Some(Action::ChooseSpellMode(1)),
+        Decision::ChooseTargets { legal_targets, .. } => {
+            let [Target::Ability(_)] = legal_targets.as_slice() else {
+                panic!("{legal_targets:?}")
+            };
+            Some(Action::ChooseTarget(legal_targets[0]))
+        }
+        Decision::ChooseEffectTargets { .. } => Some(Action::ChooseEffectTarget(Target::Object(myr))),
+        other => panic!("unhandled decision {other:?}"),
+    });
+    assert_eq!(state.players[1].life, 40);
+    assert_eq!(state.objects.get(myr).damage, 1);
+}
+
+#[test]
+fn redirecting_onto_a_ward_creature_triggers_ward() {
+    let mut state = game();
+    lands(&mut state, P0, 1);
+    lands(&mut state, P1, 3);
+    let terror = put(&mut state, P1, "Tolarian Terror");
+    bolt_and_answer(&mut state, Target::Player(P1), "Redirect Lightning", Some(1), Target::Object(terror));
+    assert_eq!(state.objects.get(terror).damage, 0, "ward countered the Bolt");
+    assert_eq!((state.players[0].life, state.players[1].life), (40, 40));
+}
+
+#[test]
+fn untimely_malfunction_destroys_an_artifact_or_stops_one_or_two_blockers() {
+    use mtg_kernel::engine::UntilEndOfTurnEffect;
+    let mut state = game();
+    lands(&mut state, P0, 4);
+    let ring = put(&mut state, P1, "Sol Ring");
+    cast(&mut state, "Untimely Malfunction", Some(Target::Object(ring)), 0);
+    assert_eq!(zone(&state, ring), Zone::Graveyard);
+    let a = put(&mut state, P1, "Myr Enforcer");
+    let b = put(&mut state, P1, "Myr Enforcer");
+    let spell = put_in(&mut state, P0, "Untimely Malfunction", Zone::Hand);
+    let mut targets = vec![Target::Object(a), Target::Object(b)].into_iter();
+    drive(&mut state, |s, d| match d {
+        _ if zone(s, spell) == Zone::Graveyard => None,
+        Decision::CastSpellOrPass { .. } if s.stack.is_empty() => Some(Action::CastSpell(spell)),
+        Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+        Decision::ChooseSpellMode { .. } => Some(Action::ChooseSpellMode(2)),
+        Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(targets.next().unwrap())),
+        other => panic!("unhandled decision {other:?}"),
+    });
+    let stopped = |o: ObjectId| {
+        state
+            .engine
+            .until_end_of_turn
+            .iter()
+            .any(|e| matches!(*e, UntilEndOfTurnEffect::CantBlock { object_id, .. } if object_id == o))
+    };
+    assert!(stopped(a) && stopped(b));
+}
+
+#[test]
+fn replicate_copies_take_the_targets_the_spell_has_when_they_are_made() {
+    // Player 1 redirects Shattering Spree while its replicate trigger waits:
+    // the copy offers the new target as the one it keeps.
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    lands(&mut state, P1, 3);
+    let theirs = [put(&mut state, P1, "Sol Ring"), put(&mut state, P1, "Arcane Signet")];
+    let mine = put(&mut state, P0, "Sol Ring");
+    let spree = put_in(&mut state, P0, "Shattering Spree", Zone::Hand);
+    let redirect = put_in(&mut state, P1, "Redirect Lightning", Zone::Hand);
+    let mut copy_offer = Vec::new();
+    let mut bound = None;
+    drive(&mut state, |s, d| match d {
+        _ if zone(s, spree) == Zone::Graveyard => None,
+        Decision::CastSpellOrPass { .. } if zone(s, redirect) == Zone::Graveyard && bound.is_none() => {
+            bound = s.stack.iter().find_map(|item| match &item.inline_effect {
+                Some(mtg_kernel::effect::EffectOp::ReplicateCopies { target, .. }) => Some(*target),
+                _ => None,
+            });
+            Some(Action::Pass)
+        }
+        Decision::CastSpellOrPass { player, castable_spells, .. } => Some(match *player {
+            P0 if castable_spells.contains(&spree) => Action::CastSpell(spree),
+            P1 if castable_spells.contains(&redirect) => Action::CastSpell(redirect),
+            _ => Action::Pass,
+        }),
+        Decision::ChooseTargets { player: P0, .. } => Some(Action::ChooseTarget(Target::Object(theirs[0]))),
+        Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Object(spree))),
+        Decision::ChooseEffectOption { player: P0, .. } => Some(Action::ChooseEffectOption(1)),
+        Decision::ChooseEffectOption { .. } => Some(Action::ChooseEffectOption(1)),
+        Decision::ChooseEffectTargets { player: P1, .. } => Some(Action::ChooseEffectTarget(Target::Object(mine))),
+        Decision::ChooseEffectTargets { legal_targets, .. } => {
+            copy_offer = legal_targets.clone();
+            Some(Action::ChooseEffectTarget(Target::Object(theirs[1])))
+        }
+        Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
+        other => panic!("unhandled decision {other:?}"),
+    });
+    assert_eq!(bound, Some(Some(Target::Object(mine))), "the waiting trigger copies the new target");
+    assert!(copy_offer.contains(&Target::Object(mine)));
+    assert_eq!(zone(&state, mine), Zone::Graveyard, "the redirected original");
+    assert_eq!(zone(&state, theirs[1]), Zone::Graveyard, "the copy");
+    assert_eq!(zone(&state, theirs[0]), Zone::Battlefield);
+}

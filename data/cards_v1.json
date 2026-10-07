@@ -6501,7 +6501,7 @@
     },
     {
       "name": "Deflecting Swat",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{2}{R}",
       "mana_value": 3,
       "colors": [
@@ -10962,7 +10962,7 @@
     },
     {
       "name": "Redirect Lightning",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{R}",
       "mana_value": 1,
       "colors": [
@@ -12713,7 +12713,7 @@
     },
     {
       "name": "Untimely Malfunction",
-      "engine_capability": "no_effect",
+      "engine_capability": "full",
       "mana_cost": "{1}{R}",
       "mana_value": 2,
       "colors": [

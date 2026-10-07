@@ -3332,6 +3332,7 @@ fn kicker_cost_for(name: &str) -> String {
 fn alt_cost_for(name: &str) -> &'static str {
     match name {
         "Fireblast" => "Some(&[CostComponent::SacrificeLands(2)])",
+        "Deflecting Swat" => "Some(&[CostComponent::ControlACommander])",
         "Land Grant" => "Some(&[CostComponent::RevealHandIfNoCardsWithType(CardType::Land)])",
         // Spectacle {R} (702.137a).
         "Light Up the Stage" => {
@@ -3356,6 +3357,7 @@ fn additional_cost_for(name: &str) -> &'static str {
         "Demand Answers" => {
             "Some(&[CostComponent::SacrificeControlled { count: 1, filter: PermanentFilter::Artifact }])"
         }
+        "Redirect Lightning" => "Some(&[CostComponent::PayLife(5)])",
         _ => "None",
     }
 }
@@ -3364,6 +3366,7 @@ fn additional_cost_for(name: &str) -> &'static str {
 fn additional_cost_or_for(name: &str) -> &'static str {
     match name {
         "Demand Answers" => "Some(&[CostComponent::DiscardCards(1)])",
+        "Redirect Lightning" => "Some(&[CostComponent::Mana(Cost { pips: &[], generic: 2, x_count: 0 })])",
         _ => "None",
     }
 }
@@ -4609,6 +4612,12 @@ fn hand_written_spell(name: &str) -> Option<(&'static str, &'static str)> {
         "Demand Answers" => ("TargetSpec::None", "crate::commander_cards::demand_answers"),
         "Seize the Spotlight" => ("TargetSpec::None", "crate::commander_cards::seize_the_spotlight"),
         "Vandalblast" => ("TargetSpec::ArtifactYouDontControl", "crate::commander_cards::vandalblast"),
+        "Redirect Lightning" => (
+            "TargetSpec::SpellOrAbilityWithSingleTarget",
+            "crate::commander_cards::redirect_lightning",
+        ),
+        "Deflecting Swat" => ("TargetSpec::SpellOrAbility", "crate::commander_cards::deflecting_swat"),
+        "Untimely Malfunction" => ("TargetSpec::ArtifactPermanent", "crate::commander_cards::untimely_malfunction"),
         "Flashback" => ("TargetSpec::InstantOrSorceryCardInYourGraveyard", "crate::commander_cards::flashback"),
         "Shattering Spree" => ("TargetSpec::ArtifactPermanent", "crate::commander_cards::shattering_spree"),
         "Call Forth the Tempest" => ("TargetSpec::None", "crate::commander_cards::call_forth_the_tempest"),
@@ -4629,6 +4638,9 @@ fn hand_written_spell(name: &str) -> Option<(&'static str, &'static str)> {
 fn mode2_for(name: &str) -> String {
     if name == "Mob Rule" {
         return "Some(ModeDef { target_spec: TargetSpec::None, effect: crate::commander_cards::mob_rule_power_three_or_less })".to_string();
+    }
+    if name == "Untimely Malfunction" {
+        return "Some(ModeDef { target_spec: TargetSpec::SpellOrAbilityWithSingleTarget, effect: crate::commander_cards::change_the_target })".to_string();
     }
     match special_for(name) {
         Special::ColorBlast {
@@ -4656,6 +4668,9 @@ fn mode2_for(name: &str) -> String {
 /// Optional third printed mode, using the same stable mode index carried by
 /// pending casts and stack items.
 fn mode3_for(name: &str) -> String {
+    if name == "Untimely Malfunction" {
+        return "Some(ModeDef { target_spec: TargetSpec::OneOrTwoCreatures, effect: crate::commander_cards::target_creatures_cant_block })".to_string();
+    }
     match special_for(name) {
         Special::PiracyCharm => "Some(ModeDef { target_spec: TargetSpec::AnyPlayer, effect: mode3_effect_piracy_charm_discard })".to_string(),
         Special::ThrabenCharm => "Some(ModeDef { target_spec: TargetSpec::UpToTwoPlayers, effect: mode3_effect_thraben_charm_exile_graveyards })".to_string(),

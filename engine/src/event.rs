@@ -719,6 +719,7 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
                     obj.damage = obj.damage.saturating_add(d.amount.max(0) as u16);
                     obj.v4.deathtouch_damage |= source_has_deathtouch;
                 }
+                Target::Ability(_) => unreachable!("an ability is never dealt damage"),
                 Target::Player(p) => {
                     state.players[p.index()].life -= d.amount;
                     // 120.3a: damage to a player is life loss.

@@ -577,6 +577,13 @@ pub enum TargetSpec {
     ArtifactYouDontControl,
     /// An instant or sorcery card in the controller's graveyard (Flashback).
     InstantOrSorceryCardInYourGraveyard,
+    /// A spell or an ability on the stack (Deflecting Swat).
+    SpellOrAbility,
+    /// A spell or an ability on the stack with exactly one target
+    /// (Redirect Lightning).
+    SpellOrAbilityWithSingleTarget,
+    /// One or two distinct creatures (Untimely Malfunction).
+    OneOrTwoCreatures,
 }
 
 impl TargetSpec {
@@ -631,6 +638,9 @@ impl TargetSpec {
             TargetSpec::OpponentPermanent => 43,
             TargetSpec::ArtifactYouDontControl => 44,
             TargetSpec::InstantOrSorceryCardInYourGraveyard => 45,
+            TargetSpec::SpellOrAbility => 46,
+            TargetSpec::SpellOrAbilityWithSingleTarget => 47,
+            TargetSpec::OneOrTwoCreatures => 48,
         }
     }
 }
@@ -761,6 +771,8 @@ pub enum CostComponent {
     /// "Activate only if you created a token this turn" (Idol of Oblivion);
     /// pays nothing.
     CreatedTokenThisTurn,
+    /// "If you control a commander" (Deflecting Swat); pays nothing.
+    ControlACommander,
     /// Celebration (Goddric's ability exists only while celebrating); pays
     /// nothing.
     Celebrating,
@@ -1641,6 +1653,9 @@ mod tests {
             (TargetSpec::OpponentPermanent, 43),
             (TargetSpec::ArtifactYouDontControl, 44),
             (TargetSpec::InstantOrSorceryCardInYourGraveyard, 45),
+            (TargetSpec::SpellOrAbility, 46),
+            (TargetSpec::SpellOrAbilityWithSingleTarget, 47),
+            (TargetSpec::OneOrTwoCreatures, 48),
         ];
         for (target_spec, ordinal) in stable_ordinals {
             assert_eq!(target_spec.stable_id(), ordinal);
@@ -1660,7 +1675,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0xea19_339d_790d_d2b7);
+        assert_eq!(KERNEL_CARDDB_HASH, 0xffa2_96ab_f3bb_c5a5);
     }
 
     #[test]

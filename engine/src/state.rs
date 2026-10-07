@@ -549,6 +549,16 @@ pub enum Step {
 pub enum Target {
     Object(ObjectId),
     Player(PlayerId),
+    /// An activated or triggered ability on the stack, by its
+    /// `StackItemId` (which fits 32 bits in any real game).
+    Ability(u32),
+}
+
+impl Target {
+    /// The ability on the stack with id `id`.
+    pub fn ability(id: StackItemId) -> Target {
+        Target::Ability(u32::try_from(id.0).expect("stack item ids fit 32 bits"))
+    }
 }
 
 /// Publicly distinguishable origin of a stack item. This is stamped by the
@@ -818,12 +828,15 @@ pub enum StackTargetContractV4 {
         #[serde(default)]
         spell_copy_origin: Option<SpellCopyOriginV4>,
     },
+    /// An ability on the stack; its id names one incarnation.
+    Ability(u32),
 }
 
 impl StackTargetContractV4 {
     pub fn capture(state: &GameState, target: Target) -> StackTargetContractV4 {
         match target {
             Target::Player(player) => StackTargetContractV4::Player(player),
+            Target::Ability(id) => StackTargetContractV4::Ability(id),
             Target::Object(object) => {
                 let live = state.objects.get(object);
                 StackTargetContractV4::Object {
@@ -843,6 +856,7 @@ impl StackTargetContractV4 {
         match self {
             StackTargetContractV4::Player(player) => Target::Player(player),
             StackTargetContractV4::Object { object, .. } => Target::Object(object),
+            StackTargetContractV4::Ability(id) => Target::Ability(id),
         }
     }
 }
@@ -964,6 +978,20 @@ pub fn stack_target_contract_is_structurally_valid(
             0,
             StackTargetContractV4::Object {
                 zone: Zone::Stack,
+                ..
+            },
+        ) | (
+            TargetSpec::SpellOrAbility | TargetSpec::SpellOrAbilityWithSingleTarget,
+            0,
+            StackTargetContractV4::Object {
+                zone: Zone::Stack,
+                ..
+            } | StackTargetContractV4::Ability(_),
+        ) | (
+            TargetSpec::OneOrTwoCreatures,
+            0 | 1,
+            StackTargetContractV4::Object {
+                zone: Zone::Battlefield,
                 ..
             },
         )

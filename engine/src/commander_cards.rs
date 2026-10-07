@@ -103,6 +103,26 @@ pub fn vandalblast() -> Option<EffectOp> {
     Some(EffectOp::DestroyObject { object: ObjectRef::Target(0) })
 }
 
+pub fn redirect_lightning() -> Option<EffectOp> {
+    Some(EffectOp::ChangeTheTargetOfTargetSpellOrAbility)
+}
+
+pub fn deflecting_swat() -> Option<EffectOp> {
+    Some(EffectOp::ChooseNewTargetsForTargetSpellOrAbility)
+}
+
+pub fn untimely_malfunction() -> Option<EffectOp> {
+    Some(EffectOp::DestroyObject { object: ObjectRef::Target(0) })
+}
+
+pub fn change_the_target() -> EffectOp {
+    EffectOp::ChangeTheTargetOfTargetSpellOrAbility
+}
+
+pub fn target_creatures_cant_block() -> EffectOp {
+    EffectOp::TargetCreaturesCantBlockThisTurn
+}
+
 pub fn vandalblast_overload() -> EffectOp {
     EffectOp::DestroyEachArtifactYouDontControl
 }

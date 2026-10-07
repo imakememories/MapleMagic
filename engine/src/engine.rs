@@ -1548,8 +1548,11 @@ fn target_count(spec: TargetSpec) -> u8 {
         | TargetSpec::NoncreatureArtifactPermanent
         | TargetSpec::Land
         | TargetSpec::OpponentArtifactOrEnchantmentPermanent
+        | TargetSpec::SpellOrAbility
+        | TargetSpec::SpellOrAbilityWithSingleTarget
         | TargetSpec::CreatureOtherThanSource => 1,
-        TargetSpec::PlayerThenTheirCreature
+        TargetSpec::OneOrTwoCreatures
+        | TargetSpec::PlayerThenTheirCreature
         | TargetSpec::PlayerThenUpToOneCreature
         | TargetSpec::UpToTwoCreatureCardsInOwnGraveyard
         | TargetSpec::UpToTwoCreatures
@@ -1571,7 +1574,7 @@ fn target_min_count(spec: TargetSpec) -> u8 {
         | TargetSpec::AnyNumberOfNoncreatureArtifactsYouControl
         | TargetSpec::UpToOneArtifact
         | TargetSpec::UpToOneHistoricCardInYourGraveyard => 0,
-        TargetSpec::PlayerThenUpToOneCreature => 1,
+        TargetSpec::PlayerThenUpToOneCreature | TargetSpec::OneOrTwoCreatures => 1,
         _ => target_count(spec),
     }
 }
@@ -1598,6 +1601,35 @@ fn is_color(state: &GameState, id: ObjectId, color: mana::ManaColor) -> bool {
         .contains(&color)
 }
 
+/// The ability on the stack named by an ability target.
+fn ability_on_stack(state: &GameState, id: u32) -> Option<&StackItem> {
+    state
+        .stack
+        .iter()
+        .find(|item| item.kind != StackItemKind::Spell && item.v4.stack_item_id.0 == u64::from(id))
+}
+
+/// The spell or ability on the stack a target names.
+pub(crate) fn targeted_stack_item(state: &GameState, target: Target) -> Option<&StackItem> {
+    match target {
+        Target::Object(spell) => state
+            .stack
+            .iter()
+            .find(|item| item.kind == StackItemKind::Spell && item.source == spell),
+        Target::Ability(id) => ability_on_stack(state, id),
+        Target::Player(_) => None,
+    }
+}
+
+/// A stack item as a target.
+fn stack_item_as_target(item: &StackItem) -> Target {
+    if item.kind == StackItemKind::Spell {
+        Target::Object(item.source)
+    } else {
+        Target::ability(item.v4.stack_item_id)
+    }
+}
+
 fn target_contract_matches_live(
     state: &GameState,
     target: Target,
@@ -1608,6 +1640,7 @@ fn target_contract_matches_live(
     }
     match contract {
         StackTargetContractV4::Player(_) => true,
+        StackTargetContractV4::Ability(id) => ability_on_stack(state, id).is_some(),
         StackTargetContractV4::Object {
             object,
             card_def,
@@ -1642,6 +1675,7 @@ fn target_contracts_are_structurally_valid(
                 }
                 match contract {
                     StackTargetContractV4::Player(_) => true,
+                    StackTargetContractV4::Ability(id) => ability_on_stack(state, id).is_some(),
                     StackTargetContractV4::Object {
                         object,
                         card_def,
@@ -2744,6 +2778,18 @@ fn legal_targets_for_controller_from_source(
                 Vec::new()
             }
         }
+        TargetSpec::SpellOrAbility | TargetSpec::SpellOrAbilityWithSingleTarget => {
+            let announcing = state.engine.pending_cast.as_ref().map(|p| p.spell);
+            state
+                .stack
+                .iter()
+                .filter(|item| {
+                    !(item.kind == StackItemKind::Spell && Some(item.source) == announcing)
+                        && (spec == TargetSpec::SpellOrAbility || item.targets.len() == 1)
+                })
+                .map(stack_item_as_target)
+                .collect()
+        }
         TargetSpec::AnySpellOnStack => {
             let announcing = state.engine.pending_cast.as_ref().map(|p| p.spell);
             state
@@ -2787,7 +2833,8 @@ fn legal_targets_for_controller_from_source(
             .collect(),
         TargetSpec::Creature
         | TargetSpec::CreatureOtherThanSource
-        | TargetSpec::UpToTwoCreatures => battlefield_objects(state)
+        | TargetSpec::UpToTwoCreatures
+        | TargetSpec::OneOrTwoCreatures => battlefield_objects(state)
             .filter(|&id| {
                 object_has_type(state, id, CardType::Creature)
                     && (spec != TargetSpec::CreatureOtherThanSource
@@ -3095,7 +3142,18 @@ fn activation_legal_targets_for(
     targets_chosen: &[Target],
     state: &GameState,
 ) -> Vec<Target> {
-    let controller = state.objects.get(source).controller;
+    activation_legal_targets_for_controller(source, ability, state.objects.get(source).controller, targets_chosen, state)
+}
+
+/// Legal targets for an activated ability controlled by `controller`, who
+/// keeps it if its source changes control.
+fn activation_legal_targets_for_controller(
+    source: ObjectId,
+    ability: &ActivatedAbilityDef,
+    controller: PlayerId,
+    targets_chosen: &[Target],
+    state: &GameState,
+) -> Vec<Target> {
     legal_targets_for_controller_from_source(
         ability.target_spec,
         targets_chosen,
@@ -3768,7 +3826,7 @@ fn component_payment_shape_supported(components: &[CostComponent]) -> bool {
                 discard_count += 1;
             }
             CostComponent::DiscardHand | CostComponent::DiscardLandCard => discard_count += 1,
-            CostComponent::OpponentLostLifeThisTurn => {}
+            CostComponent::OpponentLostLifeThisTurn | CostComponent::ControlACommander => {}
             CostComponent::PayLifePerCommanderColor => pay_life_count += 1,
             CostComponent::SacrificeLands(amount) => {
                 if *amount == 0 {
@@ -4025,6 +4083,11 @@ fn can_pay_components(
             }
             CostComponent::DiscardHand => true,
             CostComponent::OpponentLostLifeThisTurn => state.life_lost_this_turn[player.opponent().index()] > 0,
+            CostComponent::ControlACommander => state.commander.is_some()
+                && state.players[player.index()]
+                    .battlefield
+                    .iter()
+                    .any(|&id| crate::commander::is_commander(state, id)),
             // 119.4: life can be paid only up to the current life total.
             CostComponent::PayLifePerCommanderColor => {
                 state.commander.is_some()
@@ -4385,7 +4448,7 @@ fn pay_cost_components_with_x(
                 ProposedEvent::life_loss(player, i32::from(*amount)),
             ),
             CostComponent::DiscardCards(_) | CostComponent::DiscardLandCard => {}
-            CostComponent::OpponentLostLifeThisTurn => {}
+            CostComponent::OpponentLostLifeThisTurn | CostComponent::ControlACommander => {}
             CostComponent::PayLifePerCommanderColor => {
                 let n = crate::commander::color_identity(state, player).len() as i32;
                 if n > 0 {
@@ -4879,10 +4942,70 @@ fn chosen_additional_cost(def: &card_def::CardDef, pending: &PendingCast) -> Opt
     }
 }
 
-/// Whether `player` could pay some choice of `def`'s additional cost.
-fn some_additional_cost_payable(def: &card_def::CardDef, player: PlayerId, id: ObjectId, state: &GameState) -> bool {
-    def.additional_cost.is_none_or(|cost| can_pay_components(cost, player, id, state))
-        || def.additional_cost_or.is_some_and(|cost| can_pay_components(cost, player, id, state))
+/// Whether `player` could pay some choice of `def`'s additional cost along
+/// with the rest of the cost, where `rest(g)` says whether the rest can be
+/// paid with `g` more generic mana (the choice's own mana, 601.2f).
+fn some_additional_cost_payable(
+    def: &card_def::CardDef,
+    player: PlayerId,
+    id: ObjectId,
+    state: &GameState,
+    rest: impl Fn(u8) -> bool,
+) -> bool {
+    let choice = |cost: Option<&[CostComponent]>| {
+        cost.is_none_or(|c| can_pay_components(&without_mana(c), player, id, state)) && rest(generic_in(cost))
+    };
+    choice(def.additional_cost) || def.additional_cost_or.is_some_and(|cost| choice(Some(cost)))
+}
+
+/// The generic mana in an additional cost ("pay {2}"). It's paid with the
+/// rest of the total cost, before reductions (601.2f).
+fn generic_in(cost: Option<&[CostComponent]>) -> u8 {
+    cost.map_or(0, |components| {
+        components.iter().fold(0u8, |sum, c| match c {
+            CostComponent::Mana(m) => sum.saturating_add(m.generic),
+            _ => sum,
+        })
+    })
+}
+
+/// The additional generic mana `pending` pays; the smaller choice while an
+/// "A or B" additional cost is still unchosen.
+fn chosen_additional_generic(def: &card_def::CardDef, pending: &PendingCast) -> u8 {
+    if def.additional_cost_or.is_some() && pending.additional_cost_or_chosen.is_none() {
+        generic_in(def.additional_cost).min(generic_in(def.additional_cost_or))
+    } else {
+        generic_in(chosen_additional_cost(def, pending))
+    }
+}
+
+/// An additional cost without its mana, which is paid with the spell's.
+fn without_mana(cost: &[CostComponent]) -> std::borrow::Cow<'_, [CostComponent]> {
+    if cost.iter().any(|c| matches!(c, CostComponent::Mana(_))) {
+        std::borrow::Cow::Owned(cost.iter().copied().filter(|c| !matches!(c, CostComponent::Mana(_))).collect())
+    } else {
+        std::borrow::Cow::Borrowed(cost)
+    }
+}
+
+fn plus_generic(cost: Cost, g: u8) -> Cost {
+    Cost { generic: cost.generic.saturating_add(g), ..cost }
+}
+
+/// A component cost with `g` more generic mana.
+fn components_plus_generic(cost: &[CostComponent], g: u8) -> std::borrow::Cow<'_, [CostComponent]> {
+    if g == 0 {
+        return std::borrow::Cow::Borrowed(cost);
+    }
+    let mut out = cost.to_vec();
+    match out.iter_mut().find_map(|c| match c {
+        CostComponent::Mana(m) => Some(m),
+        _ => None,
+    }) {
+        Some(m) => m.generic = m.generic.saturating_add(g),
+        None => out.push(CostComponent::Mana(Cost { pips: &[], generic: g, x_count: 0 })),
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 fn has_chosen_creature_additional_cost(def: &card_def::CardDef) -> bool {
@@ -5001,7 +5124,7 @@ fn pending_normal_cast_cost(def: &card_def::CardDef, pending: &PendingCast, stat
 
 fn taxed_normal_cast_cost(def: &card_def::CardDef, pending: &PendingCast, state: &GameState) -> Cost {
     crate::commander::with_tax(
-        effective_normal_cast_cost(def, pending.controller, state),
+        plus_generic(effective_normal_cast_cost(def, pending.controller, state), chosen_additional_generic(def, pending)),
         state,
         pending.spell,
         pending.origin_zone,
@@ -5026,9 +5149,9 @@ fn pending_x_discount(def: &card_def::CardDef, pending: &PendingCast, state: &Ga
 }
 
 /// A spell's foretell cost after reductions from permanents.
-fn reduced_foretell_cost(def: &card_def::CardDef, player: PlayerId, state: &GameState) -> Option<Cost> {
+fn reduced_foretell_cost(def: &card_def::CardDef, player: PlayerId, state: &GameState, g: u8) -> Option<Cost> {
     let r = crate::statics::spell_cost_reduction(state, player, def);
-    def.foretell_cost.map(|cost| crate::statics::reduce_spell_cost(cost, r))
+    def.foretell_cost.map(|cost| crate::statics::reduce_spell_cost(plus_generic(cost, g), r))
 }
 
 fn effective_normal_cast_cost(
@@ -5421,7 +5544,9 @@ fn is_castable_now(
     match cast_method {
         CastMethodV4::Flashback => state.objects.get(id).zone == Zone::Graveyard
             && flashback_cost(state, id, state.objects.get(id).zone_change_count).is_some_and(|cost| {
-                can_pay_components(cost, player, id, state) && some_additional_cost_payable(def, player, id, state)
+                some_additional_cost_payable(def, player, id, state, |g| {
+                    can_pay_components(&components_plus_generic(cost, g), player, id, state)
+                })
             }),
         CastMethodV4::Retrace => {
             let cost = crate::statics::reduce_spell_cost(
@@ -5441,24 +5566,22 @@ fn is_castable_now(
                 && can_pay_components(escape.cost, player, id, state)
         }),
         CastMethodV4::Normal => {
-            let normal_cost = crate::statics::reduce_spell_cost(
-                crate::commander::with_tax(
-                    effective_normal_cast_cost(def, player, state),
-                    state,
-                    id,
-                    state.objects.get(id).zone,
-                ),
-                crate::statics::spell_cost_reduction(state, player, def),
+            let taxed = crate::commander::with_tax(
+                effective_normal_cast_cost(def, player, state),
+                state,
+                id,
+                state.objects.get(id).zone,
             );
-            let normal_ok =
-                main_timing_ok && mana::can_pay(&normal_cost, 0, player, state).is_some();
-            let alt_ok = def
-                .alt_cost
-                .map(|c| main_timing_ok && can_pay_components(c, player, id, state))
-                .unwrap_or(false);
-            let main_ok = !viable_printed_spell_modes(def, id, player, state).is_empty()
-                && (normal_ok || alt_ok)
-                && some_additional_cost_payable(def, player, id, state);
+            let reduction = crate::statics::spell_cost_reduction(state, player, def);
+            let main_ok = main_timing_ok
+                && !viable_printed_spell_modes(def, id, player, state).is_empty()
+                && some_additional_cost_payable(def, player, id, state, |g| {
+                    let normal_cost = crate::statics::reduce_spell_cost(plus_generic(taxed, g), reduction);
+                    mana::can_pay(&normal_cost, 0, player, state).is_some()
+                        || def
+                            .alt_cost
+                            .is_some_and(|c| can_pay_components(&components_plus_generic(c, g), player, id, state))
+                });
             let omen_ok = supported_omen(def).is_some_and(|omen| {
                 matches!(state.objects.get(id).zone, Zone::Hand | Zone::Exile)
                     && cast_form_timing_ok(omen.types, Keywords::NONE, player, state)
@@ -5488,7 +5611,7 @@ fn is_castable_now(
         CastMethodV4::Foretold => {
             crate::face_down::foretold_before_this_turn(state, id).is_some()
                 && state.objects.get(id).owner == player
-                && reduced_foretell_cost(def, player, state)
+                && reduced_foretell_cost(def, player, state, 0)
                     .is_some_and(|cost| mana::can_pay(&cost, 0, player, state).is_some())
         }
         CastMethodV4::Alternative
@@ -6631,8 +6754,15 @@ fn remaining_cast_payment_is_payable(
     staged_method: CastMethodV4,
 ) -> bool {
     let def = &card_def::CARD_DEFS[state.objects.get(pending.spell).card_def as usize];
+    if def.additional_cost_or.is_some() && pending.additional_cost_or_chosen.is_none() {
+        return [false, true].into_iter().any(|or| {
+            let chosen = PendingCast { additional_cost_or_chosen: Some(or), ..pending.clone() };
+            remaining_cast_payment_is_payable(state, &chosen, staged_method)
+        });
+    }
     let cast_method = finalized_cast_method(pending, staged_method, def);
     let x_value = pending.x_value.unwrap_or(0);
+    let g = chosen_additional_generic(def, pending);
     let base_payable = match cast_method {
         CastMethodV4::Normal => {
             let normal = pending_normal_cast_cost(def, &pending, state);
@@ -6647,37 +6777,37 @@ fn remaining_cast_payment_is_payable(
             }
         }
         CastMethodV4::Alternative => def.alt_cost.is_some_and(|components| {
-            can_pay_components(components, pending.controller, pending.spell, state)
+            can_pay_components(&components_plus_generic(components, g), pending.controller, pending.spell, state)
         }),
         CastMethodV4::Flashback => flashback_cost(state, pending.spell, pending_origin_generation(pending))
-            .is_some_and(|cost| can_pay_components(cost, pending.controller, pending.spell, state)),
+            .is_some_and(|cost| {
+                can_pay_components(&components_plus_generic(cost, g), pending.controller, pending.spell, state)
+            }),
         CastMethodV4::Retrace => {
             let x = x_value.saturating_sub(pending_x_discount(def, pending, state));
             mana::can_pay(&pending_normal_cast_cost(def, pending, state), x, pending.controller, state).is_some()
         }
         CastMethodV4::Escape => def.escape.as_ref().is_some_and(|escape| {
-            can_pay_components(escape.cost, pending.controller, pending.spell, state)
+            can_pay_components(&components_plus_generic(escape.cost, g), pending.controller, pending.spell, state)
         }),
         CastMethodV4::Madness => def
             .madness_cost
-            .is_some_and(|cost| mana::can_pay(&cost, 0, pending.controller, state).is_some()),
-        CastMethodV4::Plotted | CastMethodV4::Cascade => true,
-        CastMethodV4::Foretold => reduced_foretell_cost(def, pending.controller, state)
+            .is_some_and(|cost| mana::can_pay(&plus_generic(cost, g), 0, pending.controller, state).is_some()),
+        CastMethodV4::Plotted | CastMethodV4::Cascade => {
+            g == 0 || mana::can_pay(&plus_generic(Cost { pips: &[], generic: 0, x_count: 0 }, g), 0, pending.controller, state).is_some()
+        }
+        CastMethodV4::Foretold => reduced_foretell_cost(def, pending.controller, state, g)
             .is_some_and(|cost| mana::can_pay(&cost, x_value, pending.controller, state).is_some()),
         CastMethodV4::Omen => supported_omen(def).is_some_and(|omen| {
-            mana::can_pay(&omen.cost, x_value, pending.controller, state).is_some()
+            mana::can_pay(&plus_generic(omen.cost, g), x_value, pending.controller, state).is_some()
         }),
         CastMethodV4::Bestow => supported_bestow(def).is_some_and(|bestow| {
-            mana::can_pay(&bestow.cost, x_value, pending.controller, state).is_some()
+            mana::can_pay(&plus_generic(bestow.cost, g), x_value, pending.controller, state).is_some()
         }),
     };
     base_payable
-        && (if def.additional_cost_or.is_some() && pending.additional_cost_or_chosen.is_none() {
-            some_additional_cost_payable(def, pending.controller, pending.spell, state)
-        } else {
-            chosen_additional_cost(def, pending).is_none_or(|components| {
-                can_pay_components(components, pending.controller, pending.spell, state)
-            })
+        && chosen_additional_cost(def, pending).is_none_or(|components| {
+            can_pay_components(&without_mana(components), pending.controller, pending.spell, state)
         })
 }
 
@@ -8169,10 +8299,11 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
     }
 
     if def.additional_cost_or.is_some() && pending.additional_cost_or_chosen.is_none() {
-        let payable = |cost: Option<&[CostComponent]>| {
-            cost.is_some_and(|c| can_pay_components(c, pending.controller, pending.spell, state))
+        let payable = |or: bool| {
+            let chosen = PendingCast { additional_cost_or_chosen: Some(or), ..pending.clone() };
+            remaining_cast_payment_is_payable(state, &chosen, staged_method)
         };
-        match (payable(def.additional_cost), payable(def.additional_cost_or)) {
+        match (payable(false), payable(true)) {
             (true, true) => {
                 return Some(Decision::ChooseEffectOption {
                     player: pending.controller,
@@ -10081,48 +10212,7 @@ fn stack_targets_still_legal(item: &StackItem, state: &GameState) -> Result<bool
     let mut any_legal = false;
     for (&target, &contract) in item.targets.iter().zip(&item.v4.target_contracts) {
         let same_incarnation = target_contract_matches_live(state, target, contract);
-        let legal_now = match item.kind {
-            StackItemKind::ActivatedAbility => {
-                let ability_index = item
-                    .v4
-                    .activated_ability_index
-                    .ok_or("activated stack item lost its definition-owned ability index")?;
-                let source_contract = validated_ability_source_contract(state, item)?;
-                let def = card_def::CARD_DEFS
-                    .get(source_contract.card_def as usize)
-                    .ok_or("activated stack item source definition is missing")?;
-                let ability = def
-                    .activated_abilities
-                    .get(ability_index as usize)
-                    .ok_or("activated stack item carries an out-of-range ability index")?;
-                activation_legal_targets_for(item.source, ability, &chosen, state).contains(&target)
-            }
-            _ => legal_targets_for_controller_from_source(
-                spec,
-                &chosen,
-                item.controller,
-                Some(match item.kind {
-                    StackItemKind::Spell => TargetingSource {
-                        object: item.source,
-                        card_def: state.objects.get(item.source).card_def,
-                    },
-                    StackItemKind::TriggeredAbility => TargetingSource {
-                        object: item.source,
-                        // A cast trigger's source is a spell, with no
-                        // battlefield contract.
-                        card_def: item
-                            .v4
-                            .ability_source_contract
-                            .map_or(state.objects.get(item.source).card_def, |c| c.card_def),
-                    },
-                    StackItemKind::MadnessOffer | StackItemKind::ActivatedAbility => {
-                        unreachable!("handled or untargeted")
-                    }
-                }),
-                state,
-            )
-            .contains(&target),
-        };
+        let legal_now = stack_item_slot_targets(item, spec, &chosen, state)?.contains(&target);
         any_legal |= same_incarnation && legal_now;
         chosen.push(target);
     }
@@ -10131,6 +10221,269 @@ fn stack_targets_still_legal(item: &StackItem, state: &GameState) -> Result<bool
     // for ignoring each individually-illegal target (Searing Blaze already
     // guards its creature leaf this way).
     Ok(any_legal)
+}
+
+/// Legal targets now for target `prefix.len()` of a stack item, after the
+/// targets in `prefix`, as checked when it resolves (608.2b).
+fn stack_item_slot_targets(
+    item: &StackItem,
+    spec: TargetSpec,
+    prefix: &[Target],
+    state: &GameState,
+) -> Result<Vec<Target>, String> {
+    Ok(match item.kind {
+        StackItemKind::ActivatedAbility => {
+            let ability_index = item
+                .v4
+                .activated_ability_index
+                .ok_or("activated stack item lost its definition-owned ability index")?;
+            let source_contract = validated_ability_source_contract(state, item)?;
+            let def = card_def::CARD_DEFS
+                .get(source_contract.card_def as usize)
+                .ok_or("activated stack item source definition is missing")?;
+            let ability = def
+                .activated_abilities
+                .get(ability_index as usize)
+                .ok_or("activated stack item carries an out-of-range ability index")?;
+            activation_legal_targets_for_controller(item.source, ability, item.controller, prefix, state)
+        }
+        StackItemKind::MadnessOffer => return Err("a Madness offer has no targets".to_string()),
+        _ => legal_targets_for_controller_from_source(
+            spec,
+            prefix,
+            item.controller,
+            Some(match item.kind {
+                StackItemKind::TriggeredAbility => TargetingSource {
+                    object: item.source,
+                    // A cast trigger's source is a spell, with no
+                    // battlefield contract.
+                    card_def: item
+                        .v4
+                        .ability_source_contract
+                        .map_or(state.objects.get(item.source).card_def, |c| c.card_def),
+                },
+                _ => TargetingSource {
+                    object: item.source,
+                    card_def: state.objects.get(item.source).card_def,
+                },
+            }),
+            state,
+        ),
+    })
+}
+
+/// Choosing new targets for a stack item (115.7). A choice list holds one
+/// entry per target so far, in order; `None` keeps that target.
+struct Retarget<'a> {
+    item: &'a StackItem,
+    spec: TargetSpec,
+    /// Whether each current target is legal now.
+    legal_before: Vec<bool>,
+}
+
+impl<'a> Retarget<'a> {
+    fn new(state: &'a GameState, item_id: StackItemId) -> Result<Retarget<'a>, String> {
+        let item = state
+            .stack
+            .iter()
+            .find(|item| item.v4.stack_item_id == item_id)
+            .ok_or("the spell or ability whose targets change left the stack")?;
+        let spec = validated_stack_item_target_spec(item, state)?.unwrap_or(TargetSpec::None);
+        let mut legal_before = Vec::with_capacity(item.targets.len());
+        for (i, (&target, &contract)) in item.targets.iter().zip(&item.v4.target_contracts).enumerate() {
+            legal_before.push(
+                target_contract_matches_live(state, target, contract)
+                    && stack_item_slot_targets(item, spec, &item.targets[..i], state)?.contains(&target),
+            );
+        }
+        Ok(Retarget { item, spec, legal_before })
+    }
+
+    fn finals(&self, chosen: &[Option<Target>]) -> Vec<Target> {
+        chosen.iter().zip(&self.item.targets).map(|(c, &t)| c.unwrap_or(t)).collect()
+    }
+
+    /// What the next target could change to: a legal target other than the
+    /// one it has and other than the item itself (115.5).
+    fn changes(&self, state: &GameState, chosen: &[Option<Target>]) -> Result<Vec<Target>, String> {
+        let i = chosen.len();
+        let me = stack_item_as_target(self.item);
+        let current = self.item.targets[i];
+        let current_live = target_contract_matches_live(state, current, self.item.v4.target_contracts[i]);
+        Ok(stack_item_slot_targets(self.item, self.spec, &self.finals(chosen), state)?
+            .into_iter()
+            .filter(|&t| t != me && !(t == current && current_live))
+            .collect())
+    }
+
+    /// Whether the next target may stay: changes can't make an unchanged
+    /// legal target illegal (115.7d).
+    fn may_keep(&self, state: &GameState, chosen: &[Option<Target>]) -> Result<bool, String> {
+        let i = chosen.len();
+        Ok(!self.legal_before[i]
+            || stack_item_slot_targets(self.item, self.spec, &self.finals(chosen), state)?
+                .contains(&self.item.targets[i]))
+    }
+
+    /// Whether `chosen` can be finished into a legal set of targets; only
+    /// the final set counts (115.7e).
+    fn completes(&self, state: &GameState, chosen: &mut Vec<Option<Target>>) -> Result<bool, String> {
+        if chosen.len() == self.item.targets.len() {
+            return Ok(true);
+        }
+        let mut options = Vec::new();
+        if self.may_keep(state, chosen)? {
+            options.push(None);
+        }
+        options.extend(self.changes(state, chosen)?.into_iter().map(Some));
+        for option in options {
+            chosen.push(option);
+            let ok = self.completes(state, chosen)?;
+            chosen.pop();
+            if ok {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Whether the next target may stay, and what it may change to.
+    fn options(&self, state: &GameState, chosen: &[Option<Target>]) -> Result<(bool, Vec<Target>), String> {
+        let mut prefix = chosen.to_vec();
+        prefix.push(None);
+        let keep = self.may_keep(state, chosen)? && self.completes(state, &mut prefix)?;
+        prefix.pop();
+        let mut changes = Vec::new();
+        for t in self.changes(state, chosen)? {
+            prefix.push(Some(t));
+            if self.completes(state, &mut prefix)? {
+                changes.push(t);
+            }
+            prefix.pop();
+        }
+        Ok((keep, changes))
+    }
+}
+
+/// The next step in changing the targets of a stack item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NewTargetsStep {
+    /// Every target is decided.
+    Done,
+    /// The next target stays.
+    Keep,
+    /// The next target becomes this one.
+    Change(Target),
+    /// Ask whether to change the next target.
+    Ask,
+    /// Pick the next target's new target from these.
+    Pick(Vec<Target>),
+}
+
+/// After `chosen`, what happens to the next target of stack item `item`.
+/// `forced` is "change the target" (115.7a: another legal target if there
+/// is one); otherwise each target may stay (115.7d), and `change_next`
+/// means the player chose to change it.
+pub(crate) fn new_targets_step(
+    state: &GameState,
+    item: StackItemId,
+    chosen: &[Option<Target>],
+    forced: bool,
+    change_next: bool,
+) -> Result<NewTargetsStep, String> {
+    let retarget = Retarget::new(state, item)?;
+    if chosen.len() >= retarget.item.targets.len() {
+        return Ok(NewTargetsStep::Done);
+    }
+    let (keep, changes) = retarget.options(state, chosen)?;
+    Ok(match changes.len() {
+        0 if keep || forced => NewTargetsStep::Keep,
+        0 => return Err("no legal way to finish choosing new targets".to_string()),
+        1 if forced || change_next || !keep => NewTargetsStep::Change(changes[0]),
+        _ if forced || change_next || !keep => NewTargetsStep::Pick(changes),
+        _ => NewTargetsStep::Ask,
+    })
+}
+
+/// Gives stack item `item_id` the new targets in `chosen`. It now targets
+/// them, so "becomes the target" abilities trigger (Misdirection rulings).
+pub(crate) fn change_stack_item_targets(
+    state: &mut GameState,
+    item_id: StackItemId,
+    chosen: &[Option<Target>],
+) -> Result<(), String> {
+    let index = state
+        .stack
+        .iter()
+        .position(|item| item.v4.stack_item_id == item_id)
+        .ok_or("the spell or ability whose targets change left the stack")?;
+    if chosen.len() != state.stack[index].targets.len() {
+        return Err("new targets don't match the target count".to_string());
+    }
+    let mut newly = Vec::new();
+    for (slot, choice) in chosen.iter().enumerate() {
+        let Some(target) = *choice else {
+            continue;
+        };
+        let contract = StackTargetContractV4::capture(state, target);
+        let item = &mut state.stack[index];
+        item.targets[slot] = target;
+        item.v4.target_contracts[slot] = contract;
+        newly.push(contract);
+    }
+    // A waiting replicate trigger copies the spell's targets as they are
+    // when it resolves (707.10).
+    let item = &state.stack[index];
+    if item.kind == StackItemKind::Spell {
+        let (source, first, first_contract) =
+            (item.source, item.targets.first().copied(), item.v4.target_contracts.first().copied());
+        let generation = state.objects.get(source).zone_change_count;
+        for waiting in state.stack.iter_mut() {
+            if let Some(crate::effect::EffectOp::ReplicateCopies { parent, target, target_contract, .. }) =
+                waiting.inline_effect.as_mut()
+            {
+                if parent.object == source && parent.zone_change_count == generation {
+                    *target = first;
+                    *target_contract = first_contract;
+                }
+            }
+        }
+    }
+    let item = &state.stack[index];
+    let controller = item.controller;
+    let mut seen: Vec<(ObjectId, u32)> = item
+        .v4
+        .target_contracts
+        .iter()
+        .zip(chosen)
+        .filter(|(_, choice)| choice.is_none())
+        .filter_map(|(contract, _)| match *contract {
+            StackTargetContractV4::Object { object, zone_change_count, .. } => Some((object, zone_change_count)),
+            _ => None,
+        })
+        .collect();
+    for contract in newly {
+        if let StackTargetContractV4::Object { object, zone: Zone::Battlefield, zone_change_count, .. } = contract {
+            if !seen.contains(&(object, zone_change_count)) {
+                seen.push((object, zone_change_count));
+                event::log_targeted(state, object, zone_change_count, item_id, controller);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether creature `object` is still a legal "target creature" for a
+/// spell `source` controlled by `controller`.
+pub(crate) fn creature_target_still_legal(state: &GameState, object: ObjectId, controller: PlayerId, source: ObjectId) -> bool {
+    legal_targets_for_controller_from_source(
+        TargetSpec::Creature,
+        &[],
+        controller,
+        targeting_source_for_object(state, source),
+        state,
+    )
+    .contains(&Target::Object(object))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13346,6 +13699,7 @@ pub(crate) fn validate_pending_spell_copy(
     }
     let expected_player = match pending.inherited_target {
         Target::Player(player) => player,
+        Target::Ability(_) => return Err("the copied spell's affected target is an ability".to_string()),
         Target::Object(object) => {
             state
                 .objects
@@ -13971,12 +14325,16 @@ fn apply_pending_cast_effect_option(
             apply_choose_optional_additional_cost(state, option_index)
         }
         PendingCastActionStage::ChooseAdditionalCostOption => {
-            let cost = match option_index {
-                0 => def.additional_cost,
-                1 => def.additional_cost_or,
-                _ => return Err("an additional-cost choice has two options".to_string()),
-            };
-            if !cost.is_some_and(|c| can_pay_components(c, pending.controller, pending.spell, state)) {
+            if option_index > 1 {
+                return Err("an additional-cost choice has two options".to_string());
+            }
+            let staged_method = state
+                .stack
+                .last()
+                .and_then(|item| item.v4.cast_method)
+                .ok_or("a pending cast has no placeholder method")?;
+            let chosen = PendingCast { additional_cost_or_chosen: Some(option_index == 1), ..pending.clone() };
+            if !remaining_cast_payment_is_payable(state, &chosen, staged_method) {
                 return Err("that additional cost can't be paid".to_string());
             }
             state.engine.pending_cast.as_mut().expect("validated cast remains pending").additional_cost_or_chosen =
@@ -14389,9 +14747,13 @@ fn finalize_owned_cast(
     // Coin of Mastery counts artifact mana spent on creature spells.
     let creature_spell = def.has_type(CardType::Creature) && !matches!(cast_method, CastMethodV4::Omen | CastMethodV4::Bestow);
     state.cast_payment = Some((creature_spell, 0));
+    let additional_generic = chosen_additional_generic(def, &pending);
     match cast_method {
         CastMethodV4::Plotted | CastMethodV4::Cascade => {
-            let replicate = replicate_parts(def, &pending);
+            let mut replicate = replicate_parts(def, &pending);
+            if additional_generic > 0 {
+                replicate.push(Cost { pips: &[], generic: additional_generic, x_count: 0 });
+            }
             if !replicate.is_empty() {
                 let parts: Vec<&Cost> = replicate.iter().collect();
                 let Some(plan) = mana::can_pay_combined(&parts, 0, pending.controller, state) else {
@@ -14414,7 +14776,7 @@ fn finalize_owned_cast(
             pay_spell_plan(state, pending.controller, &plan);
         }
         CastMethodV4::Foretold => {
-            let cost = reduced_foretell_cost(def, pending.controller, state)
+            let cost = reduced_foretell_cost(def, pending.controller, state, additional_generic)
                 .expect("validated foretold cast has a definition-owned cost");
             let Some(plan) = mana::can_pay(&cost, 0, pending.controller, state) else {
                 abort_cast(state, pending, cast_method);
@@ -14426,7 +14788,7 @@ fn finalize_owned_cast(
             let cost = def
                 .madness_cost
                 .expect("validated Madness cast has a definition-owned cost");
-            let Some(plan) = mana::can_pay(&cost, 0, pending.controller, state) else {
+            let Some(plan) = mana::can_pay(&plus_generic(cost, additional_generic), 0, pending.controller, state) else {
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             };
@@ -14439,7 +14801,7 @@ fn finalize_owned_cast(
                 state,
                 pending.controller,
                 pending.spell,
-                cost,
+                &components_plus_generic(cost, additional_generic),
                 base_object_cost_chosen,
                 x_value,
             ) {
@@ -14466,7 +14828,7 @@ fn finalize_owned_cast(
                 state,
                 pending.controller,
                 pending.spell,
-                escape.cost,
+                &components_plus_generic(escape.cost, additional_generic),
                 base_object_cost_chosen,
             ) {
                 abort_cast(state, pending, cast_method);
@@ -14511,7 +14873,7 @@ fn finalize_owned_cast(
                 state,
                 pending.controller,
                 pending.spell,
-                alt,
+                &components_plus_generic(alt, additional_generic),
                 base_object_cost_chosen,
             ) {
                 abort_cast(state, pending, cast_method);
@@ -14522,7 +14884,7 @@ fn finalize_owned_cast(
         CastMethodV4::Omen => {
             let omen = supported_omen(def)
                 .expect("validated Omen cast has definition-owned spell characteristics");
-            let Some(plan) = mana::can_pay(&omen.cost, x_value, pending.controller, state) else {
+            let Some(plan) = mana::can_pay(&plus_generic(omen.cost, additional_generic), x_value, pending.controller, state) else {
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             };
@@ -14531,7 +14893,7 @@ fn finalize_owned_cast(
         CastMethodV4::Bestow => {
             let bestow = supported_bestow(def)
                 .expect("validated Bestow cast has definition-owned characteristics");
-            let Some(plan) = mana::can_pay(&bestow.cost, x_value, pending.controller, state) else {
+            let Some(plan) = mana::can_pay(&plus_generic(bestow.cost, additional_generic), x_value, pending.controller, state) else {
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             };
@@ -14563,7 +14925,7 @@ fn finalize_owned_cast(
             state,
             pending.controller,
             pending.spell,
-            add,
+            &without_mana(add),
             additional_object_cost_chosen,
         ) {
             abort_cast(state, pending, cast_method);
