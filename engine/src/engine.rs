@@ -5929,7 +5929,7 @@ fn available_mana_abilities(player: PlayerId, state: &GameState) -> Vec<ObjectId
         .copied()
         .filter(|&id| {
             let mut choices = ManaColorSetV1::new();
-            available_mana_ability_choices_into(player, id, state, &mut choices);
+            controlled_mana_ability_choices_into(player, id, state, &mut choices);
             !choices.is_empty()
         })
         .collect()
@@ -5992,6 +5992,19 @@ pub(crate) fn available_mana_ability_choices_into(
     {
         return;
     }
+    controlled_mana_ability_choices_into(player, source, state, out);
+}
+
+/// [`available_mana_ability_choices_into`] for a permanent in `player`'s
+/// battlefield list (so controlled by `player`).
+fn controlled_mana_ability_choices_into(
+    player: PlayerId,
+    source: ObjectId,
+    state: &GameState,
+    out: &mut ManaColorSetV1,
+) {
+    *out = ManaColorSetV1::new();
+    let object = state.objects.get(source);
     let Some(def) = card_def::CARD_DEFS.get(object.card_def as usize) else {
         return;
     };

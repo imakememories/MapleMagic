@@ -2354,6 +2354,10 @@ impl GameState {
     /// decision loop. Every zone change clears an object's relations
     /// (`clear_object_relations`), so only permanents can hold one.
     pub fn validate_battlefield_attachment_relations(&self) -> Result<(), ObjectId> {
+        // Every attachment is recorded in the table as it is made.
+        if self.attachments.is_empty() {
+            return Ok(());
+        }
         for player in &self.players {
             for &id in &player.battlefield {
                 self.validate_object_attachments(id, self.objects.get(id))?;

@@ -104,12 +104,15 @@ static LEGENDARY: LazyLock<Vec<bool>> = LazyLock::new(|| {
 /// 704.5j: a player controlling two or more legendary permanents with the
 /// same name, and those permanents (the first such group found).
 pub fn legend_rule_violation(state: &GameState) -> Option<(PlayerId, Vec<ObjectId>)> {
+    let (legendary, names): (&[bool], &[u16]) = (&LEGENDARY, &NAME_ID);
     let name = |id: ObjectId| {
-        LEGENDARY[state.objects.get(id).card_def as usize]
-            .then(|| NAME_ID[crate::copy::name_def(state, id) as usize])
+        legendary[state.objects.get(id).card_def as usize].then(|| names[crate::copy::name_def(state, id) as usize])
     };
     for player in [PlayerId::P0, PlayerId::P1] {
         let battlefield = &state.players[player.index()].battlefield;
+        if battlefield.iter().filter(|&&id| legendary[state.objects.get(id).card_def as usize]).nth(1).is_none() {
+            continue;
+        }
         for (i, &a) in battlefield.iter().enumerate() {
             let Some(n) = name(a) else {
                 continue;
