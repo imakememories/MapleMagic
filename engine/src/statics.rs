@@ -12,6 +12,7 @@ use std::sync::LazyLock;
 fn creature_keywords_for(name: &str) -> Keywords {
     match name {
         "Goblin War Drums" => Keywords::MENACE,
+        "The Fire Crystal" => Keywords::HASTE,
         _ => Keywords::NONE,
     }
 }
@@ -56,7 +57,7 @@ pub fn grants_keyword(state: &GameState, id: ObjectId, kw: Keywords) -> bool {
 /// Spells of this color its controller casts cost {1} less.
 fn spell_reduction_color_for(name: &str) -> Option<ManaColor> {
     match name {
-        "Ruby Medallion" => Some(ManaColor::R),
+        "Ruby Medallion" | "The Fire Crystal" => Some(ManaColor::R),
         _ => None,
     }
 }
@@ -147,10 +148,18 @@ static SPELL_REDUCERS: LazyLock<Vec<Option<ManaColor>>> =
 
 /// Generic mana `player`'s spell `def` costs less from permanents it controls.
 pub fn spell_cost_reduction(state: &GameState, player: PlayerId, def: &CardDef) -> u8 {
+    spell_cost_reduction_for_colors(state, player, crate::card_def::mana_colors_mask(def.colors))
+}
+
+/// The same for a spell of the colors in `colors` (a `mana_colors_mask`).
+pub fn spell_cost_reduction_for_colors(state: &GameState, player: PlayerId, colors: u8) -> u8 {
     state.players[player.index()]
         .battlefield
         .iter()
-        .filter(|&&id| SPELL_REDUCERS[state.objects.get(id).card_def as usize].is_some_and(|c| def.colors.contains(&c)))
+        .filter(|&&id| {
+            SPELL_REDUCERS[state.objects.get(id).card_def as usize]
+                .is_some_and(|c| colors & crate::card_def::mana_color_mask(c) != 0)
+        })
         .count()
         .min(u8::MAX as usize) as u8
 }

@@ -5067,6 +5067,41 @@ fn components_plus_generic(cost: &[CostComponent], g: u8) -> std::borrow::Cow<'_
     std::borrow::Cow::Owned(out)
 }
 
+/// Generic mana `player`'s spell costs less (601.2f). An Omen half is a
+/// spell of its own cost's colors.
+fn cast_reduction(def: &card_def::CardDef, omen_half: bool, player: PlayerId, state: &GameState) -> u8 {
+    match def.omen.as_ref() {
+        Some(omen) if omen_half && !omen.overload => {
+            let colors = omen.cost.pips.iter().fold(0, |mask, pip| {
+                mask | match *pip {
+                    mana::Pip::Colored(c) | mana::Pip::Phyrexian(c) => card_def::mana_color_mask(c),
+                    mana::Pip::Hybrid(a, b) => card_def::mana_color_mask(a) | card_def::mana_color_mask(b),
+                }
+            });
+            crate::statics::spell_cost_reduction_for_colors(state, player, colors)
+        }
+        _ => crate::statics::spell_cost_reduction(state, player, def),
+    }
+}
+
+/// A cost less `r` generic mana, the rest of `r` coming off one {X}.
+fn reduced(cost: Cost, x: u8, r: u8) -> (Cost, u8) {
+    (crate::statics::reduce_spell_cost(cost, r), x.saturating_sub(crate::statics::x_discount(cost, r)))
+}
+
+/// A component cost less `r` generic mana.
+fn components_reduced(cost: std::borrow::Cow<'_, [CostComponent]>, r: u8) -> std::borrow::Cow<'_, [CostComponent]> {
+    let reducible = |c: &CostComponent| matches!(c, CostComponent::Mana(m) if m.generic > 0);
+    if r == 0 || !cost.iter().any(reducible) {
+        return cost;
+    }
+    let mut out = cost.into_owned();
+    if let Some(CostComponent::Mana(m)) = out.iter_mut().find(|c| reducible(c)) {
+        m.generic = m.generic.saturating_sub(r);
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 fn has_chosen_creature_additional_cost(def: &card_def::CardDef) -> bool {
     def.additional_cost.is_some_and(|components| {
         components.iter().any(|component| {
@@ -5420,7 +5455,7 @@ fn viable_pending_spell_forms(
             targeting_source_for_object(state, pending.spell),
             state,
         ) && pending_cast_form_timing_ok(def.types, def.keywords, pending, state)
-            && mana::can_pay(&def.cost, 0, pending.controller, state).is_some()
+            && mana::can_pay(&pending_normal_cast_cost(def, pending, state), 0, pending.controller, state).is_some()
         {
             forms.push(0);
         }
@@ -5435,7 +5470,13 @@ fn viable_pending_spell_forms(
             Keywords::NONE,
             pending,
             state,
-        ) && mana::can_pay(&bestow.cost, 0, pending.controller, state).is_some()
+        ) && mana::can_pay(
+            &reduced(bestow.cost, 0, cast_reduction(def, false, pending.controller, state)).0,
+            0,
+            pending.controller,
+            state,
+        )
+        .is_some()
         {
             forms.push(1);
         }
@@ -5486,7 +5527,8 @@ fn viable_pending_spell_forms(
         targeting_source_for_object(state, pending.spell),
         state,
     ) && pending_cast_form_timing_ok(omen.types, Keywords::NONE, pending, state)
-        && mana::can_pay(&omen.cost, 0, pending.controller, state).is_some()
+        && mana::can_pay(&reduced(omen.cost, 0, cast_reduction(def, true, pending.controller, state)).0, 0, pending.controller, state)
+            .is_some()
     {
         forms.push(1);
     }
@@ -5507,7 +5549,8 @@ fn payable_cast_modes(
     }
     if pending_cast_form_timing_ok(def.types, def.keywords, pending, state)
         && def.alt_cost.is_some_and(|components| {
-            can_pay_components(components, pending.controller, pending.spell, state)
+            let r = cast_reduction(def, false, pending.controller, state);
+            can_pay_components(&components_reduced(components.into(), r), pending.controller, pending.spell, state)
         })
     {
         modes.push(CastMode::Alternative);
@@ -5607,8 +5650,9 @@ fn is_castable_now(
     match cast_method {
         CastMethodV4::Flashback => state.objects.get(id).zone == Zone::Graveyard
             && flashback_cost(state, id, state.objects.get(id).zone_change_count).is_some_and(|cost| {
+                let r = cast_reduction(def, false, player, state);
                 some_additional_cost_payable(def, player, id, state, |g| {
-                    can_pay_components(&components_plus_generic(cost, g), player, id, state)
+                    can_pay_components(&components_reduced(components_plus_generic(cost, g), r), player, id, state)
                 })
             }),
         CastMethodV4::Retrace => {
@@ -5626,7 +5670,12 @@ fn is_castable_now(
             def.additional_cost.is_none()
                 && def.kicker_cost.is_none()
                 && def.generic_cost_reduction.is_none()
-                && can_pay_components(escape.cost, player, id, state)
+                && can_pay_components(
+                    &components_reduced(escape.cost.into(), cast_reduction(def, false, player, state)),
+                    player,
+                    id,
+                    state,
+                )
         }),
         CastMethodV4::Normal => {
             let taxed = crate::commander::with_tax(
@@ -5641,9 +5690,9 @@ fn is_castable_now(
                 && some_additional_cost_payable(def, player, id, state, |g| {
                     let normal_cost = crate::statics::reduce_spell_cost(plus_generic(taxed, g), reduction);
                     mana::can_pay(&normal_cost, 0, player, state).is_some()
-                        || def
-                            .alt_cost
-                            .is_some_and(|c| can_pay_components(&components_plus_generic(c, g), player, id, state))
+                        || def.alt_cost.is_some_and(|c| {
+                            can_pay_components(&components_reduced(components_plus_generic(c, g), reduction), player, id, state)
+                        })
                 });
             let omen_ok = supported_omen(def).is_some_and(|omen| {
                 matches!(state.objects.get(id).zone, Zone::Hand | Zone::Exile)
@@ -5655,7 +5704,8 @@ fn is_castable_now(
                         targeting_source_for_object(state, id),
                         state,
                     )
-                    && mana::can_pay(&omen.cost, 0, player, state).is_some()
+                    && mana::can_pay(&reduced(omen.cost, 0, cast_reduction(def, true, player, state)).0, 0, player, state)
+                        .is_some()
             });
             let bestow_ok = supported_bestow(def).is_some_and(|bestow| {
                 matches!(state.objects.get(id).zone, Zone::Hand | Zone::Exile)
@@ -5667,7 +5717,8 @@ fn is_castable_now(
                         targeting_source_for_object(state, id),
                         state,
                     )
-                    && mana::can_pay(&bestow.cost, 0, player, state).is_some()
+                    && mana::can_pay(&reduced(bestow.cost, 0, cast_reduction(def, false, player, state)).0, 0, player, state)
+                        .is_some()
             });
             main_ok || omen_ok || bestow_ok
         }
@@ -6875,6 +6926,7 @@ fn remaining_cast_payment_is_payable(
     let cast_method = finalized_cast_method(pending, staged_method, def);
     let x_value = pending.x_value.unwrap_or(0);
     let g = chosen_additional_generic(def, pending);
+    let r = cast_reduction(def, cast_method == CastMethodV4::Omen, pending.controller, state);
     let base_payable = match cast_method {
         CastMethodV4::Normal => {
             let normal = pending_normal_cast_cost(def, &pending, state);
@@ -6889,32 +6941,34 @@ fn remaining_cast_payment_is_payable(
             }
         }
         CastMethodV4::Alternative => def.alt_cost.is_some_and(|components| {
-            can_pay_components(&components_plus_generic(components, g), pending.controller, pending.spell, state)
+            can_pay_components(&components_reduced(components_plus_generic(components, g), r), pending.controller, pending.spell, state)
         }),
         CastMethodV4::Flashback => flashback_cost(state, pending.spell, pending_origin_generation(pending))
             .is_some_and(|cost| {
-                can_pay_components(&components_plus_generic(cost, g), pending.controller, pending.spell, state)
+                can_pay_components(&components_reduced(components_plus_generic(cost, g), r), pending.controller, pending.spell, state)
             }),
         CastMethodV4::Retrace => {
             let x = x_value.saturating_sub(pending_x_discount(def, pending, state));
             mana::can_pay(&pending_normal_cast_cost(def, pending, state), x, pending.controller, state).is_some()
         }
         CastMethodV4::Escape => def.escape.as_ref().is_some_and(|escape| {
-            can_pay_components(&components_plus_generic(escape.cost, g), pending.controller, pending.spell, state)
+            can_pay_components(&components_reduced(components_plus_generic(escape.cost, g), r), pending.controller, pending.spell, state)
         }),
-        CastMethodV4::Madness => def
-            .madness_cost
-            .is_some_and(|cost| mana::can_pay(&plus_generic(cost, g), 0, pending.controller, state).is_some()),
+        CastMethodV4::Madness => def.madness_cost.is_some_and(|cost| {
+            mana::can_pay(&reduced(plus_generic(cost, g), 0, r).0, 0, pending.controller, state).is_some()
+        }),
         CastMethodV4::Plotted | CastMethodV4::Cascade => {
-            g == 0 || mana::can_pay(&plus_generic(Cost { pips: &[], generic: 0, x_count: 0 }, g), 0, pending.controller, state).is_some()
+            g <= r || mana::can_pay(&plus_generic(Cost { pips: &[], generic: 0, x_count: 0 }, g - r), 0, pending.controller, state).is_some()
         }
         CastMethodV4::Foretold => reduced_foretell_cost(def, pending.controller, state, g)
             .is_some_and(|cost| mana::can_pay(&cost, x_value, pending.controller, state).is_some()),
         CastMethodV4::Omen => supported_omen(def).is_some_and(|omen| {
-            mana::can_pay(&plus_generic(omen.cost, g), x_value, pending.controller, state).is_some()
+            let (cost, x) = reduced(plus_generic(omen.cost, g), x_value, r);
+            mana::can_pay(&cost, x, pending.controller, state).is_some()
         }),
         CastMethodV4::Bestow => supported_bestow(def).is_some_and(|bestow| {
-            mana::can_pay(&plus_generic(bestow.cost, g), x_value, pending.controller, state).is_some()
+            let (cost, x) = reduced(plus_generic(bestow.cost, g), x_value, r);
+            mana::can_pay(&cost, x, pending.controller, state).is_some()
         }),
     };
     base_payable
@@ -14910,11 +14964,12 @@ fn finalize_owned_cast(
     let creature_spell = def.has_type(CardType::Creature) && !matches!(cast_method, CastMethodV4::Omen | CastMethodV4::Bestow);
     state.cast_payment = Some((creature_spell, 0));
     let additional_generic = chosen_additional_generic(def, &pending);
+    let reduction = cast_reduction(def, cast_method == CastMethodV4::Omen, pending.controller, state);
     match cast_method {
         CastMethodV4::Plotted | CastMethodV4::Cascade => {
             let mut replicate = replicate_parts(def, &pending);
-            if additional_generic > 0 {
-                replicate.push(Cost { pips: &[], generic: additional_generic, x_count: 0 });
+            if additional_generic > reduction {
+                replicate.push(Cost { pips: &[], generic: additional_generic - reduction, x_count: 0 });
             }
             if !replicate.is_empty() {
                 let parts: Vec<&Cost> = replicate.iter().collect();
@@ -14950,7 +15005,7 @@ fn finalize_owned_cast(
             let cost = def
                 .madness_cost
                 .expect("validated Madness cast has a definition-owned cost");
-            let Some(plan) = mana::can_pay(&plus_generic(cost, additional_generic), 0, pending.controller, state) else {
+            let Some(plan) = mana::can_pay(&reduced(plus_generic(cost, additional_generic), 0, reduction).0, 0, pending.controller, state) else {
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             };
@@ -14963,7 +15018,7 @@ fn finalize_owned_cast(
                 state,
                 pending.controller,
                 pending.spell,
-                &components_plus_generic(cost, additional_generic),
+                &components_reduced(components_plus_generic(cost, additional_generic), reduction),
                 base_object_cost_chosen,
                 x_value,
             ) {
@@ -14990,7 +15045,7 @@ fn finalize_owned_cast(
                 state,
                 pending.controller,
                 pending.spell,
-                &components_plus_generic(escape.cost, additional_generic),
+                &components_reduced(components_plus_generic(escape.cost, additional_generic), reduction),
                 base_object_cost_chosen,
             ) {
                 abort_cast(state, pending, cast_method);
@@ -15035,7 +15090,7 @@ fn finalize_owned_cast(
                 state,
                 pending.controller,
                 pending.spell,
-                &components_plus_generic(alt, additional_generic),
+                &components_reduced(components_plus_generic(alt, additional_generic), reduction),
                 base_object_cost_chosen,
             ) {
                 abort_cast(state, pending, cast_method);
@@ -15046,7 +15101,8 @@ fn finalize_owned_cast(
         CastMethodV4::Omen => {
             let omen = supported_omen(def)
                 .expect("validated Omen cast has definition-owned spell characteristics");
-            let Some(plan) = mana::can_pay(&plus_generic(omen.cost, additional_generic), x_value, pending.controller, state) else {
+            let (cost, x) = reduced(plus_generic(omen.cost, additional_generic), x_value, reduction);
+            let Some(plan) = mana::can_pay(&cost, x, pending.controller, state) else {
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             };
@@ -15055,7 +15111,8 @@ fn finalize_owned_cast(
         CastMethodV4::Bestow => {
             let bestow = supported_bestow(def)
                 .expect("validated Bestow cast has definition-owned characteristics");
-            let Some(plan) = mana::can_pay(&plus_generic(bestow.cost, additional_generic), x_value, pending.controller, state) else {
+            let (cost, x) = reduced(plus_generic(bestow.cost, additional_generic), x_value, reduction);
+            let Some(plan) = mana::can_pay(&cost, x, pending.controller, state) else {
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             };

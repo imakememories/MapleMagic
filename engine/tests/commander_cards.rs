@@ -757,6 +757,14 @@ fn ruby_medallion_takes_one_generic_off_red_spells_x_included() {
     lands(&mut state, P0, 3);
     let dragon = cast(&mut state, "Shivan Devastator", None, 3);
     assert_eq!(state.objects.get(dragon).counters.plus1_plus1, 3);
+
+    // 601.2f: an overload cost is reduced too, {4}{R} to {3}{R}.
+    let mut state = game();
+    put(&mut state, P0, "Ruby Medallion");
+    lands(&mut state, P0, 4);
+    let theirs = [put(&mut state, P1, "Sol Ring"), put(&mut state, P1, "Arcane Signet")];
+    cast(&mut state, "Vandalblast", None, 1);
+    assert!(theirs.iter().all(|&a| zone(&state, a) == Zone::Graveyard), "overloaded with four lands");
 }
 
 #[test]
@@ -1917,6 +1925,14 @@ fn flashback_lets_a_graveyard_spell_be_cast_once_for_its_mana_cost_this_turn() {
     cast_from_graveyard(&mut state, bolt, None);
     assert_eq!(state.players[1].life, 37);
     assert_eq!(zone(&state, bolt), Zone::Exile, "a flashback spell is exiled");
+
+    // 601.2f: the flashback cost is reduced, {1}{R} to {R}.
+    let mut state = game();
+    put(&mut state, P0, "Ruby Medallion");
+    lands(&mut state, P0, 2);
+    let impulse = put_in(&mut state, P0, "Reckless Impulse", Zone::Graveyard);
+    cast(&mut state, "Flashback", Some(Target::Object(impulse)), 0);
+    assert!(castable(&mut state, impulse), "one land left");
 
     // The grant lasts only this turn.
     let mut state = game();
