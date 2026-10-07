@@ -10998,8 +10998,8 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 zone_change_count: state.objects.get(target).zone_change_count,
             };
             state.objects.get_mut(ctx.source).v4.attached_to = Some(link);
-            if !state.objects.get(target).attachments.contains(&ctx.source) {
-                state.objects.get_mut(target).attachments.push(ctx.source);
+            if !state.attachments.contains(&(target, ctx.source)) {
+                state.attachments.push((target, ctx.source));
             }
         }
         EffectOp::TapAttachedCreatureAndDamageControllerByPower => {
@@ -11026,7 +11026,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 || attached.zone_change_count != link.zone_change_count
                 || !crate::engine::object_has_type(state, link.object, CardType::Creature)
                 || (source_is_same_battlefield_incarnation
-                    && !attached.attachments.contains(&ctx.source))
+                    && !state.attachments.contains(&(link.object, ctx.source)))
             {
                 return;
             }
@@ -12491,10 +12491,9 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 zone_change_count: state.objects.get(target).zone_change_count,
             };
             state.objects.get_mut(ctx.source).v4.attached_to = Some(link);
-            state.objects.get_mut(ctx.source).v4.effective_subtype_ids =
-                vec![crate::card_def::Subtype::Aura.stable_id()].into();
-            if !state.objects.get(target).attachments.contains(&ctx.source) {
-                state.objects.get_mut(target).attachments.push(ctx.source);
+            state.objects.get_mut(ctx.source).v4.effective_subtype_ids = crate::state::SubtypeIds::AURA;
+            if !state.attachments.contains(&(target, ctx.source)) {
+                state.attachments.push((target, ctx.source));
             }
         }
         EffectOp::DealDamageToTargetEqualToChosenCostCreaturePower { target } => {
@@ -12636,19 +12635,16 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 ));
                 return;
             };
-            let goads = &mut state.objects.get_mut(object).v4.goaded_by;
-            if let Some(existing) = goads
+            let link = ObjectLinkV4 { object, zone_change_count: state.objects.get(object).zone_change_count };
+            if let Some((_, existing)) = state
+                .goads
                 .iter_mut()
-                .find(|existing| existing.player == ctx.controller)
+                .find(|(l, existing)| *l == link && existing.player == ctx.controller)
             {
                 existing.expires_at_turn = existing.expires_at_turn.max(expires_at_turn);
             } else {
-                goads.push(crate::state::GoadStateV4 {
-                    player: ctx.controller,
-                    expires_at_turn,
-                });
+                state.goads.push((link, crate::state::GoadStateV4 { player: ctx.controller, expires_at_turn }));
             }
-            goads.sort_by_key(|goad| (goad.player, goad.expires_at_turn));
         }
         EffectOp::LookAtLibraryTopAndReorder { .. }
         | EffectOp::MayShuffleLibrary { .. }

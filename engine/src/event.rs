@@ -840,7 +840,6 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
                 summoning_sick: true,
                 damage: 0,
                 counters: Default::default(),
-                attachments: Vec::new(),
                 v4: {
                     let mut v4 = crate::state::ObjectStateV4::from_card_def(t.token_def);
                     v4.entered_battlefield_turn = Some(state.turn);
@@ -1284,7 +1283,6 @@ fn commit_zone_change(
         obj.name = crate::card_def::CARD_DEFS[obj.card_def as usize].object_name.into();
         obj.damage = 0;
         obj.counters = Default::default();
-        obj.attachments.clear();
         if to_zone == Zone::Battlefield {
             if let Some(face_index) = battlefield_face_index {
                 let def = &crate::card_def::CARD_DEFS[obj.card_def as usize];
@@ -1296,11 +1294,7 @@ fn commit_zone_change(
                 };
                 obj.v4.face_index = face_index;
                 obj.v4.effective_color_mask = crate::card_def::mana_colors_mask(face.colors);
-                let mut subtype_ids: Vec<u16> =
-                    face.subtypes.iter().map(|subtype| subtype.stable_id()).collect();
-                subtype_ids.sort_unstable();
-                subtype_ids.dedup();
-                obj.v4.effective_subtype_ids = subtype_ids.into();
+                obj.v4.effective_subtype_ids = crate::state::SubtypeIds::back_face(obj.card_def);
                 obj.name = face.name.into();
             }
             obj.tapped = enters_battlefield_tapped;
@@ -1781,7 +1775,6 @@ mod tests {
             summoning_sick: false,
             damage: 0,
             counters: Default::default(),
-            attachments: Vec::new(),
             v4: crate::state::ObjectStateV4::from_card_def(0),
             spell_copy_origin: None,
             plotted_turn: None,

@@ -43,7 +43,6 @@ fn put_object(state: &mut GameState, player: PlayerId, name: &str, zone: Zone) -
         summoning_sick: false,
         damage: 0,
         counters: Counters::default(),
-        attachments: Vec::new(),
         v4: ObjectStateV4::from_card_def(card_def),
         spell_copy_origin: None,
         plotted_turn: None,
@@ -634,7 +633,8 @@ fn forge_trap_and_arena_have_exact_targets_effects_and_goad_lifetime() {
         InitiativeTriggerKindV1::UndercityRoom(UndercityRoomV1::Arena),
     );
     resolve_top_until_choice(&mut arena);
-    let [goad] = arena.objects.get(goaded).v4.goaded_by.as_slice() else {
+    let goads: Vec<_> = arena.goads_on(goaded).copied().collect();
+    let [goad] = goads.as_slice() else {
         panic!("Arena installs one goad record")
     };
     assert_eq!(goad.player, PlayerId::P0);

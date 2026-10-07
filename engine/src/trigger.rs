@@ -1814,7 +1814,7 @@ fn sba_fixed_point_with_protected_triggers(
                     host.zone == Zone::Battlefield
                         && host.zone_change_count == link.zone_change_count
                         && crate::engine::object_has_type(state, link.object, crate::card_def::CardType::Creature)
-                        && host.attachments.contains(&id)
+                        && state.attachments.contains(&(link.object, id))
                 })
             })
         });
@@ -2307,7 +2307,7 @@ fn triggers_from_events(
             .battlefield
             .iter()
             .copied()
-            .filter(|&host| !state.objects.get(host).attachments.is_empty())
+            .filter(|&host| state.attachments_of(host).next().is_some())
             .collect();
         hosts.sort_unstable();
         for host in hosts {
@@ -2318,7 +2318,7 @@ fn triggers_from_events(
             {
                 continue;
             }
-            for &equipment in &host_live.attachments {
+            for equipment in state.attachments_of(host) {
                 let equipment_live = state.objects.get(equipment);
                 let exact_relation = equipment_live.v4.attached_to.is_some_and(|link| {
                     link.object == host

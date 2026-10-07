@@ -45,7 +45,6 @@ fn put_in(state: &mut GameState, player: PlayerId, name: &str, zone: Zone) -> Ob
         summoning_sick: false,
         damage: 0,
         counters: Default::default(),
-        attachments: Vec::new(),
         v4: ObjectStateV4::from_card_def(card_def),
         spell_copy_origin: None,
         plotted_turn: None,

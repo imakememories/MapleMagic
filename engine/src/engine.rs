@@ -6072,29 +6072,11 @@ pub fn available_mana_ability_choices(
 }
 
 fn mana_ability_use_count(state: &GameState, source: ObjectId, ability_index: u16) -> u16 {
-    state
-        .objects
-        .get(source)
-        .v4
-        .ability_uses_this_turn
-        .iter()
-        .find(|entry| {
-            entry.ability_kind == AbilityKindV4::Mana && entry.ability_index == ability_index
-        })
-        .map_or(0, |entry| entry.uses)
+    state.ability_use_count(source, AbilityKindV4::Mana, ability_index)
 }
 
 fn activated_ability_use_count(state: &GameState, source: ObjectId, ability_index: u16) -> u16 {
-    state
-        .objects
-        .get(source)
-        .v4
-        .ability_uses_this_turn
-        .iter()
-        .find(|entry| {
-            entry.ability_kind == AbilityKindV4::Activated && entry.ability_index == ability_index
-        })
-        .map_or(0, |entry| entry.uses)
+    state.ability_use_count(source, AbilityKindV4::Activated, ability_index)
 }
 
 /// Exact additional object-cost choices for a rich mana ability. The source
@@ -6281,11 +6263,7 @@ fn activate_mana_ability_for(
         effect::execute(&program, &ctx, state);
     }
     if state.objects.get(source).zone_change_count == source_zone_change_count {
-        state
-            .objects
-            .get_mut(source)
-            .v4
-            .note_ability_use(AbilityKindV4::Mana, ability_index);
+        state.note_ability_use(source, AbilityKindV4::Mana, ability_index);
     }
     collect_and_queue_triggers(state);
 
@@ -6430,7 +6408,7 @@ pub fn required_attackers(state: &GameState, eligible: &[ObjectId]) -> Vec<Objec
         .copied()
         .filter(|&id| {
             let object = state.objects.get(id);
-            object.v4.goaded_by.iter().any(|goad| goad_is_active(state, goad))
+            state.goads_on(id).any(|goad| goad_is_active(state, goad))
                 || state
                     .must_attack
                     .iter()
@@ -11229,7 +11207,7 @@ fn advance_step(state: &mut GameState) {
 
 fn attachment_prevents_untap(state: &GameState, host: ObjectId) -> bool {
     let host_object = state.objects.get(host);
-    host_object.attachments.iter().copied().any(|attachment| {
+    state.attachments_of(host).any(|attachment| {
         let Some(aura) = state.objects.try_get(attachment) else {
             return false;
         };
@@ -11272,12 +11250,12 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
                 .engine
                 .until_next_turn_keywords
                 .retain(|effect| !(effect.holder == p && effect.expires_at_turn <= state.turn));
-            for (_, object) in state.objects.iter_mut() {
-                object
-                    .v4
-                    .goaded_by
-                    .retain(|goad| !(goad.player == p && goad.expires_at_turn <= state.turn));
-            }
+            let turn = state.turn;
+            let objects = &state.objects;
+            state.goads.retain(|(l, goad)| {
+                objects.get(l.object).zone_change_count == l.zone_change_count
+                    && !(goad.player == p && goad.expires_at_turn <= turn)
+            });
             // Battlefield zone vectors are ownership-oriented. Untap is
             // controller-oriented, so inspect live objects to cover control
             // changes without consuming another player's skip marker.
@@ -11312,9 +11290,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             state.artifact_mana_spent.clear();
             state.players[0].spells_cast_this_turn = 0;
             state.players[1].spells_cast_this_turn = 0;
-            for (_, object) in state.objects.iter_mut() {
-                object.v4.ability_uses_this_turn.clear();
-            }
+            state.ability_uses.clear();
             // See `PlayPermissionExpiry`'s doc: the *holder's* own Untap
             // marks the start of their "next turn" for an "until end of
             // your next turn" impulse-draw permission (Clockwork
@@ -11572,24 +11548,16 @@ fn valid_bestow_attachment_host(state: &GameState, aura: ObjectId) -> Option<Obj
             .types_for_face(host.v4.face_index)
             .contains(&CardType::Creature)
         && !host_is_attached_bestow
-        && host.attachments.contains(&aura))
+        && state.attachments.contains(&(link.object, aura)))
     .then_some(link.object)
 }
 
 fn bestow_host_counter_bonus(state: &GameState, host: ObjectId) -> i32 {
     state
-        .objects
-        .try_get(host)
-        .map(|object| {
-            object
-                .attachments
-                .iter()
-                .copied()
-                .filter(|&aura| valid_bestow_attachment_host(state, aura) == Some(host))
-                .map(|aura| i32::from(state.objects.get(aura).counters.plus1_plus1))
-                .sum()
-        })
-        .unwrap_or(0)
+        .attachments_of(host)
+        .filter(|&aura| valid_bestow_attachment_host(state, aura) == Some(host))
+        .map(|aura| i32::from(state.objects.get(aura).counters.plus1_plus1))
+        .sum()
 }
 
 /// Effective card-type query for one live object face. Nonbattlefield cards
@@ -11756,7 +11724,7 @@ pub fn has_effective_keyword(state: &GameState, id: ObjectId, kw: Keywords) -> b
         return false;
     }
     if (kw == Keywords::REACH || kw == Keywords::TRAMPLE)
-        && obj.attachments.iter().copied().any(|aura| {
+        && state.attachments_of(id).any(|aura| {
             valid_bestow_attachment_host(state, aura) == Some(id)
                 && card_def::CARD_DEFS[state.objects.get(aura).card_def as usize]
                     .keywords
@@ -11879,7 +11847,7 @@ pub(crate) fn attached_equipment_profiles(
         .try_get(host)
         .into_iter()
         .filter(|host_object| host_object.zone == Zone::Battlefield)
-        .flat_map(|host_object| host_object.attachments.iter().copied())
+        .flat_map(move |_| state.attachments_of(host))
         .filter_map(move |equipment_id| {
             let equipment_object = state.objects.try_get(equipment_id)?;
             if equipment_object.zone != Zone::Battlefield
@@ -13668,7 +13636,6 @@ fn expected_spell_copy_source_object(
         summoning_sick: false,
         damage: 0,
         counters: Default::default(),
-        attachments: Vec::new(),
         v4: ObjectStateV4::from_card_def(original.card_def),
         spell_copy_origin: Some(SpellCopyOriginV4 {
             parent: parent.source,
@@ -13758,7 +13725,6 @@ pub(crate) fn create_replicate_copy(
         summoning_sick: false,
         damage: 0,
         counters: Default::default(),
-        attachments: Vec::new(),
         v4: ObjectStateV4::from_card_def(card_def),
         spell_copy_origin: Some(SpellCopyOriginV4 {
             parent: parent.object,
@@ -13838,7 +13804,6 @@ pub(crate) fn create_storm_spell_copies(
             summoning_sick: false,
             damage: 0,
             counters: Default::default(),
-            attachments: Vec::new(),
             v4: ObjectStateV4::from_card_def(binding.source_contract.card_def),
             spell_copy_origin: Some(SpellCopyOriginV4 {
                 parent: binding.source_contract.source,
@@ -15697,11 +15662,7 @@ fn push_paid_activation(
     // incarnation (or any sacrificed/exiled source); the stack provenance
     // above owns that historical fact instead.
     if state.objects.get(pending.source).zone_change_count == pending.source_zone_change_count {
-        state
-            .objects
-            .get_mut(pending.source)
-            .v4
-            .note_ability_use(AbilityKindV4::Activated, pending.ability_index as u16);
+        state.note_ability_use(pending.source, AbilityKindV4::Activated, pending.ability_index as u16);
     }
 
     // No ability in this increment's pool triggers off another ability
@@ -16106,7 +16067,6 @@ mod tests {
             summoning_sick: false,
             damage: 0,
             counters: Default::default(),
-            attachments: Vec::new(),
             v4: ObjectStateV4::from_card_def(card_id),
             spell_copy_origin: None,
             plotted_turn: None,
@@ -16129,7 +16089,6 @@ mod tests {
             summoning_sick: false,
             damage: 0,
             counters: Default::default(),
-            attachments: Vec::new(),
             v4: ObjectStateV4::from_card_def(card_id),
             spell_copy_origin: None,
             plotted_turn: None,
@@ -16152,7 +16111,6 @@ mod tests {
             summoning_sick: false,
             damage: 0,
             counters: Default::default(),
-            attachments: Vec::new(),
             v4: ObjectStateV4::from_card_def(card_id),
             spell_copy_origin: None,
             plotted_turn: None,
@@ -16954,7 +16912,6 @@ mod tests {
             summoning_sick: false,
             damage: 0,
             counters: Default::default(),
-            attachments: Vec::new(),
             v4: object_v4,
             spell_copy_origin: None,
             plotted_turn,
@@ -17040,7 +16997,6 @@ mod tests {
             summoning_sick: false,
             damage: 0,
             counters: Default::default(),
-            attachments: Vec::new(),
             v4: ObjectStateV4::from_card_def(parent_object.card_def),
             spell_copy_origin: Some(copy_origin),
             plotted_turn: None,
@@ -17433,7 +17389,6 @@ mod tests {
                 summoning_sick: false,
                 damage: 0,
                 counters: Default::default(),
-                attachments: Vec::new(),
                 v4: ObjectStateV4::from_card_def(mountain),
                 spell_copy_origin: None,
                 plotted_turn: None,
@@ -18842,7 +18797,6 @@ mod tests {
             summoning_sick: false,
             damage: 0,
             counters: Default::default(),
-            attachments: Vec::new(),
             v4: ObjectStateV4::from_card_def(card_id),
             spell_copy_origin: None,
             plotted_turn: None,

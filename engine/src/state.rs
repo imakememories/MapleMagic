@@ -256,7 +256,7 @@ pub struct GoadStateV4 {
 /// Schema-v4 dynamic object substrate. Base colors, subtypes, and token
 /// identity are materialized from the registry at object creation, rather
 /// than assigning zero a meaning that would change when mechanics arrive.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ObjectStateV4 {
     pub is_token: bool,
     pub face_index: u8,
@@ -265,8 +265,6 @@ pub struct ObjectStateV4 {
     pub effective_subtype_ids: SubtypeIds,
     pub chosen_color: Option<ManaColor>,
     pub entered_battlefield_turn: Option<u32>,
-    /// Sorted by `(ability_kind, ability_index)`; absent abilities have zero uses.
-    pub ability_uses_this_turn: Vec<AbilityUseV4>,
     /// Incarnation-local delayed effect. Control-changing effects must preserve
     /// this marker; only a zone change or the affected controller's next
     /// untap step consumes it.
@@ -279,8 +277,6 @@ pub struct ObjectStateV4 {
     /// state so the frozen public `Counters` shape does not change.
     #[serde(default, skip_serializing_if = "i16_is_zero")]
     pub lifelink_keyword_counters: i16,
-    /// Sorted by `(player, expires_at_turn)`.
-    pub goaded_by: Vec<GoadStateV4>,
     pub attached_to: Option<ObjectLinkV4>,
     pub exiled_by: Option<ObjectLinkV4>,
     pub ward_generic: u16,
@@ -304,28 +300,97 @@ pub struct ObjectStateV4 {
     pub finalized_cast_binding: Option<FinalizedCastBindingV1>,
 }
 
-/// An object's subtype ids: its card's own list unless an effect changed it.
-pub type SubtypeIds = std::borrow::Cow<'static, [u16]>;
+/// Sorted, unique subtype ids, always one of the static lists below (or
+/// interned when a state is deserialized), so objects stay `Copy`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SubtypeIds(&'static [u16]);
+
+impl std::ops::Deref for SubtypeIds {
+    type Target = [u16];
+    fn deref(&self) -> &[u16] {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for SubtypeIds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl PartialEq<Vec<u16>> for SubtypeIds {
+    fn eq(&self, other: &Vec<u16>) -> bool {
+        self.0 == other.as_slice()
+    }
+}
+
+impl From<Vec<u16>> for SubtypeIds {
+    fn from(ids: Vec<u16>) -> SubtypeIds {
+        static INTERNED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<&'static [u16]>>> =
+            std::sync::LazyLock::new(Default::default);
+        let mut interned = INTERNED.lock().expect("subtype interner");
+        match interned.get(ids.as_slice()) {
+            Some(&ids) => SubtypeIds(ids),
+            None => {
+                let ids: &'static [u16] = Box::leak(ids.into_boxed_slice());
+                interned.insert(ids);
+                SubtypeIds(ids)
+            }
+        }
+    }
+}
+
+impl Serialize for SubtypeIds {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for SubtypeIds {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<SubtypeIds, D::Error> {
+        Vec::<u16>::deserialize(deserializer).map(SubtypeIds::from)
+    }
+}
+
+fn sorted_subtype_ids(subtypes: &[crate::card_def::Subtype], changeling: bool) -> Vec<u16> {
+    let mut ids: Vec<u16> = subtypes.iter().map(|subtype| subtype.stable_id()).collect();
+    if changeling {
+        ids.extend(crate::card_def::Subtype::CREATURE_TYPES.iter().map(|subtype| subtype.stable_id()));
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
 
 static CARD_SUBTYPE_IDS: std::sync::LazyLock<Vec<Vec<u16>>> = std::sync::LazyLock::new(|| {
+    crate::card_def::CARD_DEFS.iter().map(|def| sorted_subtype_ids(def.subtypes, def.changeling)).collect()
+});
+
+static PRINTED_SUBTYPE_IDS: std::sync::LazyLock<Vec<Vec<u16>>> = std::sync::LazyLock::new(|| {
+    crate::card_def::CARD_DEFS.iter().map(|def| sorted_subtype_ids(def.subtypes, false)).collect()
+});
+
+static BACK_FACE_SUBTYPE_IDS: std::sync::LazyLock<Vec<Vec<u16>>> = std::sync::LazyLock::new(|| {
     crate::card_def::CARD_DEFS
         .iter()
-        .map(|def| {
-            let mut subtype_ids: Vec<u16> =
-                def.subtypes.iter().map(|subtype| subtype.stable_id()).collect();
-            if def.changeling {
-                subtype_ids.extend(
-                    crate::card_def::Subtype::CREATURE_TYPES
-                        .iter()
-                        .map(|subtype| subtype.stable_id()),
-                );
-            }
-            subtype_ids.sort_unstable();
-            subtype_ids.dedup();
-            subtype_ids
-        })
+        .map(|def| def.transform_face.as_ref().map_or(Vec::new(), |face| sorted_subtype_ids(face.subtypes, false)))
         .collect()
 });
+
+impl SubtypeIds {
+    /// A bestowed Aura's (an attached bestow card).
+    pub const AURA: SubtypeIds = SubtypeIds(&[crate::card_def::Subtype::Aura.stable_id()]);
+
+    /// The card's printed subtypes, changeling aside (an unattached bestow card).
+    pub fn printed(card_def: u16) -> SubtypeIds {
+        SubtypeIds(&PRINTED_SUBTYPE_IDS[card_def as usize])
+    }
+
+    /// The card's back face's.
+    pub fn back_face(card_def: u16) -> SubtypeIds {
+        SubtypeIds(&BACK_FACE_SUBTYPE_IDS[card_def as usize])
+    }
+}
 
 impl ObjectStateV4 {
     pub fn from_card_def(card_def: u16) -> ObjectStateV4 {
@@ -334,14 +399,12 @@ impl ObjectStateV4 {
             is_token: def.is_token,
             face_index: 0,
             effective_color_mask: crate::card_def::mana_colors_mask(def.colors),
-            effective_subtype_ids: SubtypeIds::Borrowed(&CARD_SUBTYPE_IDS[card_def as usize]),
+            effective_subtype_ids: SubtypeIds(&CARD_SUBTYPE_IDS[card_def as usize]),
             chosen_color: None,
             entered_battlefield_turn: None,
-            ability_uses_this_turn: Vec::new(),
             skip_next_untap: false,
             deathtouch_damage: false,
             lifelink_keyword_counters: 0,
-            goaded_by: Vec::new(),
             attached_to: None,
             exiled_by: None,
             ward_generic: match def.ward_cost {
@@ -365,29 +428,9 @@ impl ObjectStateV4 {
         }
     }
 
-    pub fn note_ability_use(&mut self, ability_kind: AbilityKindV4, ability_index: u16) {
-        let key = (ability_kind, ability_index);
-        match self
-            .ability_uses_this_turn
-            .binary_search_by_key(&key, |entry| (entry.ability_kind, entry.ability_index))
-        {
-            Ok(index) => {
-                self.ability_uses_this_turn[index].uses =
-                    self.ability_uses_this_turn[index].uses.saturating_add(1);
-            }
-            Err(index) => self.ability_uses_this_turn.insert(
-                index,
-                AbilityUseV4 {
-                    ability_kind,
-                    ability_index,
-                    uses: 1,
-                },
-            ),
-        }
-    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct GameObject {
     /// Index into the (not-yet-built) card database.
     pub card_def: u16,
@@ -400,7 +443,6 @@ pub struct GameObject {
     pub summoning_sick: bool,
     pub damage: u16,
     pub counters: Counters,
-    pub attachments: Vec<ObjectId>,
     pub v4: ObjectStateV4,
     /// Immutable provenance for a virtual spell-copy object. Physical cards
     /// and tokens always carry `None`; the spell-copy allocator is the only
@@ -432,63 +474,82 @@ pub struct GameObject {
     pub zone_change_count: u32,
 }
 
-/// A card's name is static, so cloning a game copies no strings.
-pub type ObjectName = std::borrow::Cow<'static, str>;
+/// An object's display name: a card's static name (or one interned when a
+/// state is deserialized), so objects stay `Copy`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ObjectName(&'static str);
 
-// `clone_items` copies objects bitwise and then re-clones only the fields
-// that can own heap memory. A new field changes these sizes: add it there
-// if it can own memory, then update them.
-const _: () = assert!(std::mem::size_of::<GameObject>() == 272);
-const _: () = assert!(std::mem::size_of::<ObjectStateV4>() == 168);
-const _: fn() = || {
-    fn copy<T: Copy>() {}
-    copy::<Counters>();
-    copy::<Option<SpellCopyOriginV4>>();
-    copy::<Option<SpellCastOriginV4>>();
-    copy::<Option<FinalizedCastBindingV1>>();
-    copy::<Option<ObjectLinkV4>>();
-    copy::<Option<ManaColor>>();
-    copy::<Zone>();
-};
-
-impl crate::ids::ArenaClone for GameObject {
-    /// One bitwise copy of every object, then a real clone of each field
-    /// that owns heap memory.
-    fn clone_items(items: &[GameObject]) -> Vec<GameObject> {
-        use std::borrow::Cow;
-        use std::ptr::addr_of_mut;
-        let mut out: Vec<GameObject> = Vec::with_capacity(items.len());
-        // SAFETY: `out` has room for `items.len()` objects. After the copy,
-        // every field owning heap memory (an owned `Cow` or a `Vec` with
-        // capacity) is overwritten without being dropped, so no allocation is
-        // shared. The length is set only once all of them are fixed.
-        unsafe {
-            let dst = out.as_mut_ptr();
-            std::ptr::copy_nonoverlapping(items.as_ptr(), dst, items.len());
-            for (i, object) in items.iter().enumerate() {
-                let d = dst.add(i);
-                if let Cow::Owned(_) = object.name {
-                    addr_of_mut!((*d).name).write(object.name.clone());
-                }
-                if object.attachments.capacity() != 0 {
-                    addr_of_mut!((*d).attachments).write(object.attachments.clone());
-                }
-                let v4 = &object.v4;
-                if let Cow::Owned(_) = v4.effective_subtype_ids {
-                    addr_of_mut!((*d).v4.effective_subtype_ids).write(v4.effective_subtype_ids.clone());
-                }
-                if v4.ability_uses_this_turn.capacity() != 0 {
-                    addr_of_mut!((*d).v4.ability_uses_this_turn).write(v4.ability_uses_this_turn.clone());
-                }
-                if v4.goaded_by.capacity() != 0 {
-                    addr_of_mut!((*d).v4.goaded_by).write(v4.goaded_by.clone());
-                }
-            }
-            out.set_len(items.len());
-        }
-        out
+impl std::ops::Deref for ObjectName {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.0
     }
 }
+
+impl AsRef<str> for ObjectName {
+    fn as_ref(&self) -> &str {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for ObjectName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::fmt::Display for ObjectName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl PartialEq<&str> for ObjectName {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<str> for ObjectName {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl From<&'static str> for ObjectName {
+    fn from(name: &'static str) -> ObjectName {
+        ObjectName(name)
+    }
+}
+
+impl From<String> for ObjectName {
+    fn from(name: String) -> ObjectName {
+        static INTERNED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<&'static str>>> =
+            std::sync::LazyLock::new(Default::default);
+        let mut interned = INTERNED.lock().expect("name interner");
+        match interned.get(name.as_str()) {
+            Some(&name) => ObjectName(name),
+            None => {
+                let name: &'static str = Box::leak(name.into_boxed_str());
+                interned.insert(name);
+                ObjectName(name)
+            }
+        }
+    }
+}
+
+impl Serialize for ObjectName {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ObjectName {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<ObjectName, D::Error> {
+        String::deserialize(deserializer).map(ObjectName::from)
+    }
+}
+
 
 impl GameObject {
     fn new_in_library(card_def: u16, name: ObjectName, owner: PlayerId) -> GameObject {
@@ -502,7 +563,6 @@ impl GameObject {
             summoning_sick: false,
             damage: 0,
             counters: Counters::default(),
-            attachments: Vec::new(),
             v4: ObjectStateV4::from_card_def(card_def),
             spell_copy_origin: None,
             plotted_turn: None,
@@ -1603,6 +1663,17 @@ pub struct GameState {
     /// trigger and state-based action checkpoint is deferred.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pending_copy_entry: Vec<ObjectLinkV4>,
+    /// What's attached to what: (host, attachment) pairs, each host's in the
+    /// order attached (sorted after an equip).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<(ObjectId, ObjectId)>,
+    /// Goads (701.15) by incarnation, one per goading player.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub goads: Vec<(ObjectLinkV4, GoadStateV4)>,
+    /// Abilities activated this turn by incarnation, for per-turn limits;
+    /// cleared at each untap.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ability_uses: Vec<(ObjectLinkV4, AbilityUseV4)>,
     /// Creatures that attack this turn if able (Gogo), cleared at cleanup.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub must_attack: Vec<ObjectLinkV4>,
@@ -1734,6 +1805,15 @@ impl Hash for GameState {
         }
         if !no_tokens_created(&self.spell_mana_values_this_turn) {
             self.spell_mana_values_this_turn.hash(state);
+        }
+        if !self.attachments.is_empty() {
+            self.attachments.hash(state);
+        }
+        if !self.goads.is_empty() {
+            self.goads.hash(state);
+        }
+        if !self.ability_uses.is_empty() {
+            self.ability_uses.hash(state);
         }
         if !self.pending_copy_entry.is_empty() {
             self.pending_copy_entry.hash(state);
@@ -1926,6 +2006,9 @@ impl GameState {
             pending_cascade: None,
             granted_flashback: Vec::new(),
             spell_mana_values_this_turn: [0; 2],
+            attachments: Vec::new(),
+            goads: Vec::new(),
+            ability_uses: Vec::new(),
             pending_copy_entry: Vec::new(),
             must_attack: Vec::new(),
             copy_effects: Vec::new(),
@@ -2125,6 +2208,47 @@ impl GameState {
         }
     }
 
+    /// What's attached to `host`, in order.
+    pub fn attachments_of(&self, host: ObjectId) -> impl Iterator<Item = ObjectId> + '_ {
+        self.attachments.iter().filter(move |&&(h, _)| h == host).map(|&(_, a)| a)
+    }
+
+    /// Goads on `object`'s current incarnation.
+    pub fn goads_on(&self, object: ObjectId) -> impl Iterator<Item = &GoadStateV4> + '_ {
+        let generation = self.objects.get(object).zone_change_count;
+        self.goads
+            .iter()
+            .filter(move |(l, _)| l.object == object && l.zone_change_count == generation)
+            .map(|(_, goad)| goad)
+    }
+
+    /// Times `object`'s current incarnation used ability `ability_index` of
+    /// `ability_kind` this turn.
+    pub fn ability_use_count(&self, object: ObjectId, ability_kind: AbilityKindV4, ability_index: u16) -> u16 {
+        let generation = self.objects.get(object).zone_change_count;
+        self.ability_uses
+            .iter()
+            .find(|(l, u)| {
+                l.object == object
+                    && l.zone_change_count == generation
+                    && u.ability_kind == ability_kind
+                    && u.ability_index == ability_index
+            })
+            .map_or(0, |(_, u)| u.uses)
+    }
+
+    pub fn note_ability_use(&mut self, object: ObjectId, ability_kind: AbilityKindV4, ability_index: u16) {
+        let link = ObjectLinkV4 { object, zone_change_count: self.objects.get(object).zone_change_count };
+        match self
+            .ability_uses
+            .iter_mut()
+            .find(|(l, u)| *l == link && u.ability_kind == ability_kind && u.ability_index == ability_index)
+        {
+            Some((_, u)) => u.uses = u.uses.saturating_add(1),
+            None => self.ability_uses.push((link, AbilityUseV4 { ability_kind, ability_index, uses: 1 })),
+        }
+    }
+
     /// Whether incarnation `zone_change_count` of `id` is or was `card_def`:
     /// a copy effect changes an object's card but not the object (707).
     pub fn def_matches(&self, id: ObjectId, zone_change_count: u32, card_def: u16) -> bool {
@@ -2139,36 +2263,29 @@ impl GameState {
     /// generation advances so an attachment or exile provenance link can
     /// never silently reconnect to a later incarnation.
     pub(crate) fn clear_object_relations(&mut self, object: ObjectId) {
-        for (_, candidate) in self.objects.iter_mut() {
-            candidate.attachments.retain(|&attached| attached != object);
-            if candidate
-                .v4
-                .attached_to
-                .is_some_and(|link| link.object == object)
-            {
-                candidate.v4.attached_to = None;
-                let definition = &crate::card_def::CARD_DEFS[candidate.card_def as usize];
-                if definition.bestow.is_some() {
-                    let mut subtype_ids = definition
-                        .subtypes
-                        .iter()
-                        .map(|subtype| subtype.stable_id())
-                        .collect::<Vec<_>>();
-                    subtype_ids.sort_unstable();
-                    subtype_ids.dedup();
-                    candidate.v4.effective_subtype_ids = subtype_ids.into();
+        // Only what's attached to `object` can point at it as a host, and
+        // only cards in exile carry an `exiled_by` link (any zone change
+        // clears it).
+        if !self.attachments.is_empty() {
+            let attached: Vec<ObjectId> = self.attachments_of(object).collect();
+            self.attachments.retain(|&(h, a)| h != object && a != object);
+            for id in attached {
+                let candidate = self.objects.get_mut(id);
+                if candidate.v4.attached_to.is_some_and(|link| link.object == object) {
+                    candidate.v4.attached_to = None;
+                    if crate::card_def::CARD_DEFS[candidate.card_def as usize].bestow.is_some() {
+                        candidate.v4.effective_subtype_ids = SubtypeIds::printed(candidate.card_def);
+                    }
                 }
             }
-            if candidate
-                .v4
-                .exiled_by
-                .is_some_and(|link| link.object == object)
-            {
+        }
+        for &id in &self.exile {
+            let candidate = self.objects.get_mut(id);
+            if candidate.v4.exiled_by.is_some_and(|link| link.object == object) {
                 candidate.v4.exiled_by = None;
             }
         }
         let moving = self.objects.get_mut(object);
-        moving.attachments.clear();
         moving.v4.attached_to = None;
         moving.v4.exiled_by = None;
     }
@@ -2178,7 +2295,7 @@ impl GameState {
     pub fn validate_attachment_relations(&self) -> Result<(), ObjectId> {
         for (id, object) in self.objects.iter() {
             if object.zone != Zone::Battlefield
-                && (object.v4.attached_to.is_some() || !object.attachments.is_empty())
+                && (object.v4.attached_to.is_some() || self.attachments_of(id).next().is_some())
             {
                 return Err(id);
             }
@@ -2207,18 +2324,13 @@ impl GameState {
             if object.zone != Zone::Battlefield
                 || host.zone != Zone::Battlefield
                 || host.zone_change_count != link.zone_change_count
-                || host
-                    .attachments
-                    .iter()
-                    .filter(|&&source| source == id)
-                    .count()
-                    != 1
+                || self.attachments_of(link.object).filter(|&source| source == id).count() != 1
             {
                 return Err(id);
             }
         }
-        for (index, &source) in object.attachments.iter().enumerate() {
-            if object.attachments[..index].contains(&source) {
+        for (index, source) in self.attachments_of(id).enumerate() {
+            if self.attachments_of(id).take(index).any(|earlier| earlier == source) {
                 return Err(id);
             }
             let Some(attachment) = self.objects.try_get(source) else {
@@ -2265,18 +2377,18 @@ impl GameState {
         {
             return Err(source);
         }
-        for (_, candidate) in self.objects.iter_mut() {
-            candidate.attachments.retain(|&attached| attached != source);
-        }
+        self.attachments.retain(|&(_, attached)| attached != source);
         self.objects.get_mut(source).v4.attached_to = None;
         self.objects.get_mut(source).v4.attached_to = Some(ObjectLinkV4 {
             object: target,
             zone_change_count: target_zone_change_count,
         });
-        let attachments = &mut self.objects.get_mut(target).attachments;
+        let mut attachments: Vec<ObjectId> = self.attachments_of(target).collect();
         attachments.push(source);
         attachments.sort_unstable();
         attachments.dedup();
+        self.attachments.retain(|&(h, _)| h != target);
+        self.attachments.extend(attachments.into_iter().map(|a| (target, a)));
         self.validate_attachment_relations()
     }
 
@@ -2883,7 +2995,6 @@ impl GameState {
         obj.summoning_sick = true;
         obj.damage = 0;
         obj.counters = Counters::default();
-        obj.attachments.clear();
         obj.zone_change_count += 1;
         obj.v4
             .reset_for_zone_change(obj.card_def, Zone::Battlefield, turn);
@@ -3015,36 +3126,6 @@ mod tests {
 
     fn debug_names(card_def: u16) -> String {
         format!("card-{card_def}")
-    }
-
-    #[test]
-    fn cloned_objects_own_their_heap_fields() {
-        let (lib0, lib1) = two_card_libraries();
-        let mut state = GameState::new_from_libraries(&lib0, &lib1, debug_names, 42);
-        let object = state.objects.get_mut(ObjectId(1));
-        object.attachments.push(ObjectId(2));
-        object.v4.effective_subtype_ids = vec![3, 1].into();
-        object.v4.note_ability_use(AbilityKindV4::Mana, 0);
-        object.v4.goaded_by.push(GoadStateV4 { player: PlayerId::P1, expires_at_turn: 3 });
-        state.objects.get_mut(ObjectId(2)).attachments.reserve(4);
-        let mut copy = state.clone();
-        assert_eq!(copy.objects, state.objects);
-        let cloned = copy.objects.get_mut(ObjectId(1));
-        cloned.name.to_mut().push('!');
-        cloned.attachments.push(ObjectId(3));
-        cloned.v4.effective_subtype_ids.to_mut().push(9);
-        cloned.v4.note_ability_use(AbilityKindV4::Mana, 0);
-        cloned.v4.goaded_by.clear();
-        copy.objects.get_mut(ObjectId(2)).attachments.push(ObjectId(0));
-        let original = state.objects.get(ObjectId(1));
-        assert_eq!(original.name, "card-2");
-        assert_eq!(original.attachments, vec![ObjectId(2)]);
-        assert_eq!(original.v4.effective_subtype_ids, vec![3, 1]);
-        assert_eq!(original.v4.ability_uses_this_turn[0].uses, 1);
-        assert_eq!(original.v4.goaded_by.len(), 1);
-        assert!(state.objects.get(ObjectId(2)).attachments.is_empty());
-        drop(copy);
-        assert_eq!(state.clone().objects, state.objects);
     }
 
     #[test]
@@ -4073,7 +4154,7 @@ mod tests {
         assert!(
             diagnostic_state_hash_bytes(&state).starts_with(b"{\"schema_version\":8,\"state\":{")
         );
-        assert_eq!(state.diagnostic_state_hash(), 0xa921_902d_e1a8_d8ce);
+        assert_eq!(state.diagnostic_state_hash(), 0x4c14_f880_f6c6_d368);
     }
 
     /// Draws to different players don't interact, so interleaving order
