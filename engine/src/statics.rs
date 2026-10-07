@@ -165,8 +165,46 @@ pub fn spell_cost_reduction(state: &GameState, player: PlayerId, def: &CardDef) 
     spell_cost_reduction_for_colors(state, player, crate::card_def::mana_colors_mask(def.colors))
 }
 
+thread_local! {
+    /// Per color, the spell cost reducers `player` controls in the state at
+    /// this address, while a [`ReducerScope`] lasts.
+    static REDUCERS: std::cell::Cell<Option<(PlayerId, usize, [u8; 6])>> = const { std::cell::Cell::new(None) };
+}
+
+/// While alive, `player`'s cost reducers in `state` are counted once (for a
+/// priority decision's castability checks, which can't change it).
+pub struct ReducerScope;
+
+impl ReducerScope {
+    pub fn enter(player: PlayerId, state: &GameState) -> ReducerScope {
+        let reducers: &[Option<ManaColor>] = &SPELL_REDUCERS;
+        let mut counts = [0u8; 6];
+        for &id in &state.players[player.index()].battlefield {
+            if let Some(c) = reducers[state.objects.get(id).card_def as usize] {
+                counts[c.pool_index()] = counts[c.pool_index()].saturating_add(1);
+            }
+        }
+        REDUCERS.with(|r| r.set(Some((player, state as *const GameState as usize, counts))));
+        ReducerScope
+    }
+}
+
+impl Drop for ReducerScope {
+    fn drop(&mut self) {
+        REDUCERS.with(|r| r.set(None));
+    }
+}
+
 /// The same for a spell of the colors in `colors` (a `mana_colors_mask`).
 pub fn spell_cost_reduction_for_colors(state: &GameState, player: PlayerId, colors: u8) -> u8 {
+    if let Some((p, key, counts)) = REDUCERS.with(|r| r.get()) {
+        if p == player && key == state as *const GameState as usize {
+            return ManaColor::ALL
+                .iter()
+                .filter(|&&c| colors & crate::card_def::mana_color_mask(c) != 0)
+                .fold(0u8, |n, &c| n.saturating_add(counts[c.pool_index()]));
+        }
+    }
     state.players[player.index()]
         .battlefield
         .iter()

@@ -183,7 +183,7 @@ impl Cost {
 /// lists every color it could produce (basics have exactly one; this shape
 /// is what makes multi-choice producers -- and therefore backtracking --
 /// meaningful).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManaSource {
     pub id: ObjectId,
     pub choices: ManaColorSetV1,
@@ -214,6 +214,68 @@ pub(crate) fn life_payment_affordable(life_paid: i32, life: i32) -> bool {
     life_paid == 0 || life_paid <= life
 }
 
+thread_local! {
+    /// `player`'s sources in the state at this address, while a
+    /// [`SourcesScope`] lasts.
+    static SOURCES: std::cell::RefCell<Option<(PlayerId, usize, std::rc::Rc<Vec<ManaSource>>)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// While alive, `player`'s mana sources in `state` are gathered once: for the
+/// many payability checks of one priority decision, which can't change it.
+pub struct SourcesScope;
+
+impl SourcesScope {
+    pub fn enter(player: PlayerId, state: &GameState) -> SourcesScope {
+        let sources = std::rc::Rc::new(gather_sources(player, state));
+        let key = state as *const GameState as usize;
+        SOURCES.with(|c| *c.borrow_mut() = Some((player, key, sources)));
+        SourcesScope
+    }
+}
+
+impl Drop for SourcesScope {
+    fn drop(&mut self) {
+        SOURCES.with(|c| *c.borrow_mut() = None);
+    }
+}
+
+enum Sources {
+    Cached(std::rc::Rc<Vec<ManaSource>>),
+    Fresh(Vec<ManaSource>),
+}
+
+impl std::ops::Deref for Sources {
+    type Target = [ManaSource];
+    fn deref(&self) -> &[ManaSource] {
+        match self {
+            Sources::Cached(s) => s,
+            Sources::Fresh(s) => s,
+        }
+    }
+}
+
+fn sources_for(player: PlayerId, state: &GameState) -> Sources {
+    let key = state as *const GameState as usize;
+    let cached = SOURCES.with(|c| match &*c.borrow() {
+        Some((p, k, sources)) if *p == player && *k == key => Some(sources.clone()),
+        _ => None,
+    });
+    match cached {
+        Some(sources) => Sources::Cached(sources),
+        None => Sources::Fresh(gather_sources(player, state)),
+    }
+}
+
+/// No payment can spend more mana than the pool and sources make in all;
+/// a Phyrexian pip may be paid with life.
+fn more_than_available(pips: &[Pip], generic: u32, pool: &[u8; 6], sources: &[ManaSource]) -> bool {
+    let needed = generic + pips.iter().filter(|p| !matches!(p, Pip::Phyrexian(_))).count() as u32;
+    let available = pool.iter().map(|&a| u32::from(a)).sum::<u32>()
+        + sources.iter().map(|s| u32::from(s.amount.max(1))).sum::<u32>();
+    needed > available
+}
+
 /// Gathers `player`'s floating pool and untapped mana sources from `state`
 /// and calls `solve`.
 pub fn can_pay(
@@ -222,7 +284,7 @@ pub fn can_pay(
     player: PlayerId,
     state: &GameState,
 ) -> Option<PaymentPlan> {
-    let sources = gather_sources(player, state);
+    let sources = sources_for(player, state);
     let pool = usable_pool(player, state);
     solve(cost, x_value, pool, &sources)
         .filter(|plan| life_payment_affordable(plan.life_paid, state.players[player.index()].life))
@@ -237,7 +299,7 @@ pub fn can_pay_owned(
     player: PlayerId,
     state: &GameState,
 ) -> Option<PaymentPlan> {
-    let sources = gather_sources(player, state);
+    let sources = sources_for(player, state);
     let pool = usable_pool(player, state);
     let mut plan = PaymentPlan::default();
     let mut pool_remaining = pool;
@@ -348,7 +410,7 @@ pub fn can_pay_combined(
     player: PlayerId,
     state: &GameState,
 ) -> Option<PaymentPlan> {
-    let sources = gather_sources(player, state);
+    let sources = sources_for(player, state);
     let pool = usable_pool(player, state);
     let all_pips: Vec<Pip> = costs.iter().flat_map(|c| c.pips.iter().copied()).collect();
     let (combined_pips, pip_generic) = color_bound_pips(&all_pips);
@@ -432,8 +494,9 @@ pub fn can_pay_excluding_sources(
     state: &GameState,
     excluded: &[ObjectId],
 ) -> Option<PaymentPlan> {
-    let sources = gather_sources(player, state)
-        .into_iter()
+    let sources = sources_for(player, state)
+        .iter()
+        .copied()
         .filter(|source| !excluded.contains(&source.id))
         .collect::<Vec<_>>();
     solve(
@@ -481,6 +544,11 @@ pub fn solve(
         &mut used_heap
     };
     let (pips, pip_generic) = color_bound_pips(cost.pips);
+    let generic_needed =
+        u32::from(cost.generic) + u32::from(cost.x_count) * u32::from(x_value) + pip_generic;
+    if more_than_available(&pips, generic_needed, &pool, sources) {
+        return None;
+    }
 
     if !solve_pips(
         &pips,
@@ -493,8 +561,6 @@ pub fn solve(
         return None;
     }
 
-    let generic_needed =
-        u32::from(cost.generic) + u32::from(cost.x_count) * u32::from(x_value) + pip_generic;
     if !pay_generic(
         generic_needed,
         sources,
