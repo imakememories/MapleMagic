@@ -2049,40 +2049,57 @@ impl GameState {
             {
                 return Err(id);
             }
-            if let Some(link) = object.v4.attached_to {
-                let Some(host) = self.objects.try_get(link.object) else {
-                    return Err(id);
-                };
-                if object.zone != Zone::Battlefield
-                    || host.zone != Zone::Battlefield
-                    || host.zone_change_count != link.zone_change_count
-                    || host
-                        .attachments
-                        .iter()
-                        .filter(|&&source| source == id)
-                        .count()
-                        != 1
-                {
-                    return Err(id);
-                }
+            self.validate_object_attachments(id, object)?;
+        }
+        Ok(())
+    }
+
+    /// The battlefield part of `validate_attachment_relations`, for the
+    /// decision loop. Every zone change clears an object's relations
+    /// (`clear_object_relations`), so only permanents can hold one.
+    pub fn validate_battlefield_attachment_relations(&self) -> Result<(), ObjectId> {
+        for player in &self.players {
+            for &id in &player.battlefield {
+                self.validate_object_attachments(id, self.objects.get(id))?;
             }
-            for (index, &source) in object.attachments.iter().enumerate() {
-                if object.attachments[..index].contains(&source) {
-                    return Err(id);
-                }
-                let Some(attachment) = self.objects.try_get(source) else {
-                    return Err(id);
-                };
-                if object.zone != Zone::Battlefield
-                    || attachment.zone != Zone::Battlefield
-                    || attachment.v4.attached_to
-                        != Some(ObjectLinkV4 {
-                            object: id,
-                            zone_change_count: object.zone_change_count,
-                        })
-                {
-                    return Err(source);
-                }
+        }
+        Ok(())
+    }
+
+    fn validate_object_attachments(&self, id: ObjectId, object: &GameObject) -> Result<(), ObjectId> {
+        if let Some(link) = object.v4.attached_to {
+            let Some(host) = self.objects.try_get(link.object) else {
+                return Err(id);
+            };
+            if object.zone != Zone::Battlefield
+                || host.zone != Zone::Battlefield
+                || host.zone_change_count != link.zone_change_count
+                || host
+                    .attachments
+                    .iter()
+                    .filter(|&&source| source == id)
+                    .count()
+                    != 1
+            {
+                return Err(id);
+            }
+        }
+        for (index, &source) in object.attachments.iter().enumerate() {
+            if object.attachments[..index].contains(&source) {
+                return Err(id);
+            }
+            let Some(attachment) = self.objects.try_get(source) else {
+                return Err(id);
+            };
+            if object.zone != Zone::Battlefield
+                || attachment.zone != Zone::Battlefield
+                || attachment.v4.attached_to
+                    != Some(ObjectLinkV4 {
+                        object: id,
+                        zone_change_count: object.zone_change_count,
+                    })
+            {
+                return Err(source);
             }
         }
         Ok(())

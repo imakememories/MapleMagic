@@ -6473,7 +6473,7 @@ fn check_game_over(state: &GameState) -> Option<Decision> {
 /// comprehensive rules would actually grant.
 pub fn advance_until_decision(state: &mut GameState) -> Decision {
     loop {
-        if let Err(source) = state.validate_attachment_relations() {
+        if let Err(source) = state.validate_battlefield_attachment_relations() {
             crate::engine::note_halt(file!(), line!());
             state.engine.halted = Some((UnsupportedMechanic::InvalidEffectContinuation, source));
         }

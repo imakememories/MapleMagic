@@ -1724,6 +1724,24 @@ fn saga_chapter_is_pending(
         })
 }
 
+/// Permanents matching `f`, in id order.
+fn permanents_where(
+    state: &GameState,
+    mut f: impl FnMut(ObjectId, &crate::state::GameObject) -> bool,
+) -> Vec<ObjectId> {
+    let mut ids: Vec<ObjectId> = state
+        .players
+        .iter()
+        .flat_map(|player| player.battlefield.iter().copied())
+        .filter(|&id| {
+            let object = state.objects.get(id);
+            object.zone == Zone::Battlefield && f(id, object)
+        })
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
 fn sba_fixed_point_with_protected_triggers(
     state: &mut GameState,
     protected_triggers: &[PendingTrigger],
@@ -1734,13 +1752,9 @@ fn sba_fixed_point_with_protected_triggers(
         // 704.5g: a creature with toughness 0 or less is put into its
         // owner's graveyard. 704.5h: a creature with lethal damage marked
         // is destroyed.
-        let mut dying = Vec::new();
-        for (id, obj) in state.objects.iter() {
-            if obj.zone != Zone::Battlefield {
-                continue;
-            }
+        let dying = permanents_where(state, |id, obj| {
             if !crate::engine::object_has_type(state, id, crate::card_def::CardType::Creature) {
-                continue;
+                return false;
             }
             let toughness = crate::engine::effective_toughness(state, id);
             let indestructible = crate::engine::has_effective_keyword(
@@ -1751,15 +1765,13 @@ fn sba_fixed_point_with_protected_triggers(
             // 704.5g is a put-into-graveyard action and ignores
             // indestructible. 704.5h destroys for lethal damage, so
             // indestructible prevents only that branch.
-            if creature_dies_to_state_based_actions(
+            creature_dies_to_state_based_actions(
                 toughness,
                 obj.damage as i32,
                 obj.v4.deathtouch_damage,
                 indestructible,
-            ) {
-                dying.push(id);
-            }
-        }
+            )
+        });
         for id in dying {
             crate::event::commit(
                 state,
@@ -1772,30 +1784,21 @@ fn sba_fixed_point_with_protected_triggers(
         // attached at all, is put into its owner's graveyard. The current
         // attachment grammar supports creature Auras only and requires both
         // exact-incarnation directions of the relation to agree.
-        let invalid_auras = state
-            .objects
-            .iter()
-            .filter_map(|(id, aura)| {
-                if aura.zone != Zone::Battlefield {
-                    return None;
-                }
-                let definition = &crate::card_def::CARD_DEFS[aura.card_def as usize];
-                let Some(crate::card_def::AttachmentDef::AuraCreature { .. }) =
-                    definition.attachment
-                else {
-                    return None;
-                };
-                let valid = aura.v4.attached_to.is_some_and(|link| {
-                    state.objects.try_get(link.object).is_some_and(|host| {
-                        host.zone == Zone::Battlefield
-                            && host.zone_change_count == link.zone_change_count
-                            && crate::engine::object_has_type(state, link.object, crate::card_def::CardType::Creature)
-                            && host.attachments.contains(&id)
-                    })
-                });
-                (!valid).then_some(id)
+        let invalid_auras = permanents_where(state, |id, aura| {
+            let definition = &crate::card_def::CARD_DEFS[aura.card_def as usize];
+            let Some(crate::card_def::AttachmentDef::AuraCreature { .. }) = definition.attachment
+            else {
+                return false;
+            };
+            !aura.v4.attached_to.is_some_and(|link| {
+                state.objects.try_get(link.object).is_some_and(|host| {
+                    host.zone == Zone::Battlefield
+                        && host.zone_change_count == link.zone_change_count
+                        && crate::engine::object_has_type(state, link.object, crate::card_def::CardType::Creature)
+                        && host.attachments.contains(&id)
+                })
             })
-            .collect::<Vec<_>>();
+        });
         for id in invalid_auras {
             crate::event::commit(
                 state,
@@ -1807,23 +1810,16 @@ fn sba_fixed_point_with_protected_triggers(
         // 704.5s: after a Saga's final chapter ability leaves the stack, its
         // controller sacrifices it. The chapter trigger is protected across
         // the pre-placement SBA checkpoint by its exact source incarnation.
-        let completed_sagas = state
-            .objects
-            .iter()
-            .filter_map(|(id, object)| {
-                if object.zone != Zone::Battlefield || object.v4.face_index != 0 {
-                    return None;
-                }
-                let saga = crate::card_def::CARD_DEFS[object.card_def as usize]
-                    .saga
-                    .as_ref()?;
-                if object.counters.lore < saga.chapter_effects.len() as i16 {
-                    return None;
-                }
-                (!saga_chapter_is_pending(state, id, object.zone_change_count, protected_triggers))
-                .then_some(id)
-            })
-            .collect::<Vec<_>>();
+        let completed_sagas = permanents_where(state, |id, object| {
+            if object.v4.face_index != 0 {
+                return false;
+            }
+            let Some(saga) = crate::card_def::CARD_DEFS[object.card_def as usize].saga.as_ref() else {
+                return false;
+            };
+            object.counters.lore >= saga.chapter_effects.len() as i16
+                && !saga_chapter_is_pending(state, id, object.zone_change_count, protected_triggers)
+        });
         for id in completed_sagas {
             crate::event::commit(
                 state,
@@ -1922,14 +1918,52 @@ pub fn collect_and_process(state: &mut GameState) -> Vec<PendingTrigger> {
     order_apnap(new_triggers, state.active_player)
 }
 
+static GRAVEYARD_TRIGGERS: std::sync::LazyLock<Vec<bool>> = std::sync::LazyLock::new(|| {
+    (0..crate::card_def::CARD_DEFS.len() as u16)
+        .map(|card_def| triggers_for(card_def).iter().any(|def| def.home_zone == Zone::Graveyard))
+        .collect()
+});
+
+/// Every object that can trigger on `events`, in id order: the battlefield,
+/// graveyard cards with graveyard abilities, and the objects the events name
+/// (leave-the-battlefield, cast and chapter triggers).
+fn trigger_candidates(state: &GameState, events: &[CommittedEvent]) -> Vec<ObjectId> {
+    let mut ids = Vec::with_capacity(64);
+    for player in &state.players {
+        ids.extend_from_slice(&player.battlefield);
+        ids.extend(
+            player
+                .graveyard
+                .iter()
+                .copied()
+                .filter(|&id| GRAVEYARD_TRIGGERS[state.objects.get(id).card_def as usize]),
+        );
+    }
+    for event in events {
+        match event {
+            CommittedEvent::ZoneChange { object, .. } => ids.push(*object),
+            CommittedEvent::SpellCast { spell, .. } => ids.push(*spell),
+            CommittedEvent::SagaChapter { source, .. } => ids.push(*source),
+            _ => {}
+        }
+    }
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 fn triggers_from_events(
     state: &GameState,
     events: &[CommittedEvent],
     kicked_source: Option<ObjectId>,
 ) -> Vec<PendingTrigger> {
+    if events.is_empty() {
+        return Vec::new();
+    }
     let draws_this_turn_at = draws_this_turn_snapshot(events, state);
     let mut new_triggers = Vec::new();
-    for (id, obj) in state.objects.iter() {
+    for id in trigger_candidates(state, events) {
+        let obj = state.objects.get(id);
         let card = &crate::card_def::CARD_DEFS[obj.card_def as usize];
         if !card.is_executable() {
             continue;
@@ -2239,7 +2273,15 @@ fn triggers_from_events(
         if selected_spell_types(state, *spell).contains(&CardType::Creature) {
             continue;
         }
-        for (host, host_live) in state.objects.iter() {
+        let mut hosts: Vec<ObjectId> = state.players[caster.index()]
+            .battlefield
+            .iter()
+            .copied()
+            .filter(|&host| !state.objects.get(host).attachments.is_empty())
+            .collect();
+        hosts.sort_unstable();
+        for host in hosts {
+            let host_live = state.objects.get(host);
             if host_live.controller != *caster
                 || host_live.zone != Zone::Battlefield
                 || !crate::engine::object_has_type(state, host, CardType::Creature)
