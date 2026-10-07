@@ -700,14 +700,6 @@ pub const fn mana_color_mask(color: ManaColor) -> u8 {
     }
 }
 
-static CARD_COLOR_MASKS: std::sync::LazyLock<Vec<u8>> =
-    std::sync::LazyLock::new(|| CARD_DEFS.iter().map(|def| mana_colors_mask(def.colors)).collect());
-
-/// `mana_colors_mask` of card `card_def`'s colors.
-pub fn card_colors_mask(card_def: u16) -> u8 {
-    CARD_COLOR_MASKS[card_def as usize]
-}
-
 pub fn mana_colors_mask(colors: &[ManaColor]) -> u8 {
     colors
         .iter()
