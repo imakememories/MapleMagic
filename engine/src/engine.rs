@@ -4036,8 +4036,13 @@ fn can_pay_activation_components_with_x(
     state: &GameState,
     x_value: u8,
 ) -> bool {
+    // The mana is checked below (without the source, if it taps) when the
+    // cost has one mana component and doesn't return an attacker.
+    let mana_checked_below = components.iter().filter(|c| is_mana_component(c)).count() == 1
+        && activation_mana_cost_for(components, player, source, state).is_some()
+        && !has_unblocked_attacker_return_cost(components);
     if !activation_payment_shape_supported(components)
-        || !can_pay_components(components, player, source, state)
+        || !can_pay_components_with_mana(components, player, source, state, !mana_checked_below)
     {
         return false;
     }
@@ -4156,11 +4161,30 @@ fn can_pay_components(
     source: ObjectId,
     state: &GameState,
 ) -> bool {
+    can_pay_components_with_mana(components, player, source, state, true)
+}
+
+fn is_mana_component(component: &CostComponent) -> bool {
+    matches!(
+        component,
+        CostComponent::Mana(_) | CostComponent::ManaLessDuringYourTurn { .. } | CostComponent::ManaOfChosenColor(_)
+    )
+}
+
+/// `can_pay_components`, checking the mana components (last: they run the
+/// solver) only if `check_mana`.
+fn can_pay_components_with_mana(
+    components: &[CostComponent],
+    player: PlayerId,
+    source: ObjectId,
+    state: &GameState,
+    check_mana: bool,
+) -> bool {
     if !component_payment_shape_supported(components) {
         return false;
     }
-    for c in components {
-        let ok = match c {
+    let payable = |c: &CostComponent| -> bool {
+        match c {
             CostComponent::Tap => {
                 let obj = state.objects.get(source);
                 // 302.6: a *creature's* tap-cost ability needs continuous
@@ -4252,12 +4276,10 @@ fn can_pay_components(
                     )
                     .is_empty()
             }
-        };
-        if !ok {
-            return false;
         }
-    }
-    true
+    };
+    components.iter().filter(|c| !is_mana_component(c)).all(payable)
+        && (!check_mana || components.iter().filter(|c| is_mana_component(c)).all(payable))
 }
 
 /// Pays every component of `components` except `DiscardCards` (already
