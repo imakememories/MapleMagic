@@ -3145,36 +3145,37 @@ fn target_prefix_can_complete_for_controller_and_source(
     state: &GameState,
 ) -> bool {
     let max = target_count(spec) as usize;
-    if targets_chosen.len() > max {
+    if targets_chosen.len() > max || !target_prefix_is_legal(spec, targets_chosen, controller, source, state) {
         return false;
     }
-    let mut validated_prefix = Vec::with_capacity(targets_chosen.len());
-    for &target in targets_chosen {
-        if !legal_targets_for_controller_from_source(
-            spec,
-            &validated_prefix,
-            controller,
-            source,
-            state,
-        )
-        .contains(&target)
-        {
-            return false;
-        }
-        validated_prefix.push(target);
-    }
-    if targets_chosen.len() >= usize::from(target_min_count(spec)) {
+    let min = usize::from(target_min_count(spec));
+    if targets_chosen.len() >= min {
         return true;
     }
-    legal_targets_for_controller_from_source(spec, targets_chosen, controller, source, state)
-        .into_iter()
-        .any(|candidate| {
-            let mut next = targets_chosen.to_vec();
-            next.push(candidate);
-            target_prefix_can_complete_for_controller_and_source(
-                spec, &next, controller, source, state,
-            )
-        })
+    let candidates = legal_targets_for_controller_from_source(spec, targets_chosen, controller, source, state);
+    // One more legal pick is then a complete assignment.
+    if targets_chosen.len() + 1 >= min {
+        return targets_chosen.len() < max && !candidates.is_empty();
+    }
+    candidates.into_iter().any(|candidate| {
+        let mut next = targets_chosen.to_vec();
+        next.push(candidate);
+        target_prefix_can_complete_for_controller_and_source(spec, &next, controller, source, state)
+    })
+}
+
+/// Whether each chosen target was legal given the ones before it.
+fn target_prefix_is_legal(
+    spec: TargetSpec,
+    targets_chosen: &[Target],
+    controller: PlayerId,
+    source: Option<TargetingSource>,
+    state: &GameState,
+) -> bool {
+    (0..targets_chosen.len()).all(|i| {
+        legal_targets_for_controller_from_source(spec, &targets_chosen[..i], controller, source, state)
+            .contains(&targets_chosen[i])
+    })
 }
 
 /// The next legal target choices that still admit a complete mandatory
@@ -3210,6 +3211,15 @@ fn completable_next_targets_for_controller_and_source(
     source: Option<TargetingSource>,
     state: &GameState,
 ) -> Vec<Target> {
+    // When one more pick completes the assignment, every legal pick does.
+    if targets_chosen.len() + 1 >= usize::from(target_min_count(spec)) {
+        if targets_chosen.len() >= target_count(spec) as usize
+            || !target_prefix_is_legal(spec, targets_chosen, controller, source, state)
+        {
+            return Vec::new();
+        }
+        return legal_targets_for_controller_from_source(spec, targets_chosen, controller, source, state);
+    }
     legal_targets_for_controller_from_source(spec, targets_chosen, controller, source, state)
         .into_iter()
         .filter(|candidate| {
