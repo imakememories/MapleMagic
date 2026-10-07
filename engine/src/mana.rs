@@ -65,14 +65,36 @@ impl ManaColor {
 /// small color sets that `CardDef::primary_mana_ability_choices` and
 /// `engine::available_mana_ability_choices` return as an owned `Vec`
 /// elsewhere.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ManaColorSetV1 {
+#[derive(Clone, Copy)]
+pub struct ManaColorSetV1 {
     colors: [ManaColor; ManaColorSetV1::CAPACITY],
     len: u8,
 }
 
+impl std::fmt::Debug for ManaColorSetV1 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.as_slice().fmt(f)
+    }
+}
+
+impl PartialEq for ManaColorSetV1 {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for ManaColorSetV1 {}
+
 impl ManaColorSetV1 {
     const CAPACITY: usize = ManaColor::ALL.len();
+
+    pub fn from_slice(colors: &[ManaColor]) -> Self {
+        let mut set = Self::new();
+        for &color in colors {
+            set.push(color);
+        }
+        set
+    }
 
     pub(crate) fn new() -> Self {
         Self {
@@ -91,11 +113,11 @@ impl ManaColorSetV1 {
         }
     }
 
-    pub(crate) fn as_slice(&self) -> &[ManaColor] {
+    pub fn as_slice(&self) -> &[ManaColor] {
         &self.colors[..usize::from(self.len)]
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
@@ -104,7 +126,7 @@ impl ManaColorSetV1 {
         usize::from(self.len)
     }
 
-    pub(crate) fn contains(&self, color: ManaColor) -> bool {
+    pub fn contains(&self, color: ManaColor) -> bool {
         self.as_slice().contains(&color)
     }
 }
@@ -164,7 +186,7 @@ impl Cost {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManaSource {
     pub id: ObjectId,
-    pub choices: Vec<ManaColor>,
+    pub choices: ManaColorSetV1,
     /// Mana one tap makes; what the cost doesn't use floats.
     pub amount: u8,
 }
@@ -375,10 +397,17 @@ pub fn gather_sources(player: PlayerId, state: &GameState) -> Vec<ManaSource> {
         if def.is_automatic_payment_mana_source()
             && !(def.has_type(crate::card_def::CardType::Creature) && obj.summoning_sick)
         {
-            let mut choices = def.primary_mana_ability_choices(obj.v4.chosen_color);
+            let mut choices = ManaColorSetV1::new();
+            def.primary_mana_ability_choices_into(obj.v4.chosen_color, &mut choices);
             if crate::commander::makes_identity_mana(def) {
-                let identity = crate::commander::color_identity(state, player);
-                choices.retain(|c| identity.contains(c));
+                let identity = crate::commander::color_identity_mask(state, player);
+                let mut kept = ManaColorSetV1::new();
+                for &color in choices.as_slice() {
+                    if identity & (1 << color.pool_index()) != 0 {
+                        kept.push(color);
+                    }
+                }
+                choices = kept;
             }
             if choices.is_empty() {
                 continue;
@@ -443,14 +472,21 @@ pub fn solve(
 ) -> Option<PaymentPlan> {
     let mut plan = PaymentPlan::default();
     let mut pool_remaining = pool;
-    let mut used = vec![false; sources.len()];
+    let mut used_buf = [false; 64];
+    let mut used_heap = Vec::new();
+    let used: &mut [bool] = if sources.len() <= used_buf.len() {
+        &mut used_buf[..sources.len()]
+    } else {
+        used_heap.resize(sources.len(), false);
+        &mut used_heap
+    };
     let (pips, pip_generic) = color_bound_pips(cost.pips);
 
     if !solve_pips(
         &pips,
         0,
         sources,
-        &mut used,
+        used,
         &mut pool_remaining,
         &mut plan,
     ) {
@@ -462,7 +498,7 @@ pub fn solve(
     if !pay_generic(
         generic_needed,
         sources,
-        &mut used,
+        used,
         &mut pool_remaining,
         &mut plan,
     ) {
@@ -482,7 +518,7 @@ fn pips_exceed_sources(pips: &[Pip], sources: &[ManaSource], pool: &[u8; 6]) -> 
                 > usize::from(pool[color.pool_index()])
                     + sources
                         .iter()
-                        .filter(|source| source.choices.contains(&color))
+                        .filter(|source| source.choices.contains(color))
                         .map(|source| usize::from(source.amount))
                         .sum::<usize>()
     })
@@ -505,18 +541,22 @@ fn solve_pips(
         return true;
     };
 
-    let candidate_colors: Vec<ManaColor> = match *pip {
-        Pip::Colored(c) => vec![c],
-        Pip::Hybrid(a, b) => vec![a, b],
-        Pip::Phyrexian(_) if any_mana_type() => {
-            vec![ManaColor::W, ManaColor::U, ManaColor::B, ManaColor::R, ManaColor::G, ManaColor::C]
+    let pair;
+    let candidate_colors: &[ManaColor] = match *pip {
+        Pip::Phyrexian(_) if any_mana_type() => &ManaColor::ALL,
+        Pip::Colored(c) | Pip::Phyrexian(c) => {
+            pair = [c, c];
+            &pair[..1]
         }
-        Pip::Phyrexian(c) => vec![c],
+        Pip::Hybrid(a, b) => {
+            pair = [a, b];
+            &pair
+        }
     };
 
     // Prefer paying from the floating pool: it never needs backtracking,
     // since spending it doesn't remove a source with other uses.
-    for &c in &candidate_colors {
+    for &c in candidate_colors {
         let pi = c.pool_index();
         if pool_remaining[pi] > 0 {
             pool_remaining[pi] -= 1;
@@ -536,8 +576,8 @@ fn solve_pips(
         if used[i] {
             continue;
         }
-        for &c in &candidate_colors {
-            if !sources[i].choices.contains(&c) {
+        for &c in candidate_colors {
+            if !sources[i].choices.contains(c) {
                 continue;
             }
             used[i] = true;
@@ -588,7 +628,7 @@ fn pay_generic(
         if used[i] {
             continue;
         }
-        if let Some(&c) = sources[i].choices.first() {
+        if let Some(&c) = sources[i].choices.as_slice().first() {
             used[i] = true;
             plan.taps.push((sources[i].id, c));
             // The tap's first mana is spent as the tap; the rest come out of the pool it fills.
@@ -607,7 +647,7 @@ mod tests {
     fn src(id: u32, choices: &[ManaColor]) -> ManaSource {
         ManaSource {
             id: ObjectId(id),
-            choices: choices.to_vec(),
+            choices: ManaColorSetV1::from_slice(choices),
             amount: 1,
         }
     }

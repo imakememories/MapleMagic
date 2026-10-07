@@ -33,6 +33,25 @@ pub fn color_identity(state: &GameState, player: PlayerId) -> Vec<ManaColor> {
     out
 }
 
+/// `color_identity` as a mask of `ManaColor::pool_index` bits.
+pub fn color_identity_mask(state: &GameState, player: PlayerId) -> u8 {
+    let Some(c) = state.commander.as_ref() else {
+        return 0;
+    };
+    let def = &CARD_DEFS[state.objects.get(c.commanders[player.index()]).card_def as usize];
+    let mut mask = 0u8;
+    for &color in def.colors {
+        mask |= 1 << color.pool_index();
+    }
+    for pip in def.cost.pips {
+        match *pip {
+            Pip::Colored(a) | Pip::Phyrexian(a) => mask |= 1 << a.pool_index(),
+            Pip::Hybrid(a, b) => mask |= 1 << a.pool_index() | 1 << b.pool_index(),
+        }
+    }
+    mask
+}
+
 /// The owner index of commander `id`, if it is one.
 fn owner_slot(state: &GameState, id: ObjectId) -> Option<usize> {
     state.commander.as_ref()?.commanders.iter().position(|&c| c == id)

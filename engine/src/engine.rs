@@ -5849,7 +5849,11 @@ fn available_mana_abilities(player: PlayerId, state: &GameState) -> Vec<ObjectId
         .battlefield
         .iter()
         .copied()
-        .filter(|&id| !available_mana_ability_choices(player, id, state).is_empty())
+        .filter(|&id| {
+            let mut choices = ManaColorSetV1::new();
+            available_mana_ability_choices_into(player, id, state, &mut choices);
+            !choices.is_empty()
+        })
         .collect()
 }
 
@@ -5920,10 +5924,10 @@ pub(crate) fn available_mana_ability_choices_into(
     let mut primary = ManaColorSetV1::new();
     def.primary_mana_ability_choices_into(object.v4.chosen_color, &mut primary);
     if crate::commander::makes_identity_mana(def) {
-        let identity = crate::commander::color_identity(state, player);
+        let identity = crate::commander::color_identity_mask(state, player);
         let mut kept = ManaColorSetV1::new();
         for &color in primary.as_slice() {
-            if identity.contains(&color) {
+            if identity & (1 << color.pool_index()) != 0 {
                 kept.push(color);
             }
         }
