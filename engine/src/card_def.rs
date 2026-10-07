@@ -805,6 +805,9 @@ pub enum CostComponent {
     TapUntappedControlledArtifactsX,
     /// Discard a land card (retrace's additional cost).
     DiscardLandCard,
+    /// This much mana, all of the source's chosen color ("{3}... Spend only
+    /// mana of the chosen color", Throne of Eldraine).
+    ManaOfChosenColor(u8),
     /// Reveal the payer's complete hand, but only if it contains no card of
     /// the named type. The reveal itself is the cost, so it happens during
     /// payment after the spell has left hand for the stack. Land Grant is
@@ -1657,7 +1660,7 @@ mod tests {
         // Version 32 appends the final pool trio and Skeleton token after the
         // combined optional-cost root without renumbering prior definitions.
         // Every Commander card added or implemented since moves this value.
-        assert_eq!(KERNEL_CARDDB_HASH, 0x7b1c_ef5f_0cc1_0117);
+        assert_eq!(KERNEL_CARDDB_HASH, 0xea19_339d_790d_d2b7);
     }
 
     #[test]

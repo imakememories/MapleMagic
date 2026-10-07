@@ -220,6 +220,7 @@ fn run_goldfish(state: &mut GameState) -> RunResult {
             | Decision::ChooseRiot { .. }
             | Decision::ChooseCascadeCast { .. }
         | Decision::ChooseCastMethod { .. }
+        | Decision::ChooseColor { .. }
             | Decision::ChooseEffectTargets { .. }
             | Decision::ChooseOptionalCost { .. }
             | Decision::ChooseSpellCopyPayment { .. }

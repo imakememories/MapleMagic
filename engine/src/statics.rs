@@ -88,6 +88,20 @@ pub fn coin_of_mastery_counters(state: &mut GameState, object: ObjectId) {
     *counters = counters.saturating_add(added);
 }
 
+static THRONES: LazyLock<Vec<bool>> =
+    LazyLock::new(|| CARD_DEFS.iter().map(|def| def.name == "Throne of Eldraine").collect());
+
+/// "As this enters, choose a color" on a nonland permanent.
+pub fn chooses_color_on_entry(state: &GameState, id: ObjectId) -> bool {
+    THRONES[state.objects.get(id).card_def as usize]
+}
+
+/// Mana this source makes may only be spent on monocolored spells of its
+/// color (Throne of Eldraine).
+pub fn makes_restricted_mana(state: &GameState, id: ObjectId) -> bool {
+    THRONES[state.objects.get(id).card_def as usize]
+}
+
 static MUST_BE_BLOCKED: LazyLock<Vec<bool>> =
     LazyLock::new(|| CARD_DEFS.iter().map(|def| def.name == "Jurin, Leading the Charge").collect());
 

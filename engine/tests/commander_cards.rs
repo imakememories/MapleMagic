@@ -2079,3 +2079,52 @@ fn coin_of_mastery_makes_treasures_and_ignores_other_spells() {
     assert_eq!(zone(&state, theirs), Zone::Graveyard);
     assert!(state.artifact_mana_spent.is_empty(), "spent on a sorcery: nothing to remember");
 }
+
+/// Puts a Throne of Eldraine onto the battlefield and answers its color choice.
+fn throne(state: &mut GameState, color: ManaColor) -> ObjectId {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let throne = put_in(state, P0, "Throne of Eldraine", Zone::Hand);
+    propose_and_commit(state, ProposedEvent::zone_change(throne, Zone::Battlefield));
+    match engine::advance_until_decision(state) {
+        Decision::ChooseColor { player, permanent } => assert_eq!((player, permanent), (P0, throne)),
+        other => panic!("{other:?}"),
+    }
+    engine::step(state, Action::ChooseColor(color)).unwrap();
+    throne
+}
+
+#[test]
+fn throne_of_eldraine_mana_only_casts_monocolored_spells_of_its_color() {
+    let mut state = game();
+    let throne = throne(&mut state, ManaColor::R);
+    assert_eq!(state.objects.get(throne).v4.chosen_color, Some(ManaColor::R));
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert_eq!(engine::available_mana_ability_choices(P0, throne, &state), vec![ManaColor::R]);
+    engine::step(&mut state, Action::ActivateManaAbility(throne)).unwrap();
+    assert_eq!(state.players[0].mana_pool[ManaColor::R.pool_index()], 4);
+    let signet = put_in(&mut state, P0, "Arcane Signet", Zone::Hand);
+    let snipe = put_in(&mut state, P0, "Guttersnipe", Zone::Hand);
+    match advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. })) {
+        Decision::CastSpellOrPass { castable_spells, .. } => {
+            assert!(castable_spells.contains(&snipe), "mono-red");
+            assert!(!castable_spells.contains(&signet), "colorless");
+        }
+        _ => unreachable!(),
+    }
+    engine::step(&mut state, Action::CastSpell(snipe)).unwrap();
+    advance(&mut state, |s, _| !s.stack.is_empty());
+    assert_eq!(state.players[0].mana_pool[ManaColor::R.pool_index()], 1);
+    assert_eq!(state.restricted_mana[0][ManaColor::R.pool_index()], 1);
+}
+
+#[test]
+fn throne_of_eldraine_draws_with_three_mana_of_its_color_only() {
+    let mut state = game();
+    let throne = throne(&mut state, ManaColor::R);
+    put(&mut state, P0, "Sol Ring");
+    put(&mut state, P0, "Mountain");
+    assert!(!offered_ability(&mut state, throne, 0), "Sol Ring's colorless doesn't count");
+    lands(&mut state, P0, 2);
+    activate_with(&mut state, throne, 0, &[], &[], &[]);
+    assert_eq!(state.players[0].hand.len(), 2);
+}

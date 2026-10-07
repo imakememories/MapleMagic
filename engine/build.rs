@@ -2747,6 +2747,7 @@ enum AbilityCostRecipe {
     },
     ReturnControlledUnblockedAttacker,
     TapUntappedControlledArtifactsX,
+    ManaOfChosenColor(u8),
     /// An arbitrary printed mana cost parsed by the same canonical cost
     /// grammar as spell costs. Twisted Landscape's Cycling is the first
     /// multicolor consumer.
@@ -3234,7 +3235,7 @@ fn primary_mana_ability_colors(card: &CardJson) -> Vec<&str> {
 }
 
 fn mana_ability_includes_chosen_color(name: &str) -> bool {
-    matches!(name, "Citadel Gate" | "Sea Gate")
+    matches!(name, "Citadel Gate" | "Sea Gate" | "Throne of Eldraine")
 }
 
 fn as_enters_choose_color_other_than(name: &str) -> &'static str {
@@ -3288,6 +3289,7 @@ fn mana_ability_def_for(name: &str) -> &'static str {
         "Treasure Token" => "Some(ManaAbilityDef { cost: ManaAbilityCostDef::TapAndSacrificeSelf, amount: ManaAbilityAmountDef::Fixed(1), controller_damage: 0, max_activations_per_turn: None })",
         "Eldrazi Spawn Token" => "Some(ManaAbilityDef { cost: ManaAbilityCostDef::SacrificeSelf, amount: ManaAbilityAmountDef::Fixed(1), controller_damage: 0, max_activations_per_turn: None })",
         "Sol Ring" => "Some(ManaAbilityDef { cost: ManaAbilityCostDef::TapSelf, amount: ManaAbilityAmountDef::Fixed(2), controller_damage: 0, max_activations_per_turn: None })",
+        "Throne of Eldraine" => "Some(ManaAbilityDef { cost: ManaAbilityCostDef::TapSelf, amount: ManaAbilityAmountDef::Fixed(4), controller_damage: 0, max_activations_per_turn: None })",
         _ => "None",
     }
 }
@@ -3527,6 +3529,15 @@ fn activated_ability_recipes_for(name: &str) -> &'static [ActivatedAbilityRecipe
                 max_activations_per_turn: None,
             },
         ],
+        "Throne of Eldraine" => &[ActivatedAbilityRecipe {
+            cost: &[AbilityCostRecipe::ManaOfChosenColor(3), AbilityCostRecipe::Tap],
+            effect: AbilityEffectRecipe::DrawCards(2),
+            activation_zone: "Battlefield",
+            sorcery_speed_only: false,
+            target_spec: "None",
+            activation_target_filter: "TargetSpecOnly",
+            max_activations_per_turn: None,
+        }],
         "Coin of Mastery" => &[ActivatedAbilityRecipe {
             cost: &[AbilityCostRecipe::Tap],
             effect: AbilityEffectRecipe::CreateToken("Treasure Token"),
@@ -4196,6 +4207,7 @@ fn ability_cost_src(cost: AbilityCostRecipe) -> String {
         AbilityCostRecipe::TapUntappedControlledArtifactsX => {
             "CostComponent::TapUntappedControlledArtifactsX".to_string()
         }
+        AbilityCostRecipe::ManaOfChosenColor(n) => format!("CostComponent::ManaOfChosenColor({n})"),
         AbilityCostRecipe::ManaCost(cost) => {
             let (pips, generic, x_count) = parse_cost(cost);
             format!(
@@ -4240,6 +4252,7 @@ fn ability_cost_token(cost: AbilityCostRecipe) -> String {
             "return_controlled_unblocked_attacker".to_string()
         }
         AbilityCostRecipe::TapUntappedControlledArtifactsX => "tap_untapped_controlled_artifacts_x".to_string(),
+        AbilityCostRecipe::ManaOfChosenColor(n) => format!("mana_of_chosen_color:{n}"),
         AbilityCostRecipe::ManaCost(cost) => format!("mana_cost:{cost}"),
     }
 }

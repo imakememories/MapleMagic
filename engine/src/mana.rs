@@ -201,7 +201,7 @@ pub fn can_pay(
     state: &GameState,
 ) -> Option<PaymentPlan> {
     let sources = gather_sources(player, state);
-    let pool = state.players[player.index()].mana_pool;
+    let pool = usable_pool(player, state);
     solve(cost, x_value, pool, &sources)
         .filter(|plan| life_payment_affordable(plan.life_paid, state.players[player.index()].life))
 }
@@ -216,7 +216,7 @@ pub fn can_pay_owned(
     state: &GameState,
 ) -> Option<PaymentPlan> {
     let sources = gather_sources(player, state);
-    let pool = state.players[player.index()].mana_pool;
+    let pool = usable_pool(player, state);
     let mut plan = PaymentPlan::default();
     let mut pool_remaining = pool;
     let mut used = vec![false; sources.len()];
@@ -234,6 +234,50 @@ pub fn can_pay_owned(
     life_payment_affordable(plan.life_paid, state.players[player.index()].life).then_some(plan)
 }
 
+thread_local! {
+    /// The colors of the spell whose cost is being paid, if any: restricted
+    /// floating mana counts only for a monocolored spell of its color.
+    static SPELL_COLORS: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
+}
+
+/// While alive, mana payments are for a spell with these colors (a
+/// `mana_colors_mask`).
+pub struct SpellPaymentScope(Option<u8>);
+
+impl SpellPaymentScope {
+    /// Only when some restricted mana is floating; otherwise nothing to do.
+    pub fn enter(state: &GameState, colors: u8) -> Option<SpellPaymentScope> {
+        (state.restricted_mana != [[0; 6]; 2]).then(|| SpellPaymentScope(SPELL_COLORS.with(|c| c.replace(Some(colors)))))
+    }
+}
+
+impl Drop for SpellPaymentScope {
+    fn drop(&mut self) {
+        SPELL_COLORS.with(|c| c.set(self.0));
+    }
+}
+
+/// The single color restricted mana may pay for now, if any.
+pub fn restricted_mana_color_allowed() -> Option<usize> {
+    let mask = SPELL_COLORS.with(|c| c.get())?;
+    (mask.count_ones() == 1 && mask & 0b1_1111 != 0).then(|| mask.trailing_zeros() as usize)
+}
+
+/// Floating mana the current payment may use.
+fn usable_pool(player: PlayerId, state: &GameState) -> [u8; 6] {
+    let mut pool = state.players[player.index()].mana_pool;
+    if state.restricted_mana[player.index()] == [0; 6] {
+        return pool;
+    }
+    let allowed = restricted_mana_color_allowed();
+    for (i, amount) in pool.iter_mut().enumerate() {
+        if Some(i) != allowed {
+            *amount -= state.restricted_mana[player.index()][i];
+        }
+    }
+    pool
+}
+
 /// Like `can_pay`, but checks/solves 2+ costs *together* against the same
 /// pool of mana sources -- Goblin Bushwhacker's base cost + its optional
 /// Kicker cost, paid as one combined announcement (601.2b/f), never as two
@@ -247,7 +291,7 @@ pub fn can_pay_combined(
     state: &GameState,
 ) -> Option<PaymentPlan> {
     let sources = gather_sources(player, state);
-    let pool = state.players[player.index()].mana_pool;
+    let pool = usable_pool(player, state);
     let combined_pips: Vec<Pip> = costs.iter().flat_map(|c| c.pips.iter().copied()).collect();
     let generic: u32 = costs.iter().map(|c| c.generic as u32).sum();
     let x_count: u32 = costs.iter().map(|c| c.x_count as u32).sum();
@@ -329,7 +373,7 @@ pub fn can_pay_excluding_sources(
     solve(
         cost,
         x_value,
-        state.players[player.index()].mana_pool,
+        usable_pool(player, state),
         &sources,
     )
     .filter(|plan| life_payment_affordable(plan.life_paid, state.players[player.index()].life))

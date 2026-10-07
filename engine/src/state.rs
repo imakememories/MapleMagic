@@ -1420,6 +1420,14 @@ pub struct GameState {
     /// stack incarnation, until it resolves.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifact_mana_spent: Vec<(ObjectLinkV4, u16)>,
+    /// The part of each player's `mana_pool` that may only be spent on a
+    /// monocolored spell of its color (Throne of Eldraine).
+    #[serde(default, skip_serializing_if = "no_artifact_mana")]
+    pub restricted_mana: [[u8; 6]; 2],
+    /// Permanents that entered and still need their "as this enters, choose
+    /// a color" choice.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_color_choice: Vec<ObjectLinkV4>,
     /// While a cast pays: whether floating artifact mana goes first (a
     /// creature spell), and the artifact mana spent so far.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1525,6 +1533,12 @@ impl Hash for GameState {
         }
         if self.cast_payment.is_some() {
             self.cast_payment.hash(state);
+        }
+        if !no_artifact_mana(&self.restricted_mana) {
+            self.restricted_mana.hash(state);
+        }
+        if !self.pending_color_choice.is_empty() {
+            self.pending_color_choice.hash(state);
         }
         if self.pending_cascade.is_some() {
             self.pending_cascade.hash(state);
@@ -1702,6 +1716,8 @@ impl GameState {
             artifact_mana: [[0; 6]; 2],
             artifact_mana_spent: Vec::new(),
             cast_payment: None,
+            restricted_mana: [[0; 6]; 2],
+            pending_color_choice: Vec::new(),
             pending_cascade: None,
             granted_flashback: Vec::new(),
             spell_mana_values_this_turn: [0; 2],

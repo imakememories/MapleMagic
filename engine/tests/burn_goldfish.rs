@@ -82,6 +82,7 @@ fn kind_of(d: &Decision) -> Kind {
         | Decision::ChooseRiot { .. }
         | Decision::ChooseCascadeCast { .. }
         | Decision::ChooseCastMethod { .. }
+        | Decision::ChooseColor { .. }
         | Decision::ChooseEffectTargets { .. }
         | Decision::ChooseOptionalCost { .. }
         | Decision::ChooseSpellCopyPayment { .. }
@@ -176,6 +177,7 @@ fn run_goldfish(state: &mut GameState) -> (Vec<Kind>, Vec<i32>, Vec<CommittedEve
             | Decision::ChooseRiot { .. }
         | Decision::ChooseCascadeCast { .. }
         | Decision::ChooseCastMethod { .. }
+        | Decision::ChooseColor { .. }
             | Decision::ChooseEffectTargets { .. }
             | Decision::ChooseOptionalCost { .. }
             | Decision::ChooseSpellCopyPayment { .. }

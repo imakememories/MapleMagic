@@ -795,10 +795,14 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
             let artifact = m
                 .source
                 .is_some_and(|source| crate::engine::object_has_type(state, source, crate::card_def::CardType::Artifact));
+            let restricted = m.source.is_some_and(|source| crate::statics::makes_restricted_mana(state, source));
             for &c in &m.colors {
                 state.players[m.player.index()].mana_pool[c.pool_index()] += 1;
                 if artifact {
                     state.artifact_mana[m.player.index()][c.pool_index()] += 1;
+                }
+                if restricted {
+                    state.restricted_mana[m.player.index()][c.pool_index()] += 1;
                 }
             }
             CommittedEvent::ManaAdded {
@@ -883,6 +887,10 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
     }
     if let CommittedEvent::ZoneChange { object, from: Zone::Stack, to: Zone::Battlefield, .. } = &committed {
         crate::statics::coin_of_mastery_counters(state, *object);
+    }
+    if let Some(object) = entered.filter(|&o| crate::statics::chooses_color_on_entry(state, o)) {
+        let link = crate::state::ObjectLinkV4 { object, zone_change_count: state.objects.get(object).zone_change_count };
+        state.pending_color_choice.push(link);
     }
     if let Some(object) = entered.filter(|&o| crate::statics::has_riot(state, o)) {
         let link = crate::state::ObjectLinkV4 { object, zone_change_count: state.objects.get(object).zone_change_count };

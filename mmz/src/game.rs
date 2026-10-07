@@ -847,6 +847,13 @@ impl Game {
                     out.push(mk(ActFeat::new(Kind::CastMode, d, 0, arg), Exec::Engine(Action::ChooseCastMethod(m))));
                 }
             }
+            Decision::ChooseColor { player, permanent } => {
+                self.actor = player;
+                let d = def_of(st, permanent);
+                for (i, color) in [ManaColor::W, ManaColor::U, ManaColor::B, ManaColor::R, ManaColor::G].into_iter().enumerate() {
+                    out.push(mk(ActFeat::new(Kind::EffectOption, d, 0, i as u16), Exec::Engine(Action::ChooseColor(color))));
+                }
+            }
             Decision::ChooseCascadeCast { player, card } => {
                 self.actor = player;
                 yes_no(&mut out, def_of(st, card), 13, Action::ChooseCascadeCast);
@@ -1081,7 +1088,9 @@ fn autopay_search(
     }
     let mut types: Vec<(u16, SourceType)> = Vec::new();
     for &id in mana_abilities {
-        if !is_free_source(st, id) {
+        // Restricted mana (Throne of Eldraine) isn't one ordinary mana per
+        // tap; it stays a manual mana ability.
+        if !is_free_source(st, id) || mtg_kernel::statics::makes_restricted_mana(st, id) {
             continue;
         }
         let colors = available_mana_ability_choices(player, id, st);

@@ -1367,6 +1367,11 @@ pub enum Decision {
         spell: ObjectId,
         methods: Vec<CastMethodV4>,
     },
+    /// "As this enters, choose a color" (Throne of Eldraine).
+    ChooseColor {
+        player: PlayerId,
+        permanent: ObjectId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1456,6 +1461,8 @@ pub enum Action {
     ChooseCascadeCast(bool),
     /// Answers `Decision::ChooseCastMethod`.
     ChooseCastMethod(CastMethodV4),
+    /// Answers `Decision::ChooseColor`.
+    ChooseColor(ManaColor),
 }
 
 const CHAIN_COPY_COST: Cost = Cost {
@@ -3129,7 +3136,7 @@ fn payable_activation_legal_targets_for(
     activation_legal_targets_for(source, ability, targets_chosen, state)
         .into_iter()
         .filter(|target| {
-            let Some(cost) = activation_mana_cost_for(ability.cost, controller, state) else {
+            let Some(cost) = activation_mana_cost_for(ability.cost, controller, source, state) else {
                 return true;
             };
             if cost.x_count == 0 {
@@ -3502,7 +3509,7 @@ fn tap_artifacts_x_candidates(
     already_chosen: &[ObjectId],
 ) -> Vec<ObjectId> {
     let taps_source = components.iter().any(|component| matches!(component, CostComponent::Tap));
-    let mana_cost = activation_mana_cost_for(components, player, state);
+    let mana_cost = activation_mana_cost_for(components, player, source, state);
     battlefield_objects(state)
         .filter(|&id| !(taps_source && id == source) && !already_chosen.contains(&id))
         .filter(|&id| {
@@ -3605,9 +3612,34 @@ fn activation_mana_cost(components: &[CostComponent]) -> Option<Cost> {
 
 /// [`activation_mana_cost`] as `player` pays it now, after a cost that is
 /// cheaper during its payer's turn.
-fn activation_mana_cost_for(components: &[CostComponent], player: PlayerId, state: &GameState) -> Option<Cost> {
+/// `n` pips of one color, for "spend only mana of the chosen color".
+fn chosen_color_pips(color: ManaColor, n: u8) -> &'static [mana::Pip] {
+    const W: [mana::Pip; 3] = [mana::Pip::Colored(ManaColor::W); 3];
+    const U: [mana::Pip; 3] = [mana::Pip::Colored(ManaColor::U); 3];
+    const B: [mana::Pip; 3] = [mana::Pip::Colored(ManaColor::B); 3];
+    const R: [mana::Pip; 3] = [mana::Pip::Colored(ManaColor::R); 3];
+    const G: [mana::Pip; 3] = [mana::Pip::Colored(ManaColor::G); 3];
+    const C: [mana::Pip; 3] = [mana::Pip::Colored(ManaColor::C); 3];
+    let all: &'static [mana::Pip; 3] = match color {
+        ManaColor::W => &W,
+        ManaColor::U => &U,
+        ManaColor::B => &B,
+        ManaColor::R => &R,
+        ManaColor::G => &G,
+        ManaColor::C => &C,
+    };
+    &all[..usize::from(n.min(3))]
+}
+
+fn activation_mana_cost_for(components: &[CostComponent], player: PlayerId, source: ObjectId, state: &GameState) -> Option<Cost> {
     components.iter().find_map(|component| match component {
         CostComponent::Mana(cost) => Some(*cost),
+        CostComponent::ManaOfChosenColor(n) => state
+            .objects
+            .get(source)
+            .v4
+            .chosen_color
+            .map(|color| Cost { pips: chosen_color_pips(color, *n), generic: 0, x_count: 0 }),
         CostComponent::ManaLessDuringYourTurn { cost, less } => Some(if state.active_player == player {
             Cost { generic: cost.generic.saturating_sub(*less), ..*cost }
         } else {
@@ -3629,7 +3661,7 @@ fn payable_activation_cost_object_candidates(
     activation_cost_object_candidates(player, source, subtype, state, &[])
         .into_iter()
         .filter(|candidate| {
-            activation_mana_cost_for(components, player, state).is_none_or(|cost| {
+            activation_mana_cost_for(components, player, source, state).is_none_or(|cost| {
                 mana::can_pay_excluding_sources(&cost, 0, player, state, &[source, *candidate])
                     .is_some()
             })
@@ -3710,6 +3742,13 @@ fn component_payment_shape_supported(components: &[CostComponent]) -> bool {
                     return false;
                 }
                 mana = Some(cost);
+            }
+            CostComponent::ManaOfChosenColor(_) => {
+                if mana.is_some() || saw_source_changing_component {
+                    return false;
+                }
+                const NO_PIPS: Cost = Cost { pips: &[], generic: 0, x_count: 0 };
+                mana = Some(&NO_PIPS);
             }
             CostComponent::CreatedTokenThisTurn | CostComponent::Celebrating => {}
             CostComponent::Tap => {
@@ -3856,7 +3895,7 @@ fn can_pay_activation_components_with_x(
     if has_unblocked_attacker_return_cost(components) {
         return !unblocked_attacker_return_candidates(player, state, &[]).is_empty();
     }
-    if let Some(cost) = activation_mana_cost_for(components, player, state) {
+    if let Some(cost) = activation_mana_cost_for(components, player, source, state) {
         let cost = &cost;
         let plan = if components
             .iter()
@@ -4018,7 +4057,9 @@ fn can_pay_components(
                 !unblocked_attacker_return_candidates(player, state, &[]).is_empty()
             }
             CostComponent::Mana(cost) => mana::can_pay(cost, 0, player, state).is_some(),
-            CostComponent::ManaLessDuringYourTurn { .. } => activation_mana_cost_for(std::slice::from_ref(c), player, state)
+            CostComponent::ManaLessDuringYourTurn { .. } => activation_mana_cost_for(std::slice::from_ref(c), player, source, state)
+                .is_some_and(|cost| mana::can_pay(&cost, 0, player, state).is_some()),
+            CostComponent::ManaOfChosenColor(_) => activation_mana_cost_for(std::slice::from_ref(c), player, source, state)
                 .is_some_and(|cost| mana::can_pay(&cost, 0, player, state).is_some()),
             CostComponent::CreatedTokenThisTurn => state.tokens_created_this_turn[player.index()] > 0,
             CostComponent::Celebrating => crate::statics::celebrating(state, player),
@@ -4260,7 +4301,7 @@ fn pay_cost_components_with_x(
     // Derive the sole mana plan before applying any state-changing component.
     // This keeps a restored or forward-generated unaffordable shape from
     // partially paying life/discard-adjacent components before failing.
-    let mana_cost = activation_mana_cost_for(components, player, state);
+    let mana_cost = activation_mana_cost_for(components, player, source, state);
     let mana_cost = mana_cost.as_ref();
     let mut reserved = Vec::new();
     if components
@@ -4330,7 +4371,9 @@ fn pay_cost_components_with_x(
                 );
             }
             CostComponent::CreatedTokenThisTurn | CostComponent::Celebrating => {}
-            CostComponent::Mana(_) | CostComponent::ManaLessDuringYourTurn { .. } => pay_plan(
+            CostComponent::Mana(_)
+            | CostComponent::ManaLessDuringYourTurn { .. }
+            | CostComponent::ManaOfChosenColor(_) => pay_plan(
                 state,
                 player,
                 mana_plan
@@ -5341,6 +5384,7 @@ fn is_castable_now(
     state: &GameState,
 ) -> bool {
     let def = &card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
+    let _spell = mana::SpellPaymentScope::enter(state, card_def::mana_colors_mask(def.colors));
     if !def.is_castable() {
         return false;
     }
@@ -6355,6 +6399,14 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
             let o = state.objects.get(l.object);
             o.zone == Zone::Battlefield && o.zone_change_count == l.zone_change_count
         });
+        // "As this enters, choose a color."
+        state.pending_color_choice.retain(|l| {
+            let o = state.objects.get(l.object);
+            o.zone == Zone::Battlefield && o.zone_change_count == l.zone_change_count
+        });
+        if let Some(link) = state.pending_color_choice.first() {
+            return Decision::ChooseColor { player: state.objects.get(link.object).controller, permanent: link.object };
+        }
         if let Some(link) = state.pending_riot.first() {
             return Decision::ChooseRiot { player: state.objects.get(link.object).controller, creature: link.object };
         }
@@ -7946,6 +7998,10 @@ pub(crate) fn validate_pending_cast(
 }
 
 fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
+    let _spell = state.engine.pending_cast.as_ref().and_then(|pending| {
+        let def = &card_def::CARD_DEFS[state.objects.get(pending.spell).card_def as usize];
+        mana::SpellPaymentScope::enter(state, card_def::mana_colors_mask(def.colors))
+    });
     let pending = state.engine.pending_cast.clone()?;
     if validate_pending_cast(state, &pending).is_err() {
         crate::engine::note_halt(file!(), line!());
@@ -10579,6 +10635,7 @@ fn advance_step(state: &mut GameState) {
     state.players[0].mana_pool = [0; 6];
     state.players[1].mana_pool = [0; 6];
     state.artifact_mana = [[0; 6]; 2];
+    state.restricted_mana = [[0; 6]; 2];
     run_step_entry_action(state, next);
     reset_priority(state);
 }
@@ -11782,6 +11839,10 @@ fn action_matches_pending_activation_stage(
 /// `advance_until_decision`. Returns `Err` for an action that isn't
 /// currently legal (caller bug); never silently no-ops.
 pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
+    let _spell = state.engine.pending_cast.as_ref().and_then(|pending| {
+        let def = &card_def::CARD_DEFS[state.objects.get(pending.spell).card_def as usize];
+        mana::SpellPaymentScope::enter(state, card_def::mana_colors_mask(def.colors))
+    });
     if state.engine.pending_land_play.is_some() && !matches!(&action, Action::ChooseEffectOption(_))
     {
         return Err(
@@ -12064,6 +12125,15 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
                 state.pending_cascade.as_mut().expect("answered above").waiting_triggers = waiting;
                 begin_cast_ex(state, player, card.object, Some(CastMethodV4::Cascade));
             }
+            Ok(())
+        }
+        Action::ChooseColor(color) => {
+            let link = *state.pending_color_choice.first().ok_or("no color choice is pending")?;
+            if color == ManaColor::C {
+                return Err("colorless is not a color".to_string());
+            }
+            state.pending_color_choice.remove(0);
+            state.objects.get_mut(link.object).v4.chosen_color = Some(color);
             Ok(())
         }
         Action::ChooseRiot(haste) => {
@@ -15047,7 +15117,12 @@ pub(crate) fn pay_plan(state: &mut GameState, player: PlayerId, plan: &mana::Pay
     // Floating mana: a creature spell spends artifact mana first (more Coin
     // of Mastery counters), anything else spends it last.
     let prefer_artifact = state.cast_payment.is_some_and(|(prefer, _)| prefer);
+    let restricted_ok = mana::restricted_mana_color_allowed();
     for (i, &amt) in plan.pool_used.iter().enumerate() {
+        if restricted_ok == Some(i) {
+            let restricted = &mut state.restricted_mana[player.index()][i];
+            *restricted -= amt.min(*restricted);
+        }
         state.players[player.index()].mana_pool[i] -= amt;
         let artifact = state.artifact_mana[player.index()][i];
         let other = state.players[player.index()].mana_pool[i] + amt - artifact;
