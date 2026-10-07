@@ -3427,6 +3427,20 @@ fn viable_printed_spell_modes(
     modes
 }
 
+/// Whether `viable_printed_spell_modes` would offer any mode.
+fn has_viable_printed_spell_mode(
+    def: &card_def::CardDef,
+    source: ObjectId,
+    controller: PlayerId,
+    state: &GameState,
+) -> bool {
+    let source = targeting_source_for_object(state, source);
+    let viable = |spec| target_prefix_can_complete_for_controller_and_source(spec, &[], controller, source, state);
+    viable(def.target_spec)
+        || def.mode2.as_ref().is_some_and(|mode| viable(mode.target_spec))
+        || def.mode3.as_ref().is_some_and(|mode| viable(mode.target_spec))
+}
+
 // ------------------------------------------------------------------ query
 
 /// A component of a non-mana cost that only makes sense in an already-
@@ -5668,8 +5682,9 @@ fn is_castable_now(
     cast_method: CastMethodV4,
     state: &GameState,
 ) -> bool {
-    let def = &card_def::CARD_DEFS[state.objects.get(id).card_def as usize];
-    let _spell = mana::SpellPaymentScope::enter(state, card_def::mana_colors_mask(def.colors));
+    let card = state.objects.get(id).card_def;
+    let def = &card_def::CARD_DEFS[card as usize];
+    let _spell = mana::SpellPaymentScope::enter(state, card_def::card_colors_mask(card));
     let offered = state.pending_exile_cast.is_some() && exile_cast_offered(state, id);
     let _any = mana::AnyManaTypeScope::enter(offered);
     if !def.is_castable() {
@@ -5681,9 +5696,7 @@ fn is_castable_now(
     if def.bestow.is_some() && supported_bestow(def).is_none() {
         return false;
     }
-    if cast_method != CastMethodV4::Normal
-        && viable_printed_spell_modes(def, id, player, state).is_empty()
-    {
+    if cast_method != CastMethodV4::Normal && !has_viable_printed_spell_mode(def, id, player, state) {
         return false;
     }
     // 601.3a/117.1a: sorcery-speed timing applies to every permanent-or-
@@ -5721,7 +5734,7 @@ fn is_castable_now(
             );
             def.retrace
                 && state.objects.get(id).zone == Zone::Graveyard
-                && !viable_printed_spell_modes(def, id, player, state).is_empty()
+                && has_viable_printed_spell_mode(def, id, player, state)
                 && mana::can_pay(&cost, 0, player, state).is_some()
                 && can_pay_components(RETRACE_COST, player, id, state)
         }
@@ -5737,22 +5750,22 @@ fn is_castable_now(
                 )
         }),
         CastMethodV4::Normal => {
-            let taxed = crate::commander::with_tax(
-                effective_normal_cast_cost(def, player, state),
-                state,
-                id,
-                state.objects.get(id).zone,
-            );
-            let reduction = crate::statics::spell_cost_reduction(state, player, def);
-            let main_ok = main_timing_ok
-                && !viable_printed_spell_modes(def, id, player, state).is_empty()
-                && some_additional_cost_payable(def, player, id, state, |g| {
+            let main_ok = main_timing_ok && has_viable_printed_spell_mode(def, id, player, state) && {
+                let taxed = crate::commander::with_tax(
+                    effective_normal_cast_cost(def, player, state),
+                    state,
+                    id,
+                    state.objects.get(id).zone,
+                );
+                let reduction = crate::statics::spell_cost_reduction(state, player, def);
+                some_additional_cost_payable(def, player, id, state, |g| {
                     let normal_cost = crate::statics::reduce_spell_cost(plus_generic(taxed, g), reduction);
                     mana::can_pay(&normal_cost, 0, player, state).is_some()
                         || def.alt_cost.is_some_and(|c| {
                             can_pay_components(&components_reduced(components_plus_generic(c, g), reduction), player, id, state)
                         })
-                });
+                })
+            };
             let omen_ok = supported_omen(def).is_some_and(|omen| {
                 matches!(state.objects.get(id).zone, Zone::Hand | Zone::Exile)
                     && cast_form_timing_ok(omen.types, Keywords::NONE, player, state)
@@ -5898,7 +5911,7 @@ fn is_plotted_castable_now(player: PlayerId, id: ObjectId, state: &GameState) ->
         && def.plot_cost.is_some()
         && plotted_turn < state.turn
         && def.is_castable()
-        && !viable_printed_spell_modes(def, id, player, state).is_empty()
+        && has_viable_printed_spell_mode(def, id, player, state)
         && sorcery_speed_timing_ok(player, state)
 }
 
