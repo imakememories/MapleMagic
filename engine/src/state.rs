@@ -393,7 +393,15 @@ impl SubtypeIds {
 }
 
 impl ObjectStateV4 {
+    /// A card's state as a new object.
     pub fn from_card_def(card_def: u16) -> ObjectStateV4 {
+        static FRESH: std::sync::LazyLock<Vec<ObjectStateV4>> = std::sync::LazyLock::new(|| {
+            (0..crate::card_def::CARD_DEFS.len() as u16).map(ObjectStateV4::build).collect()
+        });
+        FRESH[card_def as usize]
+    }
+
+    fn build(card_def: u16) -> ObjectStateV4 {
         let def = &crate::card_def::CARD_DEFS[card_def as usize];
         ObjectStateV4 {
             is_token: def.is_token,

@@ -356,7 +356,7 @@ impl Game {
         for owner in [PlayerId::P0, PlayerId::P1] {
             let slots = unseen_slots(&self.state, observer, owner, keep_own_library && owner == observer);
             let mut defs: Vec<u16> = slots.iter().map(|&id| self.state.objects.get(id).card_def).collect();
-            defs.sort_unstable();
+            sort_card_ids(&mut defs);
             let fixed = match hand {
                 Some(h) if owner != observer => {
                     assert_eq!(h.len(), unseen_hand(&self.state, observer, owner).len(), "hand size");
@@ -441,6 +441,10 @@ impl Game {
         let Some(commander) = self.state.commander.as_ref().map(|c| c.commanders[owner.index()]) else {
             return;
         };
+        // Hidden spots are library positions and face-down exiled cards.
+        if !matches!(self.state.objects.get(commander).zone, Zone::Library | Zone::Exile) {
+            return;
+        }
         let library = &self.state.players[owner.index()].library;
         let mut spots: Vec<ObjectId> =
             unknown_library_positions(&self.state, observer, owner).into_iter().map(|pos| library[pos]).collect();
@@ -1042,6 +1046,19 @@ pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerI
         );
     }
     slots
+}
+
+/// Sorts card ids (all below `CARD_DEFS.len()`) by counting.
+fn sort_card_ids(ids: &mut [u16]) {
+    let mut counts = vec![0u16; CARD_DEFS.len()];
+    for &id in ids.iter() {
+        counts[id as usize] += 1;
+    }
+    let mut at = 0;
+    for (id, &n) in counts.iter().enumerate() {
+        ids[at..at + n as usize].fill(id as u16);
+        at += n as usize;
+    }
 }
 
 pub(crate) fn set_card(state: &mut GameState, id: ObjectId, def: u16) {
