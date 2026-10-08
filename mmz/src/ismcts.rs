@@ -1313,6 +1313,113 @@ mod tests {
         }
     }
 
+    /// Ognis Commander positions paired with a copy that differs only in what
+    /// the player to act can't know: its own unseen cards, the opponent's,
+    /// face-down cards, the order of a known library group, future shuffles.
+    fn commander_twins(per_kind: usize) -> Vec<(Game, Game, &'static str)> {
+        use crate::game::{set_card, unseen_slots};
+        use mtg_kernel::ids::ObjectId;
+        let deck = crate::commander::CommanderDeck::named("Ognis").expect("the Ognis deck is complete");
+        let mut rng = SplitMix64::seed(11);
+        let mut out: Vec<(Game, Game, &'static str)> = Vec::new();
+        let full = |out: &[(Game, Game, &'static str)], kind| out.iter().filter(|t| t.2 == kind).count() >= per_kind;
+        for seed in 0..400u64 {
+            let mut g = Game::new_commander(&deck, &deck, seed);
+            while !g.is_over() {
+                let (me, st) = (g.to_act(), &g.state);
+                let def = |id: ObjectId| st.objects.get(id).card_def;
+                let swapped = |a: ObjectId, b: ObjectId| {
+                    let mut t = g.clone();
+                    let (da, db) = (def(a), def(b));
+                    set_card(&mut t.state, a, db);
+                    set_card(&mut t.state, b, da);
+                    t
+                };
+                let differing = |from: &[ObjectId], to: &[ObjectId]| {
+                    from.iter().find_map(|&a| to.iter().find(|&&b| b != a && def(b) != def(a)).map(|&b| (a, b)))
+                };
+                let searching = sees_own_library(&g);
+                match rng.next_u64() % 6 {
+                    0 if !searching && !full(&out, "own unseen cards") => {
+                        let own = unseen_slots(st, me, me, false);
+                        if let Some((a, b)) = differing(&own, &own) {
+                            out.push((g.clone(), swapped(a, b), "own unseen cards"));
+                        }
+                    }
+                    1 if !full(&out, "opponent's hand") => {
+                        let opp = me.opponent();
+                        let (hand, all) = (unseen_slots(st, me, opp, true), unseen_slots(st, me, opp, false));
+                        let rest: Vec<ObjectId> = all.iter().copied().filter(|x| !hand.contains(x)).collect();
+                        if let Some((a, b)) = differing(&hand, &rest) {
+                            out.push((g.clone(), swapped(a, b), "opponent's hand"));
+                        }
+                    }
+                    2 if !full(&out, "face down") => {
+                        for owner in [me, me.opponent()] {
+                            let down: Vec<ObjectId> =
+                                st.exile.iter().copied().filter(|&id| st.objects.get(id).owner == owner && st.face_down_hidden_from(id, me)).collect();
+                            let others = unseen_slots(st, me, owner, owner == me && searching);
+                            if let Some((a, b)) = differing(&down, &others) {
+                                out.push((g.clone(), swapped(a, b), "face down"));
+                                break;
+                            }
+                        }
+                    }
+                    3 if !full(&out, "shuffles") => {
+                        let mut t = g.clone();
+                        t.state.reseed_shuffles(rng.next_u64());
+                        out.push((g.clone(), t, "shuffles"));
+                    }
+                    4 if !full(&out, "library group") => {
+                        for owner in [me, me.opponent()] {
+                            if owner == me && searching {
+                                continue;
+                            }
+                            let groups: Vec<Vec<ObjectId>> =
+                                st.known_library_groups(me, owner).map(|gr| gr.cards.iter().map(|l| l.object).collect()).collect();
+                            if let Some((a, b)) = groups.iter().find_map(|cards| differing(cards, cards)) {
+                                let mut t = g.clone();
+                                let l = &mut t.state.players[owner.index()].library;
+                                let (i, j) = (l.iter().position(|&x| x == a).unwrap(), l.iter().position(|&x| x == b).unwrap());
+                                l.swap(i, j);
+                                out.push((g.clone(), t, "library group"));
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                let k = g.choices().len();
+                g.apply((rng.next_u64() % k as u64) as usize);
+            }
+            if ["own unseen cards", "opponent's hand", "face down", "shuffles", "library group"].iter().all(|k| full(&out, k)) {
+                break;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn ognis_search_ignores_what_the_player_to_act_cannot_know() {
+        let scored = |c: Config| Config { world_sampler: WorldSampler::Scored, ..c };
+        let twins = commander_twins(12);
+        for kind in ["own unseen cards", "opponent's hand", "face down", "shuffles", "library group"] {
+            assert_eq!(twins.iter().filter(|t| t.2 == kind).count(), 12, "{kind} twins");
+        }
+        for (g, twin, what) in &twins {
+            for cfg in [Config::default(), maple(5, MapleSelect::RefWorld), pimc(5), scored(maple(5, MapleSelect::RefWorld))] {
+                let mut a = Search::new(g, cfg.clone(), 9);
+                let mut b = Search::new(twin, cfg.clone(), 9);
+                score_worlds(&mut a);
+                score_worlds(&mut b);
+                a.run(48, 8, &mut HeuristicEval);
+                b.run(48, 8, &mut HeuristicEval);
+                assert_eq!(a.root_visits(), b.root_visits(), "{what}: {cfg:?}");
+                assert_eq!(a.root_value(), b.root_value(), "{what}: {cfg:?}");
+            }
+        }
+    }
+
     fn sorted_hand(g: &Game, observer: PlayerId) -> Vec<u16> {
         let mut h = g.hidden_pool(observer).0;
         h.sort_unstable();

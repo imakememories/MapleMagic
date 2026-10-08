@@ -8036,6 +8036,7 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                 validate_library_search_live_metadata(state, player, filter, &original_library)?;
                 let candidates =
                     library_search_candidates(state, player, filter, &original_library)?;
+                state.note_library_searched(player, player);
                 // Always suspend on the same private, Finish-capable prompt,
                 // even when there are zero matches. Auto-resolving the empty
                 // case would let a nonacting observer distinguish zero from
@@ -8101,6 +8102,7 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                 validate_library_search_live_metadata(state, player, filter, &original_library)?;
                 let candidates =
                     library_search_candidates(state, player, filter, &original_library)?;
+                state.note_library_searched(player, player);
                 stage_library_search_many_choice(
                     &mut continuation,
                     player,
@@ -8576,6 +8578,7 @@ fn drive_resumable(state: &mut GameState) -> Result<ResumableProgress, String> {
                 validate_library_search_live_metadata(state, player, filter, &original_library)?;
                 let candidates =
                     library_search_candidates(state, player, filter, &original_library)?;
+                state.note_library_searched(player, player);
                 stage_library_search_to_battlefield_choice(
                     &mut continuation,
                     player,
@@ -11529,6 +11532,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 state.pending_exile_cast = Some(crate::state::PendingExileCastV1 {
                     player: ctx.controller,
                     source: saga.object,
+                    source_def: contract.card_def,
                     offers,
                     answered: false,
                 });

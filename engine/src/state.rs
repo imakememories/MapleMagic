@@ -101,6 +101,8 @@ pub struct ExiledWithV1 {
 pub struct PendingExileCastV1 {
     pub player: PlayerId,
     pub source: ObjectId,
+    /// The source's card as the ability resolved (it may have left since).
+    pub source_def: u16,
     pub offers: Vec<ObjectLinkV4>,
     pub answered: bool,
 }
@@ -121,6 +123,18 @@ pub struct LibraryGroupV1 {
     pub owner: PlayerId,
     pub known_to: [bool; 2],
     pub cards: Vec<ObjectLinkV4>,
+}
+
+/// Cards `observer` knew were in `owner`'s library when it lost track of
+/// where (a shuffle, or a search that looked through it): each is still in
+/// that library or is one of `left`, the cards that went from it to a hand
+/// or exile since.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LibraryContentsV1 {
+    pub observer: PlayerId,
+    pub owner: PlayerId,
+    pub cards: Vec<u16>,
+    pub left: Vec<ObjectLinkV4>,
 }
 
 /// Control of `object` while `controller` controls `source` (Pyreswipe
@@ -1668,6 +1682,9 @@ pub struct GameState {
     /// See [`LibraryGroupV1`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub library_groups: Vec<LibraryGroupV1>,
+    /// See [`LibraryContentsV1`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub library_contents: Vec<LibraryContentsV1>,
     /// The part of each player's `mana_pool` made by artifact sources
     /// (Coin of Mastery), `[player][W, U, B, R, G, C]`.
     #[serde(default, skip_serializing_if = "no_artifact_mana")]
@@ -1827,6 +1844,9 @@ impl Hash for GameState {
         }
         if !self.library_groups.is_empty() {
             self.library_groups.hash(state);
+        }
+        if !self.library_contents.is_empty() {
+            self.library_contents.hash(state);
         }
         if !no_artifact_mana(&self.artifact_mana) {
             self.artifact_mana.hash(state);
@@ -2055,6 +2075,7 @@ impl GameState {
             control_while: Vec::new(),
             event_history_base: 0,
             library_groups: Vec::new(),
+            library_contents: Vec::new(),
             artifact_mana: [[0; 6]; 2],
             artifact_mana_spent: Vec::new(),
             cast_payment: None,
@@ -2145,6 +2166,9 @@ impl GameState {
                     entry.zone_change_count = new_generation;
                 }
             }
+        }
+        if !self.library_contents.is_empty() {
+            self.note_library_departure(player, ObjectLinkV4 { object: id, zone_change_count: new_generation });
         }
         Some(id)
     }
@@ -2314,7 +2338,11 @@ impl GameState {
     /// Whether incarnation `zone_change_count` of `id` is or was `card_def`:
     /// a copy effect changes an object's card but not the object (707).
     pub fn def_matches(&self, id: ObjectId, zone_change_count: u32, card_def: u16) -> bool {
-        self.objects.get(id).card_def == card_def
+        let o = self.objects.get(id);
+        o.card_def == card_def
+            // An ended incarnation was what its record says (LKI); the card
+            // now may sit in a hidden zone a determinization redeals.
+            || o.zone_change_count > zone_change_count
             || self.copy_history.iter().any(|&(link, def)| {
                 link.object == id && link.zone_change_count == zone_change_count && def == card_def
             })
@@ -2767,6 +2795,7 @@ impl GameState {
         }
         let mut library = self.players[owner.index()].library.clone();
         self.consume_shuffle(owner, token, &mut library)?;
+        self.remember_library_contents(owner);
         self.players[owner.index()].library = library;
         self.clear_library_knowledge(owner);
         Ok(())
@@ -2948,6 +2977,50 @@ impl GameState {
             self.library_knowledge[observer.index()][owner.index()].clear();
         }
         self.library_groups.retain(|group| group.owner != owner);
+    }
+
+    /// What `observer` knows `owner`'s library holds, beyond any positions:
+    /// see [`LibraryContentsV1`].
+    pub fn known_library_contents(&self, observer: PlayerId, owner: PlayerId) -> impl DoubleEndedIterator<Item = &LibraryContentsV1> {
+        self.library_contents.iter().filter(move |c| c.observer == observer && c.owner == owner)
+    }
+
+    /// As `owner`'s library is shuffled: each observer still knows which cards
+    /// it held where it knew them (positions, groups), but not where.
+    fn remember_library_contents(&mut self, owner: PlayerId) {
+        for observer in [PlayerId::P0, PlayerId::P1] {
+            let lib = &self.players[owner.index()].library;
+            let mut cards: Vec<u16> = self.library_knowledge[observer.index()][owner.index()]
+                .iter()
+                .filter(|e| {
+                    lib.get(e.position as usize) == Some(&e.object)
+                        && self.objects.get(e.object).zone_change_count == e.zone_change_count
+                })
+                .map(|e| self.objects.get(e.object).card_def)
+                .collect();
+            for group in self.known_library_groups(observer, owner) {
+                cards.extend(group.cards.iter().map(|l| self.objects.get(l.object).card_def));
+            }
+            if !cards.is_empty() {
+                self.library_contents.push(LibraryContentsV1 { observer, owner, cards, left: Vec::new() });
+            }
+        }
+    }
+
+    /// `observer` looked through all of `owner`'s library (a search): it
+    /// knows every card there, which makes its older facts redundant.
+    pub(crate) fn note_library_searched(&mut self, observer: PlayerId, owner: PlayerId) {
+        let cards = self.players[owner.index()].library.iter().map(|&id| self.objects.get(id).card_def).collect();
+        self.library_contents.retain(|c| !(c.observer == observer && c.owner == owner));
+        self.library_contents.push(LibraryContentsV1 { observer, owner, cards, left: Vec::new() });
+    }
+
+    /// `card` (its new incarnation) went from `owner`'s library to a hand or
+    /// exile.
+    pub(crate) fn note_library_departure(&mut self, owner: PlayerId, card: ObjectLinkV4) {
+        for c in self.library_contents.iter_mut().filter(|c| c.owner == owner) {
+            c.left.push(card);
+        }
     }
 
     /// Groups of `owner`'s library cards `observer` knows but not their

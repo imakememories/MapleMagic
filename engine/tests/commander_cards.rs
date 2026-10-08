@@ -1550,6 +1550,41 @@ fn chaos_warp_shuffles_the_permanent_in_and_reveals_the_top_card() {
 }
 
 #[test]
+fn after_chaos_warp_both_players_know_the_card_is_in_that_library_until_a_draw() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let snipe = put(&mut state, P1, "Guttersnipe");
+    for i in 0..10 {
+        library_card(&mut state, P1, i, "Lightning Bolt");
+    }
+    cast(&mut state, "Chaos Warp", Some(Target::Object(snipe)), 0);
+    if zone(&state, snipe) != Zone::Library {
+        return; // revealed on top and put onto the battlefield
+    }
+    for p in [P0, P1] {
+        let known: Vec<u16> = state.known_library_contents(p, P1).flat_map(|c| c.cards.clone()).collect();
+        assert!(known.contains(&id("Guttersnipe")), "{p:?}: {known:?}");
+        assert!(state.known_library_contents(p, P1).all(|c| c.left.is_empty()));
+    }
+    // A draw from that library may have taken it.
+    let drawn = state.draw_card(P1).unwrap();
+    for p in [P0, P1] {
+        assert!(state.known_library_contents(p, P1).all(|c| c.left.iter().any(|l| l.object == drawn)));
+    }
+}
+
+#[test]
+fn a_search_shows_its_player_the_whole_library_and_no_one_else() {
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let cave = put(&mut state, P0, "Urza's Cave");
+    activate(&mut state, cave, 0, None);
+    let known: Vec<Vec<u16>> = state.known_library_contents(P0, P0).map(|c| c.cards.clone()).collect();
+    assert_eq!(known, vec![vec![id("Mountain"); 10]], "seen as it searched, before the shuffle");
+    assert_eq!(state.known_library_contents(P1, P0).count(), 0);
+}
+
+#[test]
 fn chaos_warp_puts_a_revealed_permanent_card_onto_the_battlefield() {
     let mut state = game();
     lands(&mut state, P0, 3);

@@ -2,7 +2,7 @@
 //! the engine can't play yet are Mountains. Reports results, aborts and
 //! panics (with seeds), and how often each implemented card was used. With
 //! `--check`, every decision also checks that resampling hidden cards leaves
-//! the acting player's observation unchanged.
+//! the acting player's observation and choices unchanged.
 //!
 //! `--replay` plays only the first seed and prints its last decisions.
 //!
@@ -10,9 +10,10 @@
 //!
 //! usage: random_games <deck a> <deck b> [games] [first seed] [--check] [--replay] [--threads N]
 use mmz::commander::CommanderDeck;
-use mmz::features::observe;
+use mmz::features::{choice_fields, observe};
 use mmz::game::{Game, Kind, Outcome};
 use mmz::mtg_kernel::card_def::CARD_DEFS;
+use mmz::mtg_kernel::ids::PlayerId;
 use mmz::mtg_kernel::state::SplitMix64;
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -29,16 +30,36 @@ struct Tally {
     used: BTreeMap<u16, u32>,
 }
 
+/// What resampling the cards `me` can't see changed for `me`, if anything.
+/// The search keeps `me`'s library when resampling it ends `me`'s decision
+/// (a search of that library), so that is tried second.
+fn hidden_info_leak(g: &Game, me: PlayerId, seed: u64) -> Option<&'static str> {
+    let (obs, choices) = (observe(g, me), choice_fields(g));
+    for keep_own_library in [false, true] {
+        let mut w = g.clone();
+        w.determinize_with(me, seed, keep_own_library);
+        if w.is_over() || w.to_act() != me {
+            continue;
+        }
+        if observe(&w, me) != obs {
+            return Some("observation changed when hidden cards were resampled");
+        }
+        if choice_fields(&w) != choices {
+            return Some("choices changed when hidden cards were resampled");
+        }
+        return None;
+    }
+    Some("no resampled world leaves the player to act")
+}
+
 fn play(a: &CommanderDeck, b: &CommanderDeck, seed: u64, check: bool, t: &mut Tally) {
     let mut g = Game::new_commander(a, b, seed);
     let mut rng = SplitMix64::seed(seed ^ 0x5eed);
     while !g.is_over() {
         let me = g.to_act();
         if check {
-            let mut w = g.clone();
-            w.determinize(me, rng.next_u64());
-            if observe(&w, me) != observe(&g, me) {
-                t.problems.entry("observation changed when hidden cards were resampled".into()).or_default().push(seed);
+            if let Some(why) = hidden_info_leak(&g, me, rng.next_u64()) {
+                t.problems.entry(why.into()).or_default().push(seed);
                 break;
             }
         }
@@ -76,10 +97,8 @@ fn replay(a: &CommanderDeck, b: &CommanderDeck, seed: u64, check: bool) {
     while !g.is_over() {
         let me = g.to_act();
         if check {
-            let mut w = g.clone();
-            w.determinize(me, rng.next_u64());
-            if observe(&w, me) != observe(&g, me) {
-                log.push("observation changed when hidden cards were resampled".to_string());
+            if let Some(why) = hidden_info_leak(&g, me, rng.next_u64()) {
+                log.push(why.to_string());
                 break;
             }
         }

@@ -228,6 +228,24 @@ fn def_of(state: &GameState, id: ObjectId) -> u16 {
     state.objects.get(id).card_def
 }
 
+/// The card of a resolving ability's source. A source that has since moved
+/// to a hidden zone is the card it was (113.7a), not what it is now, which a
+/// determinization may change.
+fn source_def(state: &GameState, id: ObjectId) -> u16 {
+    let o = state.objects.get(id);
+    let hidden = matches!(o.zone, Zone::Library | Zone::Hand) || state.face_down(id).is_some();
+    if hidden {
+        if let Some(p) = state.pending_exile_cast.as_ref().filter(|p| p.source == id) {
+            return p.source_def;
+        }
+        let resolving = state.engine.pending_effect.as_ref().map(|p| &p.resolving_item);
+        if let Some(c) = resolving.into_iter().chain(state.stack.iter().rev()).find(|i| i.source == id).and_then(|i| i.v4.ability_source_contract) {
+            return c.card_def;
+        }
+    }
+    o.card_def
+}
+
 fn color_code(c: ManaColor) -> u16 {
     c.pool_index() as u16
 }
@@ -354,7 +372,44 @@ impl Game {
                 let foretold = (0..slots.len())
                     .filter(|&i| self.state.face_down(slots[i]).is_some_and(|f| f.foretold_turn.is_some()))
                     .collect();
-                (slots, defs, foretold)
+                let st = &self.state;
+                // Cards known to be in the library or among what left it
+                // since, newest first: the slots each may be in, and the
+                // unseen cards it claims.
+                let mut claimed = vec![false; defs.len()];
+                let contents: Vec<(Vec<usize>, Vec<u16>)> = st
+                    .known_library_contents(observer, owner)
+                    .rev()
+                    .map(|c| {
+                        let spots = (0..slots.len())
+                            .filter(|&i| {
+                                let o = st.objects.get(slots[i]);
+                                o.zone == Zone::Library
+                                    || c.left.iter().any(|l| l.object == slots[i] && l.zone_change_count == o.zone_change_count)
+                            })
+                            .collect();
+                        let mut cards = Vec::new();
+                        for &card in &c.cards {
+                            let start = defs.partition_point(|&d| d < card);
+                            if let Some(j) = (start..defs.len()).take_while(|&j| defs[j] == card).find(|&j| !claimed[j]) {
+                                claimed[j] = true;
+                                cards.push(card);
+                            }
+                        }
+                        (spots, cards)
+                    })
+                    .filter(|(_, cards)| !cards.is_empty())
+                    .collect();
+                let free_defs = if contents.is_empty() {
+                    Vec::new()
+                } else {
+                    defs.iter().zip(&claimed).filter(|(_, &c)| !c).map(|(&d, _)| d).collect()
+                };
+                let commander = st.commander.as_ref().and_then(|c| {
+                    let id = c.commanders[owner.index()];
+                    slots.contains(&id).then(|| st.objects.get(id).card_def)
+                });
+                DealOwner { slots, defs, foretold, contents, free_defs, commander }
             }),
         }
     }
@@ -383,49 +438,33 @@ impl Game {
         let keep_own_library = plan.keep_own_library;
         let mut rng = SplitMix64::seed(seed);
         for owner in [PlayerId::P0, PlayerId::P1] {
-            let (slots, defs, foretold) = &plan.owners[owner.index()];
-            let mut defs = defs.clone();
+            let o = &plan.owners[owner.index()];
             let fixed = match hand {
                 Some(h) if owner != observer => {
                     assert_eq!(h.len(), unseen_hand(&self.state, observer, owner).len(), "hand size");
                     let mut h = h.to_vec();
                     h.sort_unstable();
-                    for d in &h {
-                        let i = defs.iter().position(|x| x == d).expect("the hand is drawn from unseen cards");
-                        defs.remove(i);
-                    }
                     h
                 }
                 _ => Vec::new(),
             };
-            // A foretold card is known to have foretell: deal those slots from foretell cards first.
-            let mut pinned = Vec::new();
-            for &i in foretold {
-                let Some(k) = i.checked_sub(fixed.len()) else {
-                    continue;
-                };
-                let eligible: Vec<usize> = (0..defs.len()).filter(|&j| CARD_DEFS[defs[j] as usize].foretell_cost.is_some()).collect();
-                if eligible.is_empty() {
-                    break; // a pinned hand took them; leave the slot unconstrained
-                }
-                let j = eligible[(rng.next_u64() % eligible.len() as u64) as usize];
-                pinned.push((k, defs.remove(j)));
-            }
-            for i in (1..defs.len()).rev() {
-                let j = (rng.next_u64() % (i as u64 + 1)) as usize;
-                defs.swap(i, j);
-            }
-            for (k, d) in pinned {
-                defs.insert(k, d);
-            }
-            for (&id, def) in slots.iter().zip(fixed.into_iter().chain(defs)) {
+            let old_commander = o.commander.map(|_| self.state.commander.as_ref().expect("planned").commanders[owner.index()]);
+            let dealt = if o.contents.is_empty() { o.deal(fixed, &mut rng) } else { o.deal_with_contents(fixed, &mut rng) };
+            for (&id, &def) in o.slots.iter().zip(&dealt) {
                 set_card(&mut self.state, id, def);
             }
-            // A commander in a hidden spot is a known card; only where it is
-            // is hidden: any unknown library position or any face-down card
-            // the observer can't see.
+            // The commander is whichever hidden card now has its card.
+            if let (Some(old), Some(def)) = (old_commander, o.commander) {
+                let new = o.slots[dealt.iter().position(|&d| d == def).expect("the commander was dealt")];
+                let (old_generation, new_generation) =
+                    (self.state.objects.get(old).zone_change_count, self.state.objects.get(new).zone_change_count);
+                let c = self.state.commander.as_mut().expect("planned");
+                c.commanders[owner.index()] = new;
+                if c.declined[owner.index()] == Some(old_generation) {
+                    c.declined[owner.index()] = Some(new_generation);
+                }
+            }
             if !(keep_own_library && owner == observer) {
-                self.place_hidden_commander(observer, owner, &mut rng);
                 // Cards on the bottom in a random order: known cards, unknown
                 // order, except any whose exact position is known (looked at since).
                 let exact: Vec<ObjectId> = {
@@ -460,47 +499,6 @@ impl Game {
         self.state.reseed_shuffles(rng.next_u64());
         if self.outcome.is_none() && matches!(self.pending, Pending::None) {
             self.settle();
-        }
-    }
-
-    /// Moves `owner`'s commander, if it sits in a spot hidden from
-    /// `observer`, to a random one of those spots.
-    fn place_hidden_commander(&mut self, observer: PlayerId, owner: PlayerId, rng: &mut SplitMix64) {
-        let Some(commander) = self.state.commander.as_ref().map(|c| c.commanders[owner.index()]) else {
-            return;
-        };
-        // Hidden spots are library positions and face-down exiled cards.
-        if !matches!(self.state.objects.get(commander).zone, Zone::Library | Zone::Exile) {
-            return;
-        }
-        let library = &self.state.players[owner.index()].library;
-        let mut spots: Vec<ObjectId> =
-            unknown_library_positions(&self.state, observer, owner).into_iter().map(|pos| library[pos]).collect();
-        spots.extend(self.state.exile.iter().copied().filter(|&id| {
-            self.state.objects.get(id).owner == owner && self.state.face_down_hidden_from(id, observer)
-        }));
-        if !spots.contains(&commander) {
-            return;
-        }
-        let to = spots[(rng.next_u64() % spots.len() as u64) as usize];
-        if to == commander {
-            return;
-        }
-        let library = &mut self.state.players[owner.index()].library;
-        if let (Some(a), Some(b)) = (library.iter().position(|&id| id == commander), library.iter().position(|&id| id == to)) {
-            library.swap(a, b);
-            return;
-        }
-        // One of the two is face down in exile: swap which card is which.
-        let (commander_def, other_def) = (self.state.objects.get(commander).card_def, self.state.objects.get(to).card_def);
-        set_card(&mut self.state, to, commander_def);
-        set_card(&mut self.state, commander, other_def);
-        let (old_generation, new_generation) =
-            (self.state.objects.get(commander).zone_change_count, self.state.objects.get(to).zone_change_count);
-        let c = self.state.commander.as_mut().expect("checked above");
-        c.commanders[owner.index()] = to;
-        if c.declined[owner.index()] == Some(old_generation) {
-            c.declined[owner.index()] = Some(new_generation);
         }
     }
 
@@ -863,14 +861,14 @@ impl Game {
             }
             Decision::ChooseEffectOption { player, source, option_count } => {
                 self.actor = player;
-                let d = def_of(st, source);
+                let d = source_def(st, source);
                 for i in 0..option_count {
                     out.push(mk(ActFeat::new(Kind::EffectOption, d, 0, i), Exec::Engine(Action::ChooseEffectOption(i))));
                 }
             }
             Decision::ChooseEffectTargets { player, source, legal_targets, can_finish, .. } => {
                 self.actor = player;
-                let d = def_of(st, source);
+                let d = source_def(st, source);
                 for t in legal_targets {
                     let feat = ActFeat::new(Kind::EffectTarget, d, target_sig(st, t, player), 0).with_role(target_role(st, t));
                     push_unique(&mut out, mk(feat, Exec::Engine(Action::ChooseEffectTarget(t))));
@@ -903,7 +901,7 @@ impl Game {
             }
             Decision::ChooseEffectBoolean { player, source, .. } => {
                 self.actor = player;
-                yes_no(&mut out, def_of(st, source), 4, Action::ChooseEffectBoolean);
+                yes_no(&mut out, source_def(st, source), 4, Action::ChooseEffectBoolean);
             }
             Decision::ChooseCastMethod { player, spell, methods } => {
                 self.actor = player;
@@ -927,7 +925,7 @@ impl Game {
             }
             Decision::ChooseCastFromExile { player, source, cards } => {
                 self.actor = player;
-                out.push(mk(ActFeat::new(Kind::Pass, def_of(st, source), 0, 0), Exec::Engine(Action::ChooseCastFromExile(None))));
+                out.push(mk(ActFeat::new(Kind::Pass, source_def(st, source), 0, 0), Exec::Engine(Action::ChooseCastFromExile(None))));
                 for card in cards {
                     out.push(mk(cast_feat(st, card, player), Exec::Engine(Action::ChooseCastFromExile(Some(card)))));
                 }
@@ -1018,7 +1016,7 @@ fn decision_name(d: &Decision) -> &'static str {
     }
 }
 
-/// `owner`'s hand cards `observer` can't see. A commander is always known.
+/// `owner`'s hand cards `observer` can't see.
 fn unseen_hand(state: &GameState, observer: PlayerId, owner: PlayerId) -> Vec<ObjectId> {
     if owner == observer {
         return Vec::new();
@@ -1029,22 +1027,7 @@ fn unseen_hand(state: &GameState, observer: PlayerId, owner: PlayerId) -> Vec<Ob
         .hand
         .iter()
         .copied()
-        .filter(|&id| !known.iter().any(|e| e.object == id && e.zone_change_count == zcc(id)) && !mtg_kernel::commander::is_commander(state, id))
-        .collect()
-}
-
-/// Library positions of `owner`'s `observer` doesn't know, not counting
-/// known groups (their cards are known, only their order isn't).
-fn unknown_library_positions(state: &GameState, observer: PlayerId, owner: PlayerId) -> Vec<usize> {
-    let known = state.known_library_cards(observer, owner);
-    let grouped = grouped_library_cards(state, observer, owner);
-    let lib = &state.players[owner.index()].library;
-    (0..lib.len())
-        .filter(|&pos| {
-            let id = lib[pos];
-            !known.iter().any(|e| e.position as usize == pos && e.object == id && e.zone_change_count == state.objects.get(id).zone_change_count)
-                && !grouped.contains(&id)
-        })
+        .filter(|&id| !known.iter().any(|e| e.object == id && e.zone_change_count == zcc(id)))
         .collect()
 }
 
@@ -1063,7 +1046,6 @@ pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerI
         let grouped = grouped_library_cards(state, observer, owner);
         for (pos, &id) in ps.library.iter().enumerate() {
             if !known.iter().any(|e| e.position as usize == pos && e.object == id && e.zone_change_count == zcc(id))
-                && !mtg_kernel::commander::is_commander(state, id)
                 && !grouped.contains(&id)
             {
                 slots.push(id);
@@ -1072,11 +1054,7 @@ pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerI
     }
     if !state.face_down.is_empty() {
         slots.extend(
-            state.exile.iter().copied().filter(|&id| {
-                state.objects.get(id).owner == owner
-                    && state.face_down_hidden_from(id, observer)
-                    && !mtg_kernel::commander::is_commander(state, id)
-            }),
+            state.exile.iter().copied().filter(|&id| state.objects.get(id).owner == owner && state.face_down_hidden_from(id, observer)),
         );
     }
     slots
@@ -1088,7 +1066,114 @@ pub(crate) fn unseen_slots(state: &GameState, observer: PlayerId, owner: PlayerI
 #[derive(Debug, Clone)]
 pub struct DealPlan {
     keep_own_library: bool,
-    owners: [(Vec<ObjectId>, Vec<u16>, Vec<usize>); 2],
+    owners: [DealOwner; 2],
+}
+
+#[derive(Debug, Clone)]
+struct DealOwner {
+    slots: Vec<ObjectId>,
+    defs: Vec<u16>,
+    foretold: Vec<usize>,
+    /// Per [`mtg_kernel::state::LibraryContentsV1`]: the slots its cards may
+    /// be in and the unseen cards it claims.
+    contents: Vec<(Vec<usize>, Vec<u16>)>,
+    /// `defs` less the claimed cards (empty without `contents`).
+    free_defs: Vec<u16>,
+    /// The commander's card, if it is in a slot.
+    commander: Option<u16>,
+}
+
+impl DealOwner {
+    /// Each slot's card: the opponent's pinned hand `fixed` first, foretold
+    /// slots from foretell cards, the rest in a random order.
+    fn deal(&self, fixed: Vec<u16>, rng: &mut SplitMix64) -> Vec<u16> {
+        let mut defs = self.defs.clone();
+        for d in &fixed {
+            let i = defs.iter().position(|x| x == d).expect("the hand is drawn from unseen cards");
+            defs.remove(i);
+        }
+        let mut pinned = Vec::new();
+        for &i in &self.foretold {
+            let Some(k) = i.checked_sub(fixed.len()) else {
+                continue;
+            };
+            let eligible: Vec<usize> = (0..defs.len()).filter(|&j| CARD_DEFS[defs[j] as usize].foretell_cost.is_some()).collect();
+            if eligible.is_empty() {
+                break; // a pinned hand took them; leave the slot unconstrained
+            }
+            let j = eligible[(rng.next_u64() % eligible.len() as u64) as usize];
+            pinned.push((k, defs.remove(j)));
+        }
+        for i in (1..defs.len()).rev() {
+            let j = (rng.next_u64() % (i as u64 + 1)) as usize;
+            defs.swap(i, j);
+        }
+        for (k, d) in pinned {
+            defs.insert(k, d);
+        }
+        if fixed.is_empty() {
+            return defs;
+        }
+        let mut out = fixed;
+        out.extend(defs);
+        out
+    }
+
+    /// [`Self::deal`] when some cards are known to be in the library: those
+    /// first, each to a random free slot it may be in, then the rest.
+    fn deal_with_contents(&self, fixed: Vec<u16>, rng: &mut SplitMix64) -> Vec<u16> {
+        let mut defs = self.free_defs.clone();
+        let mut dealt = vec![u16::MAX; self.slots.len()];
+        let mut skip: Vec<u16> = Vec::new();
+        for (k, &d) in fixed.iter().enumerate() {
+            match defs.iter().position(|&x| x == d) {
+                Some(i) => {
+                    defs.remove(i);
+                }
+                // A claimed card the pinned hand holds.
+                None => skip.push(d),
+            }
+            dealt[k] = d;
+        }
+        for (spots, cards) in &self.contents {
+            let mut free: Vec<usize> = spots.iter().copied().filter(|&i| dealt[i] == u16::MAX).collect();
+            for &c in cards {
+                if let Some(k) = skip.iter().position(|&d| d == c) {
+                    skip.swap_remove(k);
+                } else if free.is_empty() {
+                    defs.push(c);
+                } else {
+                    let k = (rng.next_u64() % free.len() as u64) as usize;
+                    dealt[free.swap_remove(k)] = c;
+                }
+            }
+        }
+        assert!(skip.is_empty(), "the hand is drawn from unseen cards");
+        let open: Vec<usize> = (0..self.slots.len()).filter(|&i| dealt[i] == u16::MAX).collect();
+        let mut pinned = Vec::new();
+        for &i in &self.foretold {
+            let Some(k) = open.iter().position(|&o| o == i) else {
+                continue;
+            };
+            let eligible: Vec<usize> = (0..defs.len()).filter(|&j| CARD_DEFS[defs[j] as usize].foretell_cost.is_some()).collect();
+            if eligible.is_empty() {
+                break;
+            }
+            let j = eligible[(rng.next_u64() % eligible.len() as u64) as usize];
+            pinned.push((k, defs.remove(j)));
+        }
+        for i in (1..defs.len()).rev() {
+            let j = (rng.next_u64() % (i as u64 + 1)) as usize;
+            defs.swap(i, j);
+        }
+        for (k, d) in pinned {
+            defs.insert(k, d);
+        }
+        for (&i, d) in open.iter().zip(defs) {
+            dealt[i] = d;
+        }
+        dealt
+    }
 }
 
 /// Sorts card ids (all below `CARD_DEFS.len()`) by counting.
@@ -1370,7 +1455,8 @@ mod tests {
     }
 
     #[test]
-    fn determinize_hides_which_face_down_card_is_a_commander() {
+    fn a_face_down_commander_is_known_to_everyone() {
+        // 903.9a offers its owner the command zone as it lands, so it is no secret.
         use crate::commander::CommanderDeck;
         use mtg_kernel::event::{propose_and_commit, ProposedEvent};
         let deck = CommanderDeck::named_with_stand_in("Ognis", Some("Mountain")).unwrap();
@@ -1378,24 +1464,19 @@ mod tests {
         let me = g.to_act();
         let opp = me.opponent();
         let commander = g.state.commander.as_ref().unwrap().commanders[opp.index()];
-        // The opponent's commander goes to its library top unseen, then face down into exile.
         propose_and_commit(&mut g.state, ProposedEvent::private_top_library_insert(commander));
-        mtg_kernel::face_down::exile_top(&mut g.state, opp, true, None).unwrap();
-        // Its owner chose to leave it there (903.9a).
+        mtg_kernel::face_down::exile_top(&mut g.state, opp, false, None).unwrap();
+        assert!(!g.state.face_down_hidden_from(commander, me) && !g.state.face_down_hidden_from(commander, opp));
         let generation = g.state.objects.get(commander).zone_change_count;
         g.state.commander.as_mut().unwrap().declined[opp.index()] = Some(generation);
         let seen = crate::features::observe(&g, me);
-        let mut zones = std::collections::BTreeSet::new();
-        // About one world in ninety leaves it in exile: the library is large.
-        for seed in 0..400 {
+        for seed in 0..50 {
             let mut w = g.clone();
             w.determinize(me, seed);
             assert_eq!(crate::features::observe(&w, me), seen);
-            let c = w.state.commander.as_ref().unwrap().commanders[opp.index()];
-            assert_eq!(w.state.objects.get(c).card_def, g.state.objects.get(commander).card_def);
-            zones.insert(format!("{:?}", w.state.objects.get(c).zone));
+            assert_eq!(w.state.commander.as_ref().unwrap().commanders[opp.index()], commander);
+            assert_eq!(w.state.objects.get(commander).card_def, g.state.objects.get(commander).card_def);
         }
-        assert_eq!(zones.len(), 2, "sometimes face down in exile, sometimes in the library: {zones:?}");
     }
 
     #[test]
@@ -1495,29 +1576,79 @@ mod tests {
     }
 
     #[test]
-    fn commanders_in_a_hand_or_library_keep_their_identity_in_every_world() {
-        // A commander's identity is public; in a library only its position is hidden.
-        let g = Game::new_commander(&padded("Goblin Tomb Raider", "Burn"), &padded("Masked Meower", "Rally"), 1);
+    fn a_commander_known_to_be_in_a_library_stays_there_until_a_card_leaves_it() {
+        // Its owner kept it out of the command zone (903.9b) and the library
+        // was shuffled: everyone knows it is in there, not where. A draw may
+        // then take it, unseen by the opponent (400.2).
+        use mtg_kernel::state::LibraryContentsV1;
+        let mut g = Game::new_commander(&padded("Goblin Tomb Raider", "Burn"), &padded("Masked Meower", "Rally"), 1);
         let me = g.to_act();
         let opp = me.opponent();
         let theirs = g.state.commander.as_ref().unwrap().commanders[opp.index()];
         let def = def_of(&g.state, theirs);
-        for (zone, min_positions) in [(Zone::Hand, 1), (Zone::Library, 2)] {
-            let mut t = g.clone();
-            mtg_kernel::event::commit(&mut t.state, mtg_kernel::event::ProposedEvent::zone_change(theirs, zone));
-            let generation = t.state.objects.get(theirs).zone_change_count;
-            t.state.commander.as_mut().unwrap().declined[opp.index()] = Some(generation);
-            let mut positions = std::collections::HashSet::new();
-            for seed in 0..30 {
-                let mut d = t.clone();
-                d.determinize(me, seed);
-                let o = d.state.objects.get(theirs);
-                assert_eq!((o.card_def, o.zone), (def, zone));
-                assert_eq!(crate::features::observe(&d, me), crate::features::observe(&t, me));
-                positions.insert(d.state.players[opp.index()].library.iter().position(|&id| id == theirs));
-            }
-            assert!(positions.len() >= min_positions, "{zone:?}: {positions:?}");
+        let bottom = mtg_kernel::event::LibraryPlacement::Bottom;
+        mtg_kernel::event::commit(&mut g.state, mtg_kernel::event::ProposedEvent::hidden_library_insert(theirs, bottom));
+        let generation = g.state.objects.get(theirs).zone_change_count;
+        g.state.commander.as_mut().unwrap().declined[opp.index()] = Some(generation);
+        g.state.library_contents.push(LibraryContentsV1 { observer: me, owner: opp, cards: vec![def], left: Vec::new() });
+        g.settle();
+        let where_now = |g: &Game, seed| {
+            let mut w = g.clone();
+            w.determinize(me, seed);
+            assert_eq!(crate::features::observe(&w, me), crate::features::observe(g, me));
+            let c = w.state.commander.as_ref().unwrap().commanders[opp.index()];
+            let o = w.state.objects.get(c);
+            assert_eq!(o.card_def, def);
+            assert_eq!(w.state.commander.as_ref().unwrap().declined[opp.index()], Some(o.zone_change_count));
+            (o.zone, w.state.players[opp.index()].library.iter().position(|&id| id == c), c)
+        };
+        let mut positions = std::collections::HashSet::new();
+        for seed in 0..40 {
+            let (zone, position, _) = where_now(&g, seed);
+            assert_eq!(zone, Zone::Library);
+            positions.insert(position);
         }
+        assert!(positions.len() > 5, "{positions:?}");
+
+        // The opponent draws: the commander may be that card, and no other in hand.
+        let drawn = g.state.draw_card(opp).unwrap();
+        g.settle();
+        let mut in_hand = 0;
+        for seed in 0..400 {
+            let (zone, _, c) = where_now(&g, seed);
+            if zone == Zone::Hand {
+                assert_eq!(c, drawn);
+                in_hand += 1;
+            }
+        }
+        assert!(in_hand > 0 && in_hand < 400, "{in_hand}");
+    }
+
+    #[test]
+    fn a_commander_drawn_unseen_is_hidden_from_the_opponent() {
+        let mut g = Game::new_commander(&padded("Goblin Tomb Raider", "Burn"), &padded("Masked Meower", "Rally"), 1);
+        let me = g.to_act();
+        let opp = me.opponent();
+        let theirs = g.state.commander.as_ref().unwrap().commanders[opp.index()];
+        mtg_kernel::event::commit(&mut g.state, mtg_kernel::event::ProposedEvent::private_top_library_insert(theirs));
+        assert_eq!(g.state.draw_card(opp), Some(theirs));
+        // Its owner keeps it in hand (903.9b), telling no one.
+        let generation = g.state.objects.get(theirs).zone_change_count;
+        g.state.commander.as_mut().unwrap().declined[opp.index()] = Some(generation);
+        g.settle();
+        let hidden = |g: &Game| {
+            crate::features::observe(g, me).iter().filter(|t| t[1] == crate::features::place_code(Zone::Hand, false) && t[0] == 0).count()
+        };
+        assert_eq!(hidden(&g), g.state.players[opp.index()].hand.len());
+        let mut zones = std::collections::BTreeSet::new();
+        for seed in 0..100 {
+            let mut w = g.clone();
+            w.determinize(me, seed);
+            assert_eq!(crate::features::observe(&w, me), crate::features::observe(&g, me));
+            let c = w.state.commander.as_ref().unwrap().commanders[opp.index()];
+            zones.insert(format!("{:?}", w.state.objects.get(c).zone));
+        }
+        assert_eq!(zones.len(), 2, "in the hand or the library: {zones:?}");
     }
 
     #[test]

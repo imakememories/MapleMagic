@@ -39,6 +39,11 @@ pub fn exile(
 ) -> bool {
     let mut known_to = knowers(state, id);
     known_to[state.objects.get(id).owner.index()] |= owner_may_look;
+    // 903.9a then offers a commander's owner the command zone: everyone
+    // learns which card it is.
+    if crate::commander::is_commander(state, id) {
+        known_to = [true, true];
+    }
     event::propose_and_commit(state, ProposedEvent::zone_change(id, Zone::Exile));
     let o = state.objects.get(id);
     if o.zone != Zone::Exile {

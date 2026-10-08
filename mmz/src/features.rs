@@ -28,7 +28,7 @@ pub fn action_vocab() -> [usize; ACTION_FIELDS] {
 pub const GLOBAL_BASE: u16 = 1024;
 const NUM_GLOBALS: usize = 16;
 
-fn place_code(zone: Zone, mine: bool) -> u16 {
+pub(crate) fn place_code(zone: Zone, mine: bool) -> u16 {
     let z = match zone {
         Zone::Hand => 0,
         Zone::Battlefield => 1,
@@ -138,9 +138,7 @@ pub fn observe_with(g: &Game, viewer: PlayerId, perfect: bool) -> Vec<[u16; TOKE
     // Opponent hand: known cards by identity, the rest hidden.
     for &id in &po.hand {
         let zcc = st.objects.get(id).zone_change_count;
-        let known = perfect
-            || mtg_kernel::commander::is_commander(st, id)
-            || st.known_hand_cards(me, opp).iter().any(|e| e.object == id && e.zone_change_count == zcc);
+        let known = perfect || st.known_hand_cards(me, opp).iter().any(|e| e.object == id && e.zone_change_count == zcc);
         if known {
             out.push(object_token(st, id, me, Zone::Hand, false));
         } else {

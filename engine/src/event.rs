@@ -1318,6 +1318,10 @@ fn commit_zone_change(
     if to_zone != Zone::Battlefield && state.objects.get(id).v4.is_token {
         state.ceasing_tokens.push(id);
     }
+    if from_zone == Zone::Library && matches!(to_zone, Zone::Hand | Zone::Exile) && !state.library_contents.is_empty() {
+        let card = crate::state::ObjectLinkV4 { object: id, zone_change_count: state.objects.get(id).zone_change_count };
+        state.note_library_departure(owner, card);
+    }
     if to_zone == Zone::Library {
         let position = state.players[owner.index()]
             .library
