@@ -884,7 +884,7 @@ pub struct HeuristicEval;
 
 pub fn heuristic_value(g: &Game, pov: PlayerId) -> f32 {
     use mtg_kernel::card_def::CardType;
-    use mtg_kernel::engine::{effective_power, effective_toughness};
+    use mtg_kernel::engine::{effective_power, effective_toughness, object_has_type};
     if let Some(o) = g.outcome() {
         return terminal_value(o, pov);
     }
@@ -902,7 +902,7 @@ pub fn heuristic_value(g: &Game, pov: PlayerId) -> f32 {
         s += life * 0.5;
         for &id in &ps.battlefield {
             let def = &mtg_kernel::card_def::CARD_DEFS[st.objects.get(id).card_def as usize];
-            if def.has_type(CardType::Creature) {
+            if object_has_type(st, id, CardType::Creature) {
                 s += 1.0 + effective_power(st, id).max(0) as f32 + 0.5 * effective_toughness(st, id).max(0) as f32;
             } else if def.is_land {
                 s += 0.7;
