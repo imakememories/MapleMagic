@@ -359,6 +359,8 @@ def run(cfg: Config, resume: bool = True):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             opt.step()
+            if device.type == "cuda" and torch.cuda.memory_reserved(device) > plan.flush_at:
+                torch.cuda.empty_cache()
             pl_sum += float(pl)
             vl_sum += float(vl)
         train_s = time.time() - t0
