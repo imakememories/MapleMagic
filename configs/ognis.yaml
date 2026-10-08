@@ -1,4 +1,4 @@
-# Ognis baseline: the mid_a network and loop on Ognis vs Ognis.
+# Ognis baseline: the mid_a network and loop on Ognis vs Ognis, every position training the value.
 name: ognis_base
 pairings: [[Ognis, Ognis]]
 generations: 20
@@ -17,3 +17,4 @@ eval_games: 128
 eval_sims: 64
 heuristic_sims: 200
 seed: 0
+value_positions_per_game: 0

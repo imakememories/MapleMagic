@@ -48,7 +48,7 @@ class Config:
     value_target: str = "z"
     value_lambda: float = 0.95
     # Positions per game that train the value (0 = every position, all in one batch with the policy).
-    value_positions_per_game: int = 0
+    value_positions_per_game: int = 16
     # Times each value position is trained on while in the buffer, when they are sampled apart.
     value_reuse: float = 2.0
     # Leaf values: this weight on the network, the rest on the hand-written evaluation.
