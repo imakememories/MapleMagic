@@ -91,9 +91,9 @@ struct SelfPlay {
 impl SelfPlay {
     /// seat_models: 0/1 for networks, or "heuristic" / "random". sims is model 0's
     /// budget, opp_sims model 1's. Search settings are pairs, one per model id;
-    /// maple_select, maple_resample, world_sampler, value_scale and heuristic_values may also be one value for both.
+    /// maple_select, maple_resample, world_sampler, value_scale, heuristic_values and value_mix may also be one value for both.
     #[new]
-    #[pyo3(signature = (parallel, pairings, sims=200, leaves_per_step=4, temp_decisions=30, c_puct=1.0, root_noise=0.25, dirichlet_alpha=0.3, fpu_reduction=0.2, seat_models=None, record=true, max_games=None, heuristic_sims=200, seed=0, opp_sims=None, maple_worlds=(0, 0), maple_select=None, maple_resample=None, maple_dedupe=true, perfect_obs=(false, false), pimc_worlds=(0, 0), world_sampler=None, world_candidates=50, world_pool=16, world_temp=0.0, retention=None, value_scale=None, heuristic_values=None))]
+    #[pyo3(signature = (parallel, pairings, sims=200, leaves_per_step=4, temp_decisions=30, c_puct=1.0, root_noise=0.25, dirichlet_alpha=0.3, fpu_reduction=0.2, seat_models=None, record=true, max_games=None, heuristic_sims=200, seed=0, opp_sims=None, maple_worlds=(0, 0), maple_select=None, maple_resample=None, maple_dedupe=true, perfect_obs=(false, false), pimc_worlds=(0, 0), world_sampler=None, world_candidates=50, world_pool=16, world_temp=0.0, retention=None, value_scale=None, heuristic_values=None, value_mix=None, full_search_prob=1.0, cheap_sims=0))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         parallel: usize,
@@ -124,6 +124,9 @@ impl SelfPlay {
         retention: Option<PyReadonlyArray1<'_, f32>>,
         value_scale: Option<Bound<'_, PyAny>>,
         heuristic_values: Option<Bound<'_, PyAny>>,
+        value_mix: Option<Bound<'_, PyAny>>,
+        full_search_prob: f32,
+        cheap_sims: u32,
     ) -> PyResult<Self> {
         if (maple_worlds.0 > 0 && pimc_worlds.0 > 0) || (maple_worlds.1 > 0 && pimc_worlds.1 > 0) {
             return Err(PyValueError::new_err("a model can't use both maple_worlds and pimc_worlds"));
@@ -133,6 +136,7 @@ impl SelfPlay {
         let world_sampler = per_model(world_sampler.as_ref(), WorldSampler::Uniform, parse_sampler)?;
         let value_scale = per_model(value_scale.as_ref(), 1.0f32, |v| v.extract::<f32>().map_err(Into::into))?;
         let heuristic_values = per_model(heuristic_values.as_ref(), false, |v| v.extract::<bool>().map_err(Into::into))?;
+        let value_mix = per_model(value_mix.as_ref(), 1.0f32, |v| v.extract::<f32>().map_err(Into::into))?;
         let retention = retention.map(|r| r.as_array().to_vec());
         let want = RETENTION_BUCKETS * CARD_DEFS.len();
         if world_sampler.contains(&WorldSampler::Retention) && retention.as_ref().map(|r| r.len()) != Some(want) {
@@ -184,6 +188,9 @@ impl SelfPlay {
             world_sampler,
             value_scale,
             heuristic_values,
+            value_mix,
+            full_search_prob,
+            cheap_sims,
             pairings,
             seat_models: match &seat_models {
                 Some((a, b)) => [model_id(a)?, model_id(b)?],
@@ -299,7 +306,7 @@ impl SelfPlay {
 
     /// Training samples from finished games, or None: (tokens, token_len, actions,
     /// action_len, policy, z, root_value, (hist, hist_len, pool, pool_len, hand_n,
-    /// game, turn, heuristic)). The pool is the opponent's unseen cards + 1, its hand first.
+    /// game, turn, heuristic, player, full)). The pool is the opponent's unseen cards + 1, its hand first.
     fn take_samples<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
         let s = self.inner.take_samples();
         if s.is_empty() {
@@ -324,6 +331,8 @@ impl SelfPlay {
         let game: Vec<u64> = s.iter().map(|x| x.game).collect();
         let turn: Vec<u32> = s.iter().map(|x| x.turn).collect();
         let heuristic: Vec<f32> = s.iter().map(|x| x.heuristic).collect();
+        let player: Vec<u8> = s.iter().map(|x| x.player).collect();
+        let full: Vec<bool> = s.iter().map(|x| x.full).collect();
         let out = (
             arr3(py, tflat, n, tw, TOKEN_FIELDS)?,
             tlen.into_pyarray(py),
@@ -341,6 +350,8 @@ impl SelfPlay {
                 game.into_pyarray(py),
                 turn.into_pyarray(py),
                 heuristic.into_pyarray(py),
+                player.into_pyarray(py),
+                full.into_pyarray(py),
             ),
         );
         Ok(Some(out.into_pyobject(py)?.into_any()))

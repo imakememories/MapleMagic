@@ -42,6 +42,9 @@ def main(argv=None):
     e.add_argument("--heuristic-values", action="store_true", default=None,
                    help="leaf values from the heuristic, priors from the checkpoint")
     e.add_argument("--opp-heuristic-values", action="store_true", default=None, help="the same for the opponent network")
+    e.add_argument("--value-mix", type=float, default=None,
+                   help="weight of the checkpoint's leaf values against the heuristic's (1 = network only)")
+    e.add_argument("--opp-value-mix", type=float, default=None, help="the same for the opponent network")
     e.add_argument("--seed", type=int, default=12345)
     e.add_argument("--out", default=None, help="write the settings and every game's result to this JSON file")
     s = sub.add_parser("sampler-pilot", help="train world samplers on a frozen network's self-play")
@@ -82,7 +85,7 @@ def main(argv=None):
         sa = settings(a.checkpoint, {"maple_worlds": a.maple_worlds, "pimc_worlds": a.pimc_worlds,
                                      "maple_select": a.maple_select, "maple_resample": a.maple_resample,
                                      "world_sampler": a.world_sampler, "value_scale": a.value_scale,
-                                     "heuristic_values": a.heuristic_values})
+                                     "heuristic_values": a.heuristic_values, "value_mix": a.value_mix})
         sb = None
         if a.vs in ("heuristic", "random"):
             opp = a.vs
@@ -92,7 +95,7 @@ def main(argv=None):
             sb = settings(path, {"maple_worlds": a.opp_maple_worlds, "pimc_worlds": a.opp_pimc_worlds,
                                  "maple_select": a.opp_maple_select, "maple_resample": a.opp_maple_resample,
                                  "world_sampler": a.opp_world_sampler, "value_scale": a.opp_value_scale,
-                                 "heuristic_values": a.opp_heuristic_values})
+                                 "heuristic_values": a.opp_heuristic_values, "value_mix": a.opp_value_mix})
         scorers, retention = {}, None
         for model_id, search, path in ((0, sa, a.sampler_from), (1, sb, a.opp_sampler_from)):
             kind = (search or {}).get("world_sampler", "uniform")

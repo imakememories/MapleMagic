@@ -42,6 +42,12 @@ pub struct SelfPlayConfig {
     pub value_scale: [f32; 2],
     /// Leaf values from [`heuristic_value`] instead of the network.
     pub heuristic_values: [bool; 2],
+    /// Weight of the network's leaf value against [`heuristic_value`] (1 = network only).
+    pub value_mix: [f32; 2],
+    /// Playout-cap randomization while recording: the chance a move gets a
+    /// full search (1 = always); the others use `cheap_sims` and train only the value.
+    pub full_search_prob: f32,
+    pub cheap_sims: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +67,10 @@ pub struct Sample {
     pub turn: u32,
     /// The hand-written evaluation of the position, for the same player.
     pub heuristic: f32,
+    /// The player to act, by index.
+    pub player: u8,
+    /// Whether the move had a full search (its policy is a training target).
+    pub full: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +118,7 @@ struct Pending {
     hand_n: u8,
     turn: u32,
     heuristic: f32,
+    full: bool,
 }
 
 struct Slot {
@@ -116,6 +127,8 @@ struct Slot {
     decks: [String; 2],
     models: [u8; 2],
     search: Option<Search>,
+    /// Whether the current search is a full one.
+    full: bool,
     leaves: Vec<Game>,
     world: Option<WorldRequest>,
     history: History,
@@ -147,6 +160,7 @@ impl SelfPlay {
                 decks: [String::new(), String::new()],
                 models: [0, 0],
                 search: None,
+                full: true,
                 leaves: Vec::new(),
                 world: None,
                 history: History::default(),
@@ -239,14 +253,20 @@ impl SelfPlay {
         for (i, e) in per_slot {
             by_index[i] = Some(e);
         }
-        let (scale, heuristic) = (self.cfg.value_scale, self.cfg.heuristic_values);
+        let (scale, heuristic, mix) = (self.cfg.value_scale, self.cfg.heuristic_values, self.cfg.value_mix);
         self.slots.par_iter_mut().zip(by_index).for_each(|(slot, evals)| {
             if let Some(mut evals) = evals {
                 let leaves = std::mem::take(&mut slot.leaves);
                 assert_eq!(leaves.len(), evals.len());
                 let m = slot.models[slot.game.as_ref().unwrap().to_act().index()] as usize;
                 for (e, g) in evals.iter_mut().zip(&leaves) {
-                    e.value = if heuristic[m] { heuristic_value(g, g.to_act()) } else { e.value * scale[m] };
+                    e.value = if heuristic[m] {
+                        heuristic_value(g, g.to_act())
+                    } else if mix[m] == 1.0 {
+                        e.value * scale[m]
+                    } else {
+                        mix[m] * e.value * scale[m] + (1.0 - mix[m]) * heuristic_value(g, g.to_act())
+                    };
                 }
                 slot.search.as_mut().unwrap().feed(&leaves, evals);
             }
@@ -266,6 +286,11 @@ impl SelfPlay {
     pub fn stats(&self) -> [SearchStats; 2] {
         self.stats
     }
+}
+
+/// Uniform in [0, 1).
+fn unit(rng: &mut SplitMix64) -> f32 {
+    (rng.next_u64() >> 11) as f32 / (1u64 << 53) as f32
 }
 
 fn game_setup(cfg: &SelfPlayConfig, seed: u64, id: u64) -> ([String; 2], [u8; 2], u64) {
@@ -316,6 +341,8 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
                     game: slot.id,
                     turn: p.turn,
                     heuristic: p.heuristic,
+                    player: p.player.index() as u8,
+                    full: p.full,
                 });
             }
             result = Some(GameResult { decks: slot.decks.clone(), models: slot.models, outcome, decisions: game.decisions });
@@ -349,8 +376,16 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
             continue;
         }
         let m = model as usize;
-        let sims = cfg.model_sims[m];
-        let search = slot.search.get_or_insert_with(|| Search::new(game, search_config(cfg, m), slot.rng.next_u64()));
+        if slot.search.is_none() {
+            let mut c = search_config(cfg, m);
+            slot.full = !cfg.record || cfg.full_search_prob >= 1.0 || unit(&mut slot.rng) < cfg.full_search_prob;
+            if !slot.full {
+                c.root_noise = 0.0;
+            }
+            slot.search = Some(Search::new(game, c, slot.rng.next_u64()));
+        }
+        let sims = if slot.full { cfg.model_sims[m] } else { cfg.cheap_sims };
+        let search = slot.search.as_mut().expect("made above");
         if let Some(hands) = search.world_request() {
             let hist = slot.history.tokens(me, game.state.turn);
             slot.world = Some(WorldRequest { tokens: observe_with(game, me, false), hist, hands, model });
@@ -360,7 +395,7 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
             let visits = search.root_visits();
             let total: f32 = visits.iter().sum::<f32>().max(1e-6);
             let pick = if game.decisions < cfg.temp_decisions {
-                let mut r = (slot.rng.next_u64() >> 11) as f32 / (1u64 << 53) as f32 * total;
+                let mut r = unit(&mut slot.rng) * total;
                 let mut pick = visits.len() - 1;
                 for (i, &v) in visits.iter().enumerate() {
                     if r < v {
@@ -386,6 +421,7 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
                     pool: [hand, rest].concat(),
                     turn: game.state.turn,
                     heuristic: heuristic_value(game, me),
+                    full: slot.full,
                 });
             }
             stats.push((model, search.stats));
@@ -460,6 +496,9 @@ mod tests {
             world_sampler: [WorldSampler::Uniform; 2],
             value_scale: [1.0; 2],
             heuristic_values: [false; 2],
+            value_mix: [1.0; 2],
+            full_search_prob: 1.0,
+            cheap_sims: 0,
         };
         let mut sp = SelfPlay::new(4, cfg, 3);
         assert!(sp.gather().is_empty());
@@ -497,6 +536,9 @@ mod tests {
             world_sampler: [WorldSampler::Scored, WorldSampler::Uniform],
             value_scale: [1.0; 2],
             heuristic_values: [false; 2],
+            value_mix: [1.0; 2],
+            full_search_prob: 1.0,
+            cheap_sims: 0,
         }
     }
 
@@ -544,6 +586,9 @@ mod tests {
             world_sampler: [WorldSampler::Uniform; 2],
             value_scale: [1.0; 2],
             heuristic_values: [false; 2],
+            value_mix: [1.0; 2],
+            full_search_prob: 1.0,
+            cheap_sims: 0,
         }
     }
 
@@ -586,7 +631,11 @@ mod tests {
 
     /// Model 0's recorded root values, with a stand-in network that rates every leaf 7.
     fn root_values(value_scale: [f32; 2], heuristic_values: [bool; 2]) -> Vec<f32> {
-        let mut sp = SelfPlay::new(4, SelfPlayConfig { value_scale, heuristic_values, ..test_config() }, 1);
+        samples_with(SelfPlayConfig { value_scale, heuristic_values, ..test_config() }).iter().map(|s| s.root_value).collect()
+    }
+
+    fn samples_with(cfg: SelfPlayConfig) -> Vec<Sample> {
+        let mut sp = SelfPlay::new(4, cfg, 1);
         loop {
             let batch = sp.gather();
             if batch.is_empty() {
@@ -595,7 +644,32 @@ mod tests {
             let evals = batch.leaves.iter().map(|l| Eval { priors: vec![1.0; l.actions.len()], value: 7.0 }).collect();
             sp.feed(evals, Vec::new());
         }
-        sp.take_samples().iter().map(|s| s.root_value).collect()
+        sp.take_samples()
+    }
+
+    #[test]
+    fn a_zero_value_mix_is_the_heuristic() {
+        let mixed = samples_with(SelfPlayConfig { value_mix: [0.0; 2], ..test_config() });
+        let mixed: Vec<f32> = mixed.iter().map(|s| s.root_value).collect();
+        assert_eq!(mixed, root_values([1.0; 2], [true; 2]));
+        assert_ne!(root_values([1.0; 2], [false; 2]), root_values([1.0; 2], [true; 2]));
+    }
+
+    #[test]
+    fn samples_come_in_whole_games_and_cheap_moves_are_marked() {
+        let samples = samples_with(SelfPlayConfig { full_search_prob: 0.25, cheap_sims: 4, ..test_config() });
+        let full = samples.iter().filter(|s| s.full).count();
+        assert!(full > 0 && full < samples.len() / 2, "{full} of {}", samples.len());
+        let mut seen = Vec::new();
+        for w in samples.windows(2) {
+            if w[0].game != w[1].game {
+                assert!(!seen.contains(&w[1].game), "game {} is split", w[1].game);
+                seen.push(w[0].game);
+            }
+        }
+        assert!(samples.iter().any(|s| s.player == 1) && samples.iter().any(|s| s.player == 0));
+        // Off by default: every move a full search, as before.
+        assert!(samples_with(test_config()).iter().all(|s| s.full));
     }
 
     #[test]

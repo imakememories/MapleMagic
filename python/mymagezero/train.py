@@ -13,7 +13,7 @@ import torch
 import yaml
 
 from . import DECK_PAIRS, MAX_TOKENS, SelfPlay
-from .model import EvalPlan, Net, evaluate, load, losses, plan_eval, save
+from .model import EvalPlan, Net, evaluate, load, losses, plan_eval, save, to_tensors
 
 MAX_ACTIONS = 96
 
@@ -44,6 +44,19 @@ class Config:
     lr: float = 1e-3
     weight_decay: float = 1e-4
     value_weight: float = 1.0
+    # Value targets: "z" (the result) or "td" (TD(lambda) over search root values).
+    value_target: str = "z"
+    value_lambda: float = 0.95
+    # Positions per game that train the value (0 = every position, all in one batch with the policy).
+    value_positions_per_game: int = 0
+    # Times each value position is trained on while in the buffer, when they are sampled apart.
+    value_reuse: float = 2.0
+    # Leaf values: this weight on the network, the rest on the hand-written evaluation.
+    value_mix: float = 1.0
+    # Playout-cap randomization: the chance of a full search; other moves use cheap_sims
+    # (0 = max(8, sims // 6)) and train only the value.
+    full_search_prob: float = 1.0
+    cheap_sims: int = 0
     # Evaluation
     eval_every: int = 1
     eval_games: int = 128
@@ -85,13 +98,36 @@ class Config:
             "perfect_obs": self.perfect_obs,
             "pimc_worlds": self.pimc_worlds,
             "world_sampler": self.world_sampler,
+            "value_mix": self.value_mix,
         }
+
+    def split_batches(self) -> bool:
+        """Whether policy and value rows are sampled apart."""
+        return self.value_positions_per_game > 0 or self.full_search_prob < 1.0
+
+
+def value_targets(game, player, z, root_value, kind: str, lam: float) -> np.ndarray:
+    """Per-row value targets; rows are whole games in decision order."""
+    if kind == "z":
+        return z.astype(np.float32)
+    if kind != "td":
+        raise ValueError(f"unknown value_target {kind}")
+    y = np.empty(len(z), np.float32)
+    after = {}
+    for i in range(len(z) - 1, -1, -1):
+        key = (int(game[i]), int(player[i]))
+        y[i] = lam * after.get(key, z[i]) + (1 - lam) * root_value[i]
+        after[key] = y[i]
+    return y
 
 
 class Replay:
     """Fixed-width ring buffer of samples (padded to MAX_TOKENS / MAX_ACTIONS)."""
 
-    def __init__(self, cap: int, tok_fields: int, act_fields: int):
+    ROW_FIELDS = ("game", "player", "turn", "root_value", "heuristic", "value_target", "value_row", "policy_row")
+
+    def __init__(self, cap: int, tok_fields: int, act_fields: int, value_target: str = "z", value_lambda: float = 0.95,
+                 value_positions: int = 0, seed: int = 0):
         self.cap = cap
         self.tok = np.zeros((cap, MAX_TOKENS, tok_fields), np.uint16)
         self.tok_len = np.zeros(cap, np.int32)
@@ -99,12 +135,32 @@ class Replay:
         self.act_len = np.zeros(cap, np.int32)
         self.pi = np.zeros((cap, MAX_ACTIONS), np.float32)
         self.z = np.zeros(cap, np.float32)
+        self.game = np.zeros(cap, np.int64)
+        self.player = np.zeros(cap, np.uint8)
+        self.turn = np.zeros(cap, np.int32)
+        self.root_value = np.zeros(cap, np.float32)
+        self.heuristic = np.zeros(cap, np.float32)
+        self.value_target = np.zeros(cap, np.float32)
+        self.value_row = np.zeros(cap, bool)
+        self.policy_row = np.zeros(cap, bool)
         self.n = 0
         self.pos = 0
+        self.kind, self.lam, self.k = value_target, value_lambda, value_positions
+        # Picks value rows; apart from the training rng so K=0 leaves that unchanged.
+        self.rng = np.random.default_rng(seed + 7_919)
 
     def add(self, samples):
-        tok, tok_len, act, act_len, pi, z = samples[:6]
+        tok, tok_len, act, act_len, pi, z, root_value = samples[:7]
+        game, turn, heuristic, player, full = samples[7][5:10]
         k = len(tok_len)
+        starts = np.flatnonzero(np.r_[True, game[1:] != game[:-1]])
+        assert len(np.unique(game[starts])) == len(starts), "a game's samples are not together"
+        target = value_targets(game, player, z, root_value, self.kind, self.lam)
+        value_row = np.ones(k, bool)
+        if self.k > 0:
+            value_row[:] = False
+            for a, b in zip(starts, np.r_[starts[1:], k]):
+                value_row[a + self.rng.choice(b - a, min(self.k, b - a), replace=False)] = True
         tw, aw = min(tok.shape[1], MAX_TOKENS), min(act.shape[1], MAX_ACTIONS)
         for i in range(k):
             j = self.pos
@@ -119,6 +175,9 @@ class Replay:
             p = pi[i, :al]
             self.pi[j, :al] = p / max(p.sum(), 1e-6)
             self.z[j] = z[i]
+            self.game[j], self.player[j], self.turn[j] = game[i], player[i], turn[i]
+            self.root_value[j], self.heuristic[j], self.value_target[j] = root_value[i], heuristic[i], target[i]
+            self.value_row[j], self.policy_row[j] = value_row[i], full[i]
             self.pos = (self.pos + 1) % self.cap
             self.n = min(self.n + 1, self.cap)
 
@@ -126,7 +185,7 @@ class Replay:
         tl = self.tok_len[idx]
         al = self.act_len[idx]
         tw, aw = max(int(tl.max()), 1), max(int(al.max()), 1)
-        return (self.tok[idx, :tw], tl, self.act[idx, :aw], al, self.pi[idx, :aw], self.z[idx])
+        return (self.tok[idx, :tw], tl, self.act[idx, :aw], al, self.pi[idx, :aw], self.value_target[idx])
 
     def sample(self, bs: int, rng: np.random.Generator):
         return self.batch(rng.integers(0, self.n, bs))
@@ -134,14 +193,32 @@ class Replay:
     def save(self, path: str):
         tmp = path + ".tmp.npz"
         np.savez(tmp, tok=self.tok, tok_len=self.tok_len, act=self.act, act_len=self.act_len, pi=self.pi, z=self.z,
-                 n=self.n, pos=self.pos)
+                 n=self.n, pos=self.pos, kind=self.kind, lam=self.lam, k=self.k,
+                 **{f: getattr(self, f) for f in self.ROW_FIELDS})
         os.replace(tmp, path)
 
     def load(self, path: str) -> bool:
         with np.load(path) as f:
+            why = None
             if f["tok"].shape != self.tok.shape or f["act"].shape != self.act.shape:
+                why = f"its shapes {f['tok'].shape}, {f['act'].shape} differ from {self.tok.shape}, {self.act.shape}"
+            elif any(x not in f for x in self.ROW_FIELDS):
+                if (self.kind, self.k) != ("z", 0):
+                    why = "it predates per-row game, player and value fields"
+                else:
+                    for k in ("tok", "tok_len", "act", "act_len", "pi", "z"):
+                        getattr(self, k)[:] = f[k]
+                    self.value_target[:] = self.z
+                    self.value_row[:] = self.policy_row[:] = True
+                    self.n, self.pos = int(f["n"]), int(f["pos"])
+                    print(f"loaded {path} from before per-row fields: every row trains both heads on the result")
+                    return True
+            elif (str(f["kind"]), float(f["lam"]), int(f["k"])) != (self.kind, self.lam, self.k):
+                why = f"its value targets ({f['kind']}, {f['lam']}, K={f['k']}) differ from ({self.kind}, {self.lam}, K={self.k})"
+            if why:
+                print(f"not loading the replay buffer {path}: {why}")
                 return False
-            for k in ("tok", "tok_len", "act", "act_len", "pi", "z"):
+            for k in ("tok", "tok_len", "act", "act_len", "pi", "z") + self.ROW_FIELDS:
                 getattr(self, k)[:] = f[k]
             self.n, self.pos = int(f["n"]), int(f["pos"])
         return True
@@ -208,15 +285,32 @@ def drive(sp: SelfPlay, nets: dict, device, on_samples=None, plan: EvalPlan | No
 
 
 @torch.no_grad()
-def heldout_losses(net: Net, replay: Replay, idx: np.ndarray, device, cfg: Config) -> tuple[float, float]:
+def heldout(net: Net, replay: Replay, idx: np.ndarray, device, cfg: Config) -> dict:
+    """The network and the hand-written evaluation on new positions, before training on them:
+    policy loss on full-search rows, value MSE and AUC against the result."""
+    from .yardstick import auc
+
     net.eval()
-    pl = vl = 0.0
+    ce, values = [], []
     for at in range(0, len(idx), cfg.batch_size):
         rows = idx[at:at + cfg.batch_size]
-        _, p, v = losses(net, replay.batch(rows), device, cfg.value_weight)
-        pl += float(p) * len(rows)
-        vl += float(v) * len(rows)
-    return pl / len(idx), vl / len(idx)
+        tok, tl, act, al, pi, _ = replay.batch(rows)
+        logits, v = net(*to_tensors((tok, tl, act, al), device))
+        pit = torch.from_numpy(pi).to(device)
+        logp = torch.log_softmax(logits.float(), dim=-1).masked_fill(pit == 0, 0.0)
+        ce.append((-(pit * logp).sum(-1)).cpu().numpy())
+        values.append(v.float().cpu().numpy())
+    ce, v = np.concatenate(ce), np.concatenate(values)
+    z, h, full = replay.z[idx], replay.heuristic[idx], replay.policy_row[idx]
+    decided = z != 0
+    return {
+        "heldout_policy_loss": round(float(ce[full].mean()), 4) if full.any() else None,
+        "heldout_value_loss": round(float(((v - z) ** 2).mean()), 4),
+        "heldout_value_auc": auc(v[decided], z[decided] > 0),
+        "heldout_heuristic_mse": round(float(((h - z) ** 2).mean()), 4),
+        "heldout_heuristic_auc": auc(h[decided], z[decided] > 0),
+        "heldout_confident": round(float((np.abs(v) > 0.9).mean()), 3),
+    }
 
 
 def summarize_stats(s: dict) -> dict:
@@ -257,6 +351,7 @@ def match(cfg: Config, net_a, opponent, games: int, device, seed: int,
         world_candidates=cfg.world_candidates, world_pool=cfg.world_pool, world_temp=cfg.world_temp,
         retention=retention, value_scale=(sa.get("value_scale", 1.0), sb.get("value_scale", 1.0)),
         heuristic_values=(sa.get("heuristic_values", False), sb.get("heuristic_values", False)),
+        value_mix=(sa.get("value_mix", 1.0), sb.get("value_mix", 1.0)),
     )
     plan = plan_eval(net_a, device, MAX_TOKENS, MAX_ACTIONS, cfg.max_eval_batch)
     stats = drive(sp, nets, device, plan=plan, scorers=scorers)
@@ -288,7 +383,8 @@ def run(cfg: Config, resume: bool = True):
     replay_path = os.path.join(out, "replay.npz")
 
     from . import ACTION_FIELDS, TOKEN_FIELDS
-    replay = Replay(cfg.buffer_size, TOKEN_FIELDS, ACTION_FIELDS)
+    replay = Replay(cfg.buffer_size, TOKEN_FIELDS, ACTION_FIELDS, cfg.value_target, cfg.value_lambda,
+                    cfg.value_positions_per_game, cfg.seed)
     start_gen = 0
     opt_state = None
     if resume and os.path.exists(latest):
@@ -334,7 +430,8 @@ def run(cfg: Config, resume: bool = True):
             maple_select=cfg.maple_select, maple_resample=cfg.maple_resample,
             perfect_obs=(cfg.perfect_obs, cfg.perfect_obs), pimc_worlds=(cfg.pimc_worlds, cfg.pimc_worlds),
             world_sampler=cfg.world_sampler, world_candidates=cfg.world_candidates, world_pool=cfg.world_pool,
-            world_temp=cfg.world_temp,
+            world_temp=cfg.world_temp, value_mix=cfg.value_mix, full_search_prob=cfg.full_search_prob,
+            cheap_sims=cfg.cheap_sims or max(8, cfg.sims // 6),
         )
         sp_stats = drive(sp, {0: net}, device, on_samples=add, plan=plan)
         search = summarize_stats(sp.search_stats()[0])
@@ -343,18 +440,29 @@ def run(cfg: Config, resume: bool = True):
         mean_dec = float(np.mean([r["decisions"] for r in results])) if results else 0.0
 
         held = (first + rng.permutation(min(new[0], replay.cap))[:4096]) % replay.cap
-        held_pl, held_vl = heldout_losses(net, replay, held, device, cfg) if len(held) else (0.0, 0.0)
+        held_stats = heldout(net, replay, held, device, cfg) if len(held) else {}
+        fresh = (first + np.arange(min(new[0], replay.cap))) % replay.cap
+        new_policy, new_value = int(replay.policy_row[fresh].sum()), int(replay.value_row[fresh].sum())
 
         # --- train
         if device.type == "cuda":
             torch.cuda.empty_cache()  # self-play's cache, before training allocates its own
-        steps = max(1, int(new[0] * cfg.reuse / cfg.batch_size))
+        steps = max(1, int(new_policy * cfg.reuse / cfg.batch_size))
+        if cfg.split_batches():
+            policy_rows = np.flatnonzero(replay.policy_row[:replay.n])
+            value_rows = np.flatnonzero(replay.value_row[:replay.n])
+            value_batch = max(1, round(cfg.value_reuse * new_value / steps))
         net.train()
         t0 = time.time()
         pl_sum = vl_sum = 0.0
         for _ in range(steps):
-            batch = replay.sample(cfg.batch_size, rng)
-            loss, pl, vl = losses(net, batch, device, cfg.value_weight)
+            if cfg.split_batches():
+                rows = np.concatenate([policy_rows[rng.integers(0, len(policy_rows), cfg.batch_size)],
+                                       value_rows[rng.integers(0, len(value_rows), value_batch)]])
+                loss, pl, vl = losses(net, replay.batch(rows), device, cfg.value_weight, split=cfg.batch_size)
+            else:
+                batch = replay.sample(cfg.batch_size, rng)
+                loss, pl, vl = losses(net, batch, device, cfg.value_weight)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
@@ -374,8 +482,11 @@ def run(cfg: Config, resume: bool = True):
             "aborted": aborted,
             "decisions_per_game": round(mean_dec, 1),
             "samples": new[0],
+            "policy_samples": new_policy,
+            "value_samples": new_value,
             "buffer": replay.n,
             "selfplay_s": round(sp_stats["seconds"], 1),
+            "evals": sp_stats["evals"],
             "evals_per_s": round(sp_stats["evals"] / max(sp_stats["seconds"], 1e-6)),
             "evals_per_move": round(sp_stats["evals"] / max(new[0], 1), 1),
             **({"search": search} if cfg.maple_worlds or cfg.pimc_worlds else {}),
@@ -383,8 +494,7 @@ def run(cfg: Config, resume: bool = True):
             "train_s": round(train_s, 1),
             "policy_loss": round(pl_sum / steps, 4),
             "value_loss": round(vl_sum / steps, 4),
-            "heldout_policy_loss": round(held_pl, 4),
-            "heldout_value_loss": round(held_vl, 4),
+            **held_stats,
         }
 
         # --- evaluate

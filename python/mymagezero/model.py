@@ -220,13 +220,18 @@ def plan_eval(net: Net, device, tok_width: int, act_width: int, max_batch: int =
     return EvalPlan(max_batch, max(budget, 2 * max_batch * per_row), per_row, budget)
 
 
-def losses(net: Net, batch, device, value_weight: float = 1.0):
+def losses(net: Net, batch, device, value_weight: float = 1.0, split: int | None = None):
+    """With `split`, the first `split` rows train only the policy and the rest only the value."""
     tok, tok_len, act, act_len, policy, z = batch
     t = to_tensors((tok, tok_len, act, act_len), device)
     pi = torch.from_numpy(policy).to(device)
     zt = torch.from_numpy(z).to(device)
     logits, value = net(*t)
     logp = F.log_softmax(logits.float(), dim=-1).masked_fill(pi == 0, 0.0)
+    if split is not None:
+        policy_loss = -(pi[:split] * logp[:split]).sum(-1).mean()
+        value_loss = F.mse_loss(value.float()[split:], zt[split:])
+        return policy_loss + value_weight * value_loss, policy_loss.detach(), value_loss.detach()
     policy_loss = -(pi * logp).sum(-1).mean()
     value_loss = F.mse_loss(value.float(), zt)
     return policy_loss + value_weight * value_loss, policy_loss.detach(), value_loss.detach()
