@@ -8,7 +8,7 @@ use mtg_kernel::engine::{
     self, available_mana_ability_choices, effective_power, effective_toughness, mana_ability_cost_targets, Action,
     CastMode, Decision, OptionalCostChoice,
 };
-use mtg_kernel::event::{self, ProposedEvent};
+use mtg_kernel::event::{self, LibraryPlacement, ProposedEvent};
 use mtg_kernel::ids::{ObjectId, PlayerId};
 use mtg_kernel::mana::ManaColor;
 use mtg_kernel::runtime_decks::{runtime_deck_by_id, RUNTIME_DECKS};
@@ -20,6 +20,7 @@ const MAX_AUTO_STEPS: u32 = 100_000;
 /// Surfaced decisions per game before calling it a draw.
 pub const MAX_DECISIONS: u32 = 5_000;
 const AUTOPAY_NODE_CAP: usize = 256;
+const STARTING_HAND: u8 = 7;
 
 /// Stable numbering: used in keys and as a model feature.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -48,6 +49,10 @@ pub enum Kind {
     NoBlock = 20,
     OrderTrigger = 21,
     Foretell = 22,
+    /// Keep (arg 0) or take a mulligan (arg 1).
+    Mulligan = 23,
+    /// Put a card from the mulligan hand on the bottom of the library.
+    Bottom = 24,
 }
 
 /// A choice's tree key and model input. `role` is in the key only.
@@ -89,6 +94,8 @@ enum Exec {
     Block(ObjectId, Option<ObjectId>),
     Discard(ObjectId),
     Order(usize),
+    Mulligan(bool),
+    Bottom(ObjectId),
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +115,19 @@ enum Pending {
     Block { blockers: Vec<(ObjectId, Vec<ObjectId>)>, next: usize, pairs: Vec<(ObjectId, ObjectId)>, required: Vec<(ObjectId, usize)> },
     Discard { count: u32, pool: Vec<ObjectId>, picked: Vec<ObjectId> },
     Order { sources: Vec<ObjectId>, remaining: Vec<usize>, placed: Vec<usize> },
+    Mulligan(Mulligans),
+}
+
+/// The London mulligan (103.5), before the first turn.
+#[derive(Debug, Clone, Copy)]
+struct Mulligans {
+    /// 103.5c: the first mulligan is free (multiplayer and Brawl).
+    free: bool,
+    kept: [bool; 2],
+    /// Declared a mulligan this round.
+    going: [bool; 2],
+    /// Cards still to put on the bottom.
+    bottom: [u8; 2],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +149,8 @@ pub struct Game {
     pub decisions: u32,
     /// Why the game ended as [`Outcome::Aborted`], for diagnostics.
     pub abort_reason: Option<String>,
+    /// Mulligans each player took.
+    mulligans: [u8; 2],
 }
 
 /// Runtime decks, then every Commander deck whose cards the engine can all play.
@@ -281,11 +303,18 @@ impl Game {
             rng.next_u64(),
             first,
         );
-        Ok(Game::start(state))
+        Ok(Game::start(state, None))
     }
 
-    /// A two-player Commander game: 40 life, commanders in the command zone.
+    /// A two-player Commander game: 40 life, commanders in the command zone,
+    /// London mulligans.
     pub fn new_commander(d0: &CommanderDeck, d1: &CommanderDeck, seed: u64) -> Game {
+        Game::new_commander_with(d0, d1, seed, false)
+    }
+
+    /// [`Self::new_commander`], with each player's first mulligan free if
+    /// `free_mulligan` (103.5c).
+    pub fn new_commander_with(d0: &CommanderDeck, d1: &CommanderDeck, seed: u64, free_mulligan: bool) -> Game {
         let mut rng = SplitMix64::seed(seed);
         let lib0 = shuffled(&d0.cards, &mut rng);
         let lib1 = shuffled(&d1.cards, &mut rng);
@@ -298,22 +327,24 @@ impl Game {
             rng.next_u64(),
             first,
         );
-        Game::start(state)
+        let mulligans = Mulligans { free: free_mulligan, kept: [false; 2], going: [false; 2], bottom: [0; 2] };
+        Game::start(state, Some(mulligans))
     }
 
-    fn start(mut state: GameState) -> Game {
-        for _ in 0..7 {
+    fn start(mut state: GameState, mulligans: Option<Mulligans>) -> Game {
+        for _ in 0..STARTING_HAND {
             event::propose_and_commit(&mut state, ProposedEvent::draw(PlayerId::P0));
             event::propose_and_commit(&mut state, ProposedEvent::draw(PlayerId::P1));
         }
         let mut g = Game {
             state,
-            pending: Pending::None,
+            pending: mulligans.map_or(Pending::None, Pending::Mulligan),
             choices: Vec::new(),
             actor: PlayerId::P0,
             outcome: None,
             decisions: 0,
             abort_reason: None,
+            mulligans: [0; 2],
         };
         g.settle();
         g
@@ -334,6 +365,20 @@ impl Game {
 
     pub fn choices(&self) -> &[Choice] {
         &self.choices
+    }
+
+    /// How many mulligans `p` took.
+    pub fn mulligans_taken(&self, p: PlayerId) -> u8 {
+        self.mulligans[p.index()]
+    }
+
+    /// While mulligans are being decided: whether `p` kept, and whether `p`
+    /// declared a mulligan this round.
+    pub fn mulligan_declarations(&self, p: PlayerId) -> Option<(bool, bool)> {
+        match &self.pending {
+            Pending::Mulligan(m) => Some((m.kept[p.index()], m.going[p.index()])),
+            _ => None,
+        }
     }
 
     /// Apply choice `i`, then any forced decisions after it.
@@ -561,7 +606,92 @@ impl Game {
                     placed.push(idx);
                 }
             }
+            Exec::Mulligan(going) => {
+                if let Pending::Mulligan(m) = &mut self.pending {
+                    let p = self.actor.index();
+                    if going {
+                        m.going[p] = true;
+                    } else {
+                        m.kept[p] = true;
+                    }
+                }
+            }
+            Exec::Bottom(id) => {
+                if let Pending::Mulligan(m) = &mut self.pending {
+                    m.bottom[self.actor.index()] -= 1;
+                }
+                event::propose_and_commit(&mut self.state, ProposedEvent::private_bottom_library_insert(id));
+            }
         }
+    }
+
+    /// Mulligans counted toward the cards to bottom and the limit (103.5c).
+    fn counted_mulligans(&self, m: &Mulligans, p: PlayerId) -> u8 {
+        let taken = self.mulligans[p.index()];
+        taken - (m.free && taken > 0) as u8
+    }
+
+    /// Runs the mulligans to their next choice, built into `out`; true once
+    /// every player has kept.
+    fn mulligan_step(&mut self, out: &mut Vec<Choice>) -> bool {
+        let Pending::Mulligan(mut m) = self.pending else { unreachable!("called while mulligans are pending") };
+        let first = self.state.starting_player;
+        let order = [first, first.opponent()];
+        loop {
+            // A mulligan's cards go on the bottom before the next declarations.
+            if let Some(p) = order.into_iter().find(|p| m.bottom[p.index()] > 0) {
+                self.actor = p;
+                for &id in &self.state.players[p.index()].hand {
+                    push_unique(out, mk(ActFeat::new(Kind::Bottom, def_of(&self.state, id), 0, 0), Exec::Bottom(id)));
+                }
+                break;
+            }
+            // The starting player declares first, then the other.
+            if let Some(p) = order.into_iter().find(|p| !m.kept[p.index()] && !m.going[p.index()]) {
+                // No more mulligans once the hand would be zero cards.
+                if self.counted_mulligans(&m, p) >= STARTING_HAND {
+                    m.kept[p.index()] = true;
+                    continue;
+                }
+                self.actor = p;
+                for going in [false, true] {
+                    out.push(mk(ActFeat::new(Kind::Mulligan, u16::MAX, 0, going as u16), Exec::Mulligan(going)));
+                }
+                break;
+            }
+            if m.going == [false; 2] {
+                self.pending = Pending::None;
+                return true;
+            }
+            // Everyone who declared a mulligan takes it at once.
+            for p in order {
+                if !std::mem::take(&mut m.going[p.index()]) {
+                    continue;
+                }
+                self.mulligans[p.index()] += 1;
+                if let Err(e) = self.take_mulligan(p) {
+                    self.abort(format!("mulligan: {e}"));
+                    return true;
+                }
+                let hand = self.state.players[p.index()].hand.len() as u8;
+                m.bottom[p.index()] = self.counted_mulligans(&m, p).min(hand);
+            }
+        }
+        self.pending = Pending::Mulligan(m);
+        false
+    }
+
+    /// Shuffles `p`'s hand into their library and draws a new one.
+    fn take_mulligan(&mut self, p: PlayerId) -> Result<(), String> {
+        let st = &mut self.state;
+        for id in st.players[p.index()].hand.clone() {
+            event::propose_and_commit(st, ProposedEvent::hidden_library_insert(id, LibraryPlacement::Top));
+        }
+        st.shuffle_library_forgetting(p)?;
+        for _ in 0..STARTING_HAND {
+            event::propose_and_commit(st, ProposedEvent::draw(p));
+        }
+        Ok(())
     }
 
     /// Advance until a decision with two or more choices, or game end.
@@ -627,9 +757,14 @@ impl Game {
         let viewer = self.actor;
         let mut out = std::mem::take(&mut self.choices);
         out.clear();
+        if matches!(self.pending, Pending::Mulligan(_)) {
+            let done = self.mulligan_step(&mut out);
+            self.choices = out;
+            return done;
+        }
         let st = &self.state;
         let submit: Option<Action> = match &mut self.pending {
-            Pending::None => unreachable!("checked above"),
+            Pending::None | Pending::Mulligan(_) => unreachable!("checked above"),
             Pending::Attack { eligible, next, chosen } => {
                 if *next >= eligible.len() {
                     Some(Action::DeclareAttackers(std::mem::take(chosen)))
@@ -1801,5 +1936,170 @@ mod tests {
             }
         }
         panic!("never reached a main phase with the commander castable");
+    }
+
+    fn ognis_game(seed: u64, free_mulligan: bool) -> Game {
+        let deck = CommanderDeck::named("Ognis").expect("the Ognis deck is complete");
+        Game::new_commander_with(&deck, &deck, seed, free_mulligan)
+    }
+
+    /// The player to act declares a mulligan (`going`) or keeps.
+    fn declare(g: &mut Game, going: bool) {
+        let i = g.choices().iter().position(|c| c.feat.kind == Kind::Mulligan && c.feat.arg == going as u16);
+        g.apply(i.expect("a mulligan declaration"));
+    }
+
+    /// The player to act puts its first offered card on the bottom.
+    fn bottom_first(g: &mut Game) -> ObjectId {
+        let c = &g.choices()[0];
+        assert_eq!(c.feat.kind, Kind::Bottom);
+        let Exec::Bottom(id) = c.exec else { unreachable!() };
+        g.apply(0);
+        id
+    }
+
+    fn hand_len(g: &Game, p: PlayerId) -> usize {
+        g.state.players[p.index()].hand.len()
+    }
+
+    #[test]
+    fn keeping_seven_starts_the_game() {
+        let mut g = ognis_game(1, false);
+        let first = g.state.starting_player;
+        assert_eq!(g.to_act(), first, "the starting player declares first");
+        declare(&mut g, false);
+        assert_eq!(g.to_act(), first.opponent());
+        declare(&mut g, false);
+        assert!(g.mulligan_declarations(first).is_none());
+        assert!(!g.choices().iter().any(|c| matches!(c.feat.kind, Kind::Mulligan | Kind::Bottom)));
+        for p in [PlayerId::P0, PlayerId::P1] {
+            assert_eq!(g.mulligans_taken(p), 0);
+            assert_eq!(hand_len(&g, p) + g.state.players[p.index()].library.len(), 99);
+        }
+        assert_eq!(hand_len(&g, first), 7);
+    }
+
+    #[test]
+    fn one_mulligan_leaves_six_and_the_chosen_card_on_the_bottom_known_to_its_owner() {
+        let mut g = ognis_game(2, false);
+        let me = g.state.starting_player;
+        declare(&mut g, true);
+        declare(&mut g, false);
+        assert_eq!(g.to_act(), me);
+        assert_eq!(hand_len(&g, me), 7);
+        let card = bottom_first(&mut g);
+        // Only the player who mulliganed declares again.
+        assert_eq!(g.to_act(), me);
+        assert_eq!(g.mulligan_declarations(me.opponent()), Some((true, false)));
+        declare(&mut g, false);
+        assert_eq!(g.mulligans_taken(me), 1);
+        let lib = &g.state.players[me.index()].library;
+        assert_eq!(hand_len(&g, me), 6);
+        assert_eq!(lib.last(), Some(&card));
+        let at = |observer: PlayerId| {
+            g.state.known_library_cards(observer, me).iter().any(|e| e.object == card && e.position as usize == lib.len() - 1)
+        };
+        assert!(at(me) && !at(me.opponent()));
+    }
+
+    #[test]
+    fn both_players_mulligan_together_and_bottom_before_declaring_again() {
+        let mut g = ognis_game(3, false);
+        let first = g.state.starting_player;
+        declare(&mut g, true);
+        assert_eq!(g.mulligan_declarations(first), Some((false, true)));
+        declare(&mut g, true);
+        for p in [first, first.opponent()] {
+            assert_eq!(g.mulligans_taken(p), 1);
+            assert_eq!(g.to_act(), p);
+            bottom_first(&mut g);
+        }
+        for p in [first, first.opponent()] {
+            assert_eq!(g.to_act(), p);
+            assert_eq!(hand_len(&g, p), 6);
+            declare(&mut g, true);
+        }
+        // Two mulligans each: two cards on the bottom, the first one shuffled away.
+        for p in [first, first.opponent()] {
+            assert_eq!(g.to_act(), p);
+            bottom_first(&mut g);
+            bottom_first(&mut g);
+            assert_eq!(g.state.known_library_cards(p, p).len(), 2);
+        }
+        declare(&mut g, false);
+        declare(&mut g, false);
+        for p in [first, first.opponent()] {
+            assert_eq!(g.mulligans_taken(p), 2);
+            assert_eq!((hand_len(&g, p), g.state.players[p.index()].library.len()), (5, 94));
+        }
+    }
+
+    #[test]
+    fn no_mulligan_once_the_hand_would_be_zero_cards() {
+        for free in [false, true] {
+            let mut g = ognis_game(4, free);
+            let me = g.state.starting_player;
+            let mut taken = 0;
+            while g.mulligan_declarations(me).is_some_and(|(kept, _)| !kept) {
+                match g.choices()[0].feat.kind {
+                    Kind::Mulligan if g.to_act() == me => {
+                        declare(&mut g, true);
+                        taken += 1;
+                    }
+                    Kind::Mulligan => declare(&mut g, false),
+                    Kind::Bottom => {
+                        bottom_first(&mut g);
+                    }
+                    k => panic!("{k:?} during mulligans"),
+                }
+            }
+            // 103.5: seven mulligans to an empty hand; 103.5c: one more if the first is free.
+            assert_eq!(taken, 7 + free as u8);
+            assert_eq!(g.mulligans_taken(me), taken);
+            assert_eq!(hand_len(&g, me), 0);
+            assert!(g.mulligan_declarations(me).is_none(), "an empty hand ends the mulligans");
+        }
+    }
+
+    #[test]
+    fn the_first_mulligan_is_free_only_when_asked() {
+        for free in [false, true] {
+            let mut g = ognis_game(5, free);
+            let me = g.state.starting_player;
+            declare(&mut g, true);
+            declare(&mut g, false);
+            if !free {
+                bottom_first(&mut g);
+            }
+            assert_eq!(g.to_act(), me);
+            assert_eq!(hand_len(&g, me), 7 - !free as usize);
+            declare(&mut g, true);
+            bottom_first(&mut g);
+            if !free {
+                bottom_first(&mut g);
+            }
+            declare(&mut g, false);
+            assert_eq!(hand_len(&g, me), 6 - !free as usize);
+        }
+    }
+
+    #[test]
+    fn determinizing_keeps_only_the_owners_own_bottom_cards() {
+        let mut g = ognis_game(6, false);
+        let me = g.state.starting_player;
+        declare(&mut g, true);
+        declare(&mut g, false);
+        let card = bottom_first(&mut g);
+        let def = def_of(&g.state, card);
+        let mut theirs = std::collections::HashSet::new();
+        for seed in 0..40 {
+            let mut w = g.clone();
+            w.determinize(me, seed);
+            assert_eq!(def_of(&w.state, card), def, "its owner knows the card");
+            let mut w = g.clone();
+            w.determinize(me.opponent(), seed);
+            theirs.insert(def_of(&w.state, card));
+        }
+        assert!(theirs.len() > 3, "the opponent knows only how many: {theirs:?}");
     }
 }

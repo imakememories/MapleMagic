@@ -235,6 +235,21 @@ impl ProposedEvent {
             touched_by: Vec::new(),
         })
     }
+    /// Moves one card its owner chose to the bottom of their library; only
+    /// the owner learns which card is there.
+    pub fn private_bottom_library_insert(object: ObjectId) -> ProposedEvent {
+        ProposedEvent::ZoneChange(ZoneChangeProposed {
+            object,
+            to_zone: Zone::Library,
+            library_placement: LibraryPlacement::Bottom,
+            preserve_known_identity: false,
+            library_insert_visibility: LibraryInsertVisibility::Owner,
+            force_battlefield_tapped: false,
+            battlefield_face_index: None,
+            battlefield_controller: None,
+            touched_by: Vec::new(),
+        })
+    }
     /// Moves one object to a position in its owner's library without anyone
     /// learning where it is (cards put there "in a random order").
     pub fn hidden_library_insert(object: ObjectId, placement: LibraryPlacement) -> ProposedEvent {

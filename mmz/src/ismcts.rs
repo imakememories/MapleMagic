@@ -1420,6 +1420,71 @@ mod tests {
         }
     }
 
+    /// Ognis games where both players took one mulligan, paired with a copy
+    /// in which the opponent of the player to act bottomed a different card:
+    /// at the next declaration, and once both kept.
+    fn bottom_twins() -> Vec<(Game, Game)> {
+        use crate::game::{set_card, Kind};
+        let deck = crate::commander::CommanderDeck::named("Ognis").expect("the Ognis deck is complete");
+        let declare = |g: &mut Game, going: bool| {
+            let i = g.choices().iter().position(|c| c.feat.kind == Kind::Mulligan && c.feat.arg == going as u16).unwrap();
+            g.apply(i);
+        };
+        let mut out = Vec::new();
+        for seed in 0..12u64 {
+            let mut g = Game::new_commander(&deck, &deck, seed);
+            let me = g.state.starting_player;
+            let opp = me.opponent();
+            declare(&mut g, true);
+            declare(&mut g, true);
+            while g.to_act() != me || g.choices()[0].feat.kind != Kind::Mulligan {
+                g.apply((seed % g.choices().len() as u64) as usize);
+            }
+            let st = &g.state;
+            let bottomed = *st.players[opp.index()].library.last().unwrap();
+            let def = |id| st.objects.get(id).card_def;
+            let Some(&other) = st.players[opp.index()].hand.iter().find(|&&id| def(id) != def(bottomed)) else { continue };
+            let mut twin = g.clone();
+            let (db, dother) = (def(bottomed), def(other));
+            set_card(&mut twin.state, bottomed, dother);
+            set_card(&mut twin.state, other, db);
+            out.push((g.clone(), twin.clone()));
+            for k in [&mut g, &mut twin] {
+                declare(k, false);
+                declare(k, false);
+            }
+            out.push((g, twin));
+        }
+        out
+    }
+
+    #[test]
+    fn search_ignores_which_cards_the_opponent_bottomed() {
+        let twins = bottom_twins();
+        assert!(twins.len() >= 20, "{} twins", twins.len());
+        let cards = |g: &Game| -> Vec<u16> {
+            let st = &g.state;
+            st.players.iter().flat_map(|p| p.hand.iter().chain(&p.library)).map(|&id| st.objects.get(id).card_def).collect()
+        };
+        for (g, twin) in &twins {
+            let me = g.to_act();
+            for seed in 0..8 {
+                let (mut a, mut b) = (g.clone(), twin.clone());
+                a.determinize(me, seed);
+                b.determinize(me, seed);
+                assert_eq!(cards(&a), cards(&b), "the same worlds are dealt");
+            }
+            for cfg in [Config::default(), maple(5, MapleSelect::RefWorld), pimc(5)] {
+                let mut a = Search::new(g, cfg.clone(), 9);
+                let mut b = Search::new(twin, cfg.clone(), 9);
+                a.run(48, 8, &mut HeuristicEval);
+                b.run(48, 8, &mut HeuristicEval);
+                assert_eq!(a.root_visits(), b.root_visits(), "{cfg:?}");
+                assert_eq!(a.root_value(), b.root_value(), "{cfg:?}");
+            }
+        }
+    }
+
     fn sorted_hand(g: &Game, observer: PlayerId) -> Vec<u16> {
         let mut h = g.hidden_pool(observer).0;
         h.sort_unstable();

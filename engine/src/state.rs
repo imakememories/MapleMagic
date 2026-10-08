@@ -2889,6 +2889,14 @@ impl GameState {
         self.commit_library_shuffle(owner, token)
     }
 
+    /// Shuffles `owner`'s library after a mulligan put their hand into it
+    /// (103.5). All their unseen cards are now there, so all knowledge of
+    /// it ends, even of which cards it holds.
+    pub fn shuffle_library_forgetting(&mut self, owner: PlayerId) -> Result<(), String> {
+        self.clear_library_knowledge(owner);
+        self.shuffle_library(owner).map_err(|error| error.to_string())
+    }
+
     /// Read-only shared view of the legacy RNG; `None` on an environment-v2
     /// state. There is deliberately no mutable RNG accessor: randomness
     /// advances only through the library-shuffle transaction. Same-module

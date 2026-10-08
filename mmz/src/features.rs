@@ -117,7 +117,9 @@ pub fn observe_with(g: &Game, viewer: PlayerId, perfect: bool) -> Vec<[u16; TOKE
         out.push(global_token(i as u16, v));
     }
 
-    // Commanders: whether in the command zone, casts so far (the tax), damage dealt.
+    // Commanders: whether in the command zone, casts so far (the tax), damage
+    // dealt; the player's mulligans, and while they are decided, whether
+    // the player kept or declared a mulligan this round.
     if let Some(c) = &st.commander {
         for p in [me, opp] {
             let o = st.objects.get(c.commanders[p.index()]);
@@ -125,7 +127,11 @@ pub fn observe_with(g: &Game, viewer: PlayerId, perfect: bool) -> Vec<[u16; TOKE
             t[0] = o.card_def + 1;
             t[1] = place_code(Zone::Command, p == me);
             t[2] = (o.zone == Zone::Command) as u16;
+            if let Some((kept, going)) = g.mulligan_declarations(p) {
+                t[2] |= 1 << 1 | (kept as u16) << 2 | (going as u16) << 3;
+            }
             t[5] = clamp(c.casts[p.index()] as i32, 0, 31);
+            t[6] = clamp(g.mulligans_taken(p) as i32, 0, 31);
             t[7] = clamp(c.damage[p.opponent().index()][p.index()], 0, 31);
             out.push(t);
         }
