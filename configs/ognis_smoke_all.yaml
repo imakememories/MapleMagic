@@ -1,0 +1,23 @@
+# Smoke copy of ognis.yaml.
+name: ognis_smoke_all
+pairings: [[Ognis, Ognis]]
+generations: 2
+games_per_gen: 32
+parallel: 32
+sims: 16
+leaves_per_step: 8
+temp_decisions: 40
+buffer_size: 200000
+batch_size: 512
+reuse: 4.0
+d_model: 160
+layers: 3
+eval_every: 1
+eval_games: 16
+eval_sims: 16
+heuristic_sims: 16
+seed: 0
+value_positions_per_game: 16
+value_target: td
+full_search_prob: 0.25
+value_mix: 0.5
