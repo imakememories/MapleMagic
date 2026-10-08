@@ -87,7 +87,8 @@ pub enum TriggerCondition {
     /// deck has madness.
     YouDiscardCard,
     /// "Whenever one or more cards are put into exile from your library
-    /// and/or your graveyard": once per batch of simultaneous moves.
+    /// and/or your graveyard": once per batch of simultaneous moves (cascade
+    /// exiles one card at a time: once per card).
     CardsExiledFromYourLibraryOrGraveyard,
     /// "Whenever a permanent you control enters tapped".
     ControlledPermanentEntersTapped,
@@ -2048,7 +2049,17 @@ fn triggers_from_events(
             if !uses_leave_lki && obj.zone != def.home_zone {
                 continue;
             }
+            // Events between boundaries are one event for "one or more" triggers.
+            let (mut group, mut group_start, mut fired_group) = (0u32, 0usize, None);
             for (i, ev) in events.iter().enumerate() {
+                if *ev == CommittedEvent::EventBoundary {
+                    group += 1;
+                    group_start = i + 1;
+                    continue;
+                }
+                if fired_group == Some(group) {
+                    continue;
+                }
                 let event_controller = match ev {
                     CommittedEvent::ZoneChange {
                         object,
@@ -2105,8 +2116,9 @@ fn triggers_from_events(
                             toughness: 1,
                         }
                     } else if def.condition == TriggerCondition::IsDealtDamage {
-                        let amount = events
+                        let amount = events[group_start..]
                             .iter()
+                            .take_while(|e| **e != CommittedEvent::EventBoundary)
                             .map(|e| match e {
                                 CommittedEvent::Damage { target: Target::Object(damaged), amount, .. } if *damaged == id => (*amount).max(0),
                                 _ => 0,
@@ -2202,7 +2214,7 @@ fn triggers_from_events(
                         paid_cost_refs,
                     });
                     if def.condition.once_per_event_batch() {
-                        break;
+                        fired_group = Some(group);
                     }
                 }
             }

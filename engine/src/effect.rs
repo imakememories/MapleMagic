@@ -10610,8 +10610,9 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let mut exiled = Vec::new();
             let mut offer = None;
             while let Some(&top) = state.players[player.index()].library.first() {
-                // Exiled face up: public.
+                // Exiled face up (public), one card at a time.
                 event::propose_and_commit(state, event::ProposedEvent::zone_change(top, Zone::Exile));
+                event::log_event_boundary(state);
                 let o = state.objects.get(top);
                 if o.zone != Zone::Exile {
                     break;

@@ -496,6 +496,9 @@ pub enum CommittedEvent {
         before: u16,
         after: u16,
     },
+    /// Separates events an effect performs one at a time (cascade exiles
+    /// cards one by one): "one or more" triggers see each separately.
+    EventBoundary,
 }
 
 /// Runs the replace/prevent pass to a fixed point: repeatedly finds an
@@ -1119,6 +1122,14 @@ pub fn log_expended(state: &mut GameState, player: PlayerId, before: u16, after:
     let committed = CommittedEvent::Expended { player, before, after };
     state.engine.event_log.push(committed.clone());
     state.engine.event_history.push(committed);
+}
+
+/// Ends the current event: what follows is a separate event for "one or
+/// more" triggers. Trigger matching only; not in the history.
+pub fn log_event_boundary(state: &mut GameState) {
+    if state.engine.event_log.last().is_some_and(|e| *e != CommittedEvent::EventBoundary) {
+        state.engine.event_log.push(CommittedEvent::EventBoundary);
+    }
 }
 
 pub fn log_upkeep_began(state: &mut GameState, player: PlayerId) {

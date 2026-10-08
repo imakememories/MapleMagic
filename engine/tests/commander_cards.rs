@@ -1693,8 +1693,9 @@ fn triggers_from_a_cascade_wait_while_its_hit_is_cast() {
     assert_eq!(tempest(&mut state, &[true, true]), vec![snipe, aid]);
     assert_eq!(zone(&state, snipe), Zone::Battlefield);
     assert_eq!(zone(&state, aid), Zone::Graveyard, "cast, with a target");
-    // Each cascade exiled cards from the library: two Laelia triggers.
-    assert_eq!(state.objects.get(laelia).counters.plus1_plus1, 2);
+    // Cascade exiles one card at a time (2024-06-07 ruling): the Guttersnipe,
+    // then a Mountain and Call for Aid, so three Laelia triggers.
+    assert_eq!(state.objects.get(laelia).counters.plus1_plus1, 3);
 }
 
 #[test]
