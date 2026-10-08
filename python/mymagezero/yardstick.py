@@ -33,6 +33,7 @@ def collect(checkpoint: str, games: int, seed: int, device) -> dict:
         dirichlet_alpha=cfg.dirichlet_alpha, record=True, max_games=games, seed=seed,
         maple_worlds=(s["maple_worlds"],) * 2, maple_select=s["maple_select"], maple_resample=s["maple_resample"],
         perfect_obs=(s["perfect_obs"],) * 2, pimc_worlds=(s.get("pimc_worlds", 0),) * 2,
+        value_mix=s.get("value_mix", 1.0),
     )
     parts = []
     drive(sp, {0: net}, device, on_samples=parts.append, plan=plan_eval(net, device, MAX_TOKENS, 96, cfg.max_eval_batch))

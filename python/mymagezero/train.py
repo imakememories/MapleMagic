@@ -57,6 +57,8 @@ class Config:
     # (0 = max(8, sims // 6)) and train only the value.
     full_search_prob: float = 1.0
     cheap_sims: int = 0
+    # Policy targets: "visits" (visit shares) or "completed_q" (Gumbel MuZero's completed-Q softmax).
+    policy_target: str = "visits"
     # Evaluation
     eval_every: int = 1
     eval_games: int = 128
@@ -153,6 +155,7 @@ class Replay:
         tok, tok_len, act, act_len, pi, z, root_value = samples[:7]
         game, turn, heuristic, player, full = samples[7][5:10]
         k = len(tok_len)
+        assert (act_len >= 2).all(), "a forced decision was recorded"
         starts = np.flatnonzero(np.r_[True, game[1:] != game[:-1]])
         assert len(np.unique(game[starts])) == len(starts), "a game's samples are not together"
         target = value_targets(game, player, z, root_value, self.kind, self.lam)
@@ -291,7 +294,7 @@ def heldout(net: Net, replay: Replay, idx: np.ndarray, device, cfg: Config) -> d
     from .yardstick import auc
 
     net.eval()
-    ce, values = [], []
+    ce, values, pass_net, pass_target = [], [], [], []
     for at in range(0, len(idx), cfg.batch_size):
         rows = idx[at:at + cfg.batch_size]
         tok, tl, act, al, pi, _ = replay.batch(rows)
@@ -300,7 +303,13 @@ def heldout(net: Net, replay: Replay, idx: np.ndarray, device, cfg: Config) -> d
         logp = torch.log_softmax(logits.float(), dim=-1).masked_fill(pit == 0, 0.0)
         ce.append((-(pit * logp).sum(-1)).cpu().numpy())
         values.append(v.float().cpu().numpy())
+        # Kind 0 is Pass (game.rs Kind).
+        is_pass = (act[:, :, 0] == 0) & (np.arange(act.shape[1])[None, :] < al[:, None])
+        prob = torch.softmax(logits.float(), dim=-1).cpu().numpy()
+        pass_net.append((prob * is_pass).sum(1))
+        pass_target.append((pi * is_pass).sum(1))
     ce, v = np.concatenate(ce), np.concatenate(values)
+    pass_net, pass_target = np.concatenate(pass_net), np.concatenate(pass_target)
     z, h, full = replay.z[idx], replay.heuristic[idx], replay.policy_row[idx]
     decided = z != 0
     return {
@@ -310,6 +319,8 @@ def heldout(net: Net, replay: Replay, idx: np.ndarray, device, cfg: Config) -> d
         "heldout_heuristic_mse": round(float(((h - z) ** 2).mean()), 4),
         "heldout_heuristic_auc": auc(h[decided], z[decided] > 0),
         "heldout_confident": round(float((np.abs(v) > 0.9).mean()), 3),
+        "heldout_pass_target": round(float(pass_target[full].mean()), 3) if full.any() else None,
+        "heldout_pass_net": round(float(pass_net[full].mean()), 3) if full.any() else None,
     }
 
 
@@ -432,6 +443,7 @@ def run(cfg: Config, resume: bool = True):
             world_sampler=cfg.world_sampler, world_candidates=cfg.world_candidates, world_pool=cfg.world_pool,
             world_temp=cfg.world_temp, value_mix=cfg.value_mix, full_search_prob=cfg.full_search_prob,
             cheap_sims=cfg.cheap_sims or max(8, cfg.sims // 6),
+            completed_q={"visits": False, "completed_q": True}[cfg.policy_target],
         )
         sp_stats = drive(sp, {0: net}, device, on_samples=add, plan=plan)
         search = summarize_stats(sp.search_stats()[0])

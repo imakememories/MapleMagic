@@ -238,6 +238,10 @@ pub struct Search {
     hands: Option<Vec<Vec<u16>>>,
     /// Scored sampling: distinct candidate hands and how often each was drawn.
     candidates: Vec<(Vec<u16>, f32)>,
+    /// Per root node: the evaluator's value of the root, for the observer.
+    root_evals: Vec<Option<f32>>,
+    /// Per root node: (key, prior) before root noise.
+    clean_priors: Vec<Vec<(u64, f32)>>,
     pub simulations: u32,
     pub stats: SearchStats,
 }
@@ -292,6 +296,8 @@ impl Search {
             next_world: 0,
             hands: None,
             candidates: Vec::new(),
+            root_evals: Vec::new(),
+            clean_priors: Vec::new(),
             simulations: 0,
             stats: SearchStats::default(),
             cfg,
@@ -668,6 +674,13 @@ impl Search {
                 num += w * v;
                 den += w;
             }
+            if sim.path.is_empty() {
+                let r = sim.leaf_node as usize;
+                if self.root_evals.len() <= r {
+                    self.root_evals.resize(r + 1, None);
+                }
+                self.root_evals[r] = Some(num / den.max(1e-6));
+            }
             self.backup_observer(&sim.path, num / den.max(1e-6));
             self.simulations += 1;
             self.stats.sims += 1;
@@ -728,6 +741,57 @@ impl Search {
         }
         if worlds > 0.0 {
             avg.iter_mut().for_each(|a| *a *= total / worlds);
+        }
+        avg
+    }
+
+    /// The completed-Q policy target per root choice (Danihelka et al. 2022,
+    /// section 4 and appendix D): softmax of the prior logits plus
+    /// sigma(q), unvisited choices completed with v_mix, Q min-max
+    /// normalized over the root's choices. PIMC averages the worlds' targets.
+    pub fn root_policy_target(&self) -> Vec<f32> {
+        const C_VISIT: f32 = 50.0;
+        const C_SCALE: f32 = 1.0;
+        let n = self.root.choices().len();
+        let mut avg = vec![0.0f32; n];
+        let mut worlds = 0.0f32;
+        for r in self.roots() {
+            let edges = self.root_edges(r);
+            let total: f32 = edges.iter().map(|e| e.0).sum();
+            if total <= 0.0 {
+                continue;
+            }
+            let clean = self.clean_priors.get(r);
+            let prior = |i: usize| {
+                let key = self.root.choices()[i].key;
+                clean.and_then(|c| c.iter().find(|p| p.0 == key)).map_or(edges[i].2, |p| p.1)
+            };
+            let (mut seen_prior, mut seen_pq) = (0.0f32, 0.0f32);
+            for (i, e) in edges.iter().enumerate().filter(|(_, e)| e.0 > 0.0) {
+                seen_prior += prior(i);
+                seen_pq += prior(i) * e.1 / e.0;
+            }
+            let v = self.root_evals.get(r).copied().flatten().unwrap_or(0.0);
+            let v_mix = if seen_prior > 0.0 { (v + total / seen_prior * seen_pq) / (1.0 + total) } else { v };
+            let q: Vec<f32> = edges.iter().map(|e| if e.0 > 0.0 { e.1 / e.0 } else { v_mix }).collect();
+            let (lo, hi) = q.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &x| (lo.min(x), hi.max(x)));
+            let max_n = edges.iter().map(|e| e.0).fold(0.0f32, f32::max);
+            let logits: Vec<f32> = (0..n)
+                .map(|i| {
+                    let qn = if hi > lo { (q[i] - lo) / (hi - lo) } else { 0.0 };
+                    prior(i).max(1e-12).ln() + (C_VISIT + max_n) * C_SCALE * qn
+                })
+                .collect();
+            let top = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let exp: Vec<f32> = logits.iter().map(|l| (l - top).exp()).collect();
+            let sum: f32 = exp.iter().sum();
+            for (a, e) in avg.iter_mut().zip(exp) {
+                *a += e / sum;
+            }
+            worlds += 1.0;
+        }
+        if worlds > 0.0 {
+            avg.iter_mut().for_each(|a| *a /= worlds);
         }
         avg
     }
@@ -838,6 +902,7 @@ impl Search {
         let alpha = self.cfg.dirichlet_alpha;
         let eps = self.cfg.root_noise;
         self.cfg.root_noise = 0.0;
+        self.clean_priors = self.roots().map(|r| self.nodes[r].edges.iter().map(|e| (e.key, e.prior)).collect()).collect();
         for r in self.roots() {
             let edges = &mut self.nodes[r].edges;
             let noise: Vec<f32> = (0..edges.len()).map(|_| gamma_sample(&mut self.rng, alpha)).collect();
@@ -1483,6 +1548,48 @@ mod tests {
                 assert_eq!(a.root_value(), b.root_value(), "{cfg:?}");
             }
         }
+    }
+
+    #[test]
+    fn completed_q_targets_follow_q_and_ignore_root_noise() {
+        let mut rng = SplitMix64::seed(21);
+        let mut checked = 0;
+        for seed in 0..30u64 {
+            let mut g = Game::new("Faeries", "Spy", seed).unwrap();
+            while !g.is_over() && checked < 40 {
+                if g.choices().len() >= 4 && rng.next_u64() % 5 == 0 {
+                    for noise in [0.0, 0.25] {
+                        for cfg in [Config { root_noise: noise, ..Config::default() }, Config { root_noise: noise, ..pimc(3) }] {
+                            let mut s = Search::new(&g, cfg.clone(), seed);
+                            s.run(24, 8, &mut HeuristicEval);
+                            let t = s.root_policy_target();
+                            assert_eq!(t.len(), g.choices().len());
+                            assert!((t.iter().sum::<f32>() - 1.0).abs() < 1e-4, "{t:?}");
+                            if cfg.pimc_worlds > 0 {
+                                continue;
+                            }
+                            // Uniform priors before noise: the target ranks choices by completed Q,
+                            // and every unvisited choice gets the same share.
+                            let e = s.root_edges(0);
+                            let q = |i: usize| if e[i].0 > 0.0 { Some(e[i].1 / e[i].0) } else { None };
+                            for i in 0..t.len() {
+                                for j in 0..t.len() {
+                                    match (q(i), q(j)) {
+                                        (Some(a), Some(b)) if a > b + 1e-6 => assert!(t[i] >= t[j], "{cfg:?}: {t:?} {e:?}"),
+                                        (None, None) => assert!((t[i] - t[j]).abs() < 1e-6, "{cfg:?}: {t:?}"),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    checked += 1;
+                }
+                let k = g.choices().len();
+                g.apply((rng.next_u64() % k as u64) as usize);
+            }
+        }
+        assert_eq!(checked, 40);
     }
 
     fn sorted_hand(g: &Game, observer: PlayerId) -> Vec<u16> {

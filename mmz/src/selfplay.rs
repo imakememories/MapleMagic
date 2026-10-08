@@ -48,6 +48,8 @@ pub struct SelfPlayConfig {
     /// full search (1 = always); the others use `cheap_sims` and train only the value.
     pub full_search_prob: f32,
     pub cheap_sims: u32,
+    /// Record completed-Q policy targets instead of visit shares.
+    pub completed_q: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -413,7 +415,7 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
                 slot.pending.push(Pending {
                     tokens: observe_with(game, me, cfg.perfect_obs[m]),
                     actions: choice_fields(game),
-                    policy: visits.iter().map(|v| v / total).collect(),
+                    policy: if cfg.completed_q { search.root_policy_target() } else { visits.iter().map(|v| v / total).collect() },
                     root_value: search.root_value(),
                     player: me,
                     hist: slot.history.tokens(me, game.state.turn),
@@ -499,6 +501,7 @@ mod tests {
             value_mix: [1.0; 2],
             full_search_prob: 1.0,
             cheap_sims: 0,
+            completed_q: false,
         };
         let mut sp = SelfPlay::new(4, cfg, 3);
         assert!(sp.gather().is_empty());
@@ -539,6 +542,7 @@ mod tests {
             value_mix: [1.0; 2],
             full_search_prob: 1.0,
             cheap_sims: 0,
+            completed_q: false,
         }
     }
 
@@ -589,6 +593,7 @@ mod tests {
             value_mix: [1.0; 2],
             full_search_prob: 1.0,
             cheap_sims: 0,
+            completed_q: false,
         }
     }
 
