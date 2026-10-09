@@ -35,7 +35,7 @@ class Config:
     dirichlet_alpha: float = 0.3
     # Network
     d_model: int = 192
-    layers: int = 4
+    layers: int = 1
     heads: int = 4
     # Training
     buffer_size: int = 400_000
