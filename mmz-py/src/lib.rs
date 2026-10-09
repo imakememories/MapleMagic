@@ -93,7 +93,7 @@ impl SelfPlay {
     /// budget, opp_sims model 1's. Search settings are pairs, one per model id;
     /// maple_select, maple_resample, world_sampler, value_scale, heuristic_values and value_mix may also be one value for both.
     #[new]
-    #[pyo3(signature = (parallel, pairings, sims=200, leaves_per_step=4, temp_decisions=30, c_puct=1.0, root_noise=0.25, dirichlet_alpha=0.3, fpu_reduction=0.2, seat_models=None, record=true, max_games=None, heuristic_sims=200, seed=0, opp_sims=None, maple_worlds=(0, 0), maple_select=None, maple_resample=None, maple_dedupe=true, perfect_obs=(false, false), pimc_worlds=(0, 0), world_sampler=None, world_candidates=50, world_pool=16, world_temp=0.0, retention=None, value_scale=None, heuristic_values=None, value_mix=None, full_search_prob=1.0, cheap_sims=0, completed_q=false))]
+    #[pyo3(signature = (parallel, pairings, sims=200, leaves_per_step=4, temp_decisions=30, c_puct=1.0, root_noise=0.25, dirichlet_alpha=0.3, fpu_reduction=0.2, seat_models=None, record=true, max_games=None, heuristic_sims=200, seed=0, opp_sims=None, maple_worlds=(0, 0), maple_select=None, maple_resample=None, maple_dedupe=true, perfect_obs=(false, false), pimc_worlds=(0, 0), world_sampler=None, world_candidates=50, world_pool=16, world_temp=0.0, retention=None, value_scale=None, heuristic_values=None, value_mix=None, full_search_prob=1.0, cheap_sims=0, completed_q=false, record_heuristic=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         parallel: usize,
@@ -128,6 +128,7 @@ impl SelfPlay {
         full_search_prob: f32,
         cheap_sims: u32,
         completed_q: bool,
+        record_heuristic: bool,
     ) -> PyResult<Self> {
         if (maple_worlds.0 > 0 && pimc_worlds.0 > 0) || (maple_worlds.1 > 0 && pimc_worlds.1 > 0) {
             return Err(PyValueError::new_err("a model can't use both maple_worlds and pimc_worlds"));
@@ -193,6 +194,7 @@ impl SelfPlay {
             full_search_prob,
             cheap_sims,
             completed_q,
+            record_heuristic,
             pairings,
             seat_models: match &seat_models {
                 Some((a, b)) => [model_id(a)?, model_id(b)?],

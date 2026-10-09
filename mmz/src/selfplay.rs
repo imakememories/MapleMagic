@@ -50,6 +50,9 @@ pub struct SelfPlayConfig {
     pub cheap_sims: u32,
     /// Record completed-Q policy targets instead of visit shares.
     pub completed_q: bool,
+    /// Record training samples for heuristic seats too, which then sample
+    /// their opening moves like network seats.
+    pub record_heuristic: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -189,6 +192,16 @@ impl SelfPlay {
 
     /// Advance all games and return what needs the network (empty once all games are done).
     pub fn gather(&mut self) -> Batch {
+        loop {
+            let batch = self.gather_once();
+            let more = self.slots.iter().any(|s| s.game.is_some()) || self.cfg.max_games.is_none_or(|m| self.started < m);
+            if !batch.is_empty() || !more {
+                return batch;
+            }
+        }
+    }
+
+    fn gather_once(&mut self) -> Batch {
         // Start new games single-threaded (game ids must be deterministic).
         for slot in self.slots.iter_mut() {
             if slot.game.is_none() && self.cfg.max_games.is_none_or(|m| self.started < m) {
@@ -290,6 +303,49 @@ impl SelfPlay {
     }
 }
 
+/// The move to play: in proportion to visits for the opening decisions, then the best.
+fn pick_move(search: &Search, game: &Game, cfg: &SelfPlayConfig, rng: &mut SplitMix64) -> usize {
+    if game.decisions >= cfg.temp_decisions {
+        return search.best();
+    }
+    let visits = search.root_visits();
+    let total: f32 = visits.iter().sum::<f32>().max(1e-6);
+    let mut r = unit(rng) * total;
+    for (i, &v) in visits.iter().enumerate() {
+        if r < v {
+            return i;
+        }
+        r -= v;
+    }
+    visits.len() - 1
+}
+
+/// A training sample of `search`'s root, for the player to act.
+fn pending_sample(search: &Search, game: &Game, history: &History, cfg: &SelfPlayConfig, perfect: bool, full: bool) -> Pending {
+    let me = game.to_act();
+    let (hand, rest) = game.hidden_pool(me);
+    let policy = if cfg.completed_q {
+        search.root_policy_target()
+    } else {
+        let visits = search.root_visits();
+        let total: f32 = visits.iter().sum::<f32>().max(1e-6);
+        visits.iter().map(|v| v / total).collect()
+    };
+    Pending {
+        tokens: observe_with(game, me, perfect),
+        actions: choice_fields(game),
+        policy,
+        root_value: search.root_value(),
+        player: me,
+        hist: history.tokens(me, game.state.turn),
+        hand_n: hand.len() as u8,
+        pool: [hand, rest].concat(),
+        turn: game.state.turn,
+        heuristic: heuristic_value(game, me),
+        full,
+    }
+}
+
 /// Uniform in [0, 1).
 fn unit(rng: &mut SplitMix64) -> f32 {
     (rng.next_u64() >> 11) as f32 / (1u64 << 53) as f32
@@ -372,7 +428,13 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
             };
             let mut s = Search::new(game, c, slot.rng.next_u64());
             s.run(cfg.heuristic_sims, 8, &mut HeuristicEval);
-            let c = s.best();
+            let c = if cfg.record && cfg.record_heuristic {
+                let pick = pick_move(&s, game, cfg, &mut slot.rng);
+                slot.pending.push(pending_sample(&s, game, &slot.history, cfg, false, true));
+                pick
+            } else {
+                s.best()
+            };
             slot.history.record(game, c);
             game.apply(c);
             continue;
@@ -394,40 +456,13 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
             break;
         }
         if search.simulations >= sims {
-            let visits = search.root_visits();
-            let total: f32 = visits.iter().sum::<f32>().max(1e-6);
-            let pick = if game.decisions < cfg.temp_decisions {
-                let mut r = unit(&mut slot.rng) * total;
-                let mut pick = visits.len() - 1;
-                for (i, &v) in visits.iter().enumerate() {
-                    if r < v {
-                        pick = i;
-                        break;
-                    }
-                    r -= v;
-                }
-                pick
-            } else {
-                search.best()
-            };
+            let search = slot.search.take().expect("made above");
+            let pick = pick_move(&search, game, cfg, &mut slot.rng);
             if cfg.record && model == 0 {
-                let (hand, rest) = game.hidden_pool(me);
-                slot.pending.push(Pending {
-                    tokens: observe_with(game, me, cfg.perfect_obs[m]),
-                    actions: choice_fields(game),
-                    policy: if cfg.completed_q { search.root_policy_target() } else { visits.iter().map(|v| v / total).collect() },
-                    root_value: search.root_value(),
-                    player: me,
-                    hist: slot.history.tokens(me, game.state.turn),
-                    hand_n: hand.len() as u8,
-                    pool: [hand, rest].concat(),
-                    turn: game.state.turn,
-                    heuristic: heuristic_value(game, me),
-                    full: slot.full,
-                });
+                let p = pending_sample(&search, game, &slot.history, cfg, cfg.perfect_obs[m], slot.full);
+                slot.pending.push(p);
             }
             stats.push((model, search.stats));
-            slot.search = None;
             slot.history.record(game, pick);
             game.apply(pick);
             continue;
@@ -502,6 +537,7 @@ mod tests {
             full_search_prob: 1.0,
             cheap_sims: 0,
             completed_q: false,
+            record_heuristic: false,
         };
         let mut sp = SelfPlay::new(4, cfg, 3);
         assert!(sp.gather().is_empty());
@@ -543,6 +579,7 @@ mod tests {
             full_search_prob: 1.0,
             cheap_sims: 0,
             completed_q: false,
+            record_heuristic: false,
         }
     }
 
@@ -594,6 +631,7 @@ mod tests {
             full_search_prob: 1.0,
             cheap_sims: 0,
             completed_q: false,
+            record_heuristic: false,
         }
     }
 
@@ -650,6 +688,23 @@ mod tests {
             sp.feed(evals, Vec::new());
         }
         sp.take_samples()
+    }
+
+    #[test]
+    fn heuristic_seats_record_samples_without_a_network() {
+        let cfg = SelfPlayConfig {
+            seat_models: [HEURISTIC, HEURISTIC],
+            record_heuristic: true,
+            heuristic_sims: 16,
+            max_games: Some(6),
+            ..test_config()
+        };
+        let mut sp = SelfPlay::new(2, cfg, 3);
+        assert!(sp.gather().is_empty(), "no leaf ever needs the network");
+        assert_eq!(sp.take_results().len(), 6, "every game is played in one gather");
+        let samples = sp.take_samples();
+        assert!(samples.len() > 100);
+        assert!(samples.iter().all(|s| s.full && (s.policy.iter().sum::<f32>() - 1.0).abs() < 1e-3));
     }
 
     #[test]

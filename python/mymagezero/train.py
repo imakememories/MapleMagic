@@ -383,6 +383,146 @@ def match(cfg: Config, net_a, opponent, games: int, device, seed: int,
             "games": games, **stats}
 
 
+def train_steps(net, opt, replay: Replay, cfg: Config, rng, device, plan: EvalPlan, new_policy: int, new_value: int,
+                reuse: float, value_reuse: float):
+    """Train on the buffer so each new policy row is used about `reuse` times and
+    each new value row about `value_reuse` times. Returns (steps, policy loss sum,
+    value loss sum, seconds)."""
+    steps = max(1, int(new_policy * reuse / cfg.batch_size))
+    if cfg.split_batches():
+        policy_rows = np.flatnonzero(replay.policy_row[:replay.n])
+        value_rows = np.flatnonzero(replay.value_row[:replay.n])
+        value_batch = max(1, round(value_reuse * new_value / steps))
+    net.train()
+    t0 = time.time()
+    pl_sum = vl_sum = 0.0
+    for _ in range(steps):
+        if cfg.split_batches():
+            rows = np.concatenate([policy_rows[rng.integers(0, len(policy_rows), cfg.batch_size)],
+                                   value_rows[rng.integers(0, len(value_rows), value_batch)]])
+            loss, pl, vl = losses(net, replay.batch(rows), device, cfg.value_weight, split=cfg.batch_size)
+        else:
+            batch = replay.sample(cfg.batch_size, rng)
+            loss, pl, vl = losses(net, batch, device, cfg.value_weight)
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+        opt.step()
+        if device.type == "cuda" and torch.cuda.memory_reserved(device) > plan.flush_at:
+            torch.cuda.empty_cache()
+        pl_sum += float(pl)
+        vl_sum += float(vl)
+    if pl_sum == 0.0 or not math.isfinite(pl_sum + vl_sum):
+        raise DeviceFailure(f"training losses are {pl_sum / steps}, {vl_sum / steps}; the GPU is not computing. "
+                            "Restart the process (training resumes from latest.pt).")
+    return steps, pl_sum, vl_sum, time.time() - t0
+
+
+def collect_heuristic(cfg: Config, games: int, sims: int, seed: int, cap: int) -> tuple[Replay, dict]:
+    """Self-play between heuristic agents searching `sims` simulations, recorded
+    like network self-play (CPU only)."""
+    from . import ACTION_FIELDS, TOKEN_FIELDS
+    replay = Replay(cap, TOKEN_FIELDS, ACTION_FIELDS, cfg.value_target, cfg.value_lambda,
+                    cfg.value_positions_per_game, seed)
+    sp = SelfPlay(
+        cfg.parallel, cfg.pairing_list(), temp_decisions=cfg.temp_decisions, seat_models=("heuristic", "heuristic"),
+        record=True, max_games=games, heuristic_sims=sims, seed=seed, record_heuristic=True,
+        completed_q={"visits": False, "completed_q": True}[cfg.policy_target],
+    )
+    t0 = time.time()
+    if sp.gather() is not None:
+        raise RuntimeError("heuristic self-play asked for the network")
+    while (s := sp.take_samples()) is not None:
+        replay.add(s)
+    results = sp.take_results()
+    return replay, {"games": len(results), "aborted": sum(r["aborted"] for r in results),
+                    "samples": replay.n, "seconds": round(time.time() - t0, 1)}
+
+
+def shrink_perturb(net: Net, cfg: Config, shrink: float, perturb: float):
+    """theta <- shrink * theta + perturb * theta_fresh, theta_fresh a new initialization."""
+    torch.manual_seed(cfg.seed + 7)
+    fresh = Net(cfg.d_model, cfg.layers, cfg.heads).to(next(net.parameters()).device)
+    with torch.no_grad():
+        for p, q in zip(net.parameters(), fresh.parameters()):
+            p.mul_(shrink).add_(perturb * q)
+
+
+def plasticity(cfg: Config, start: str, out_path: str, seed: int = 3):
+    """Train a start checkpoint and a fresh net on the same two generations of
+    self-play (played by the start), each scored on a generation before training
+    on it, as the loop does. A start that learns worse than a fresh net has lost
+    plasticity."""
+    from . import ACTION_FIELDS, TOKEN_FIELDS
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    player = load(start, device)
+    plan = plan_eval(player, device, MAX_TOKENS, MAX_ACTIONS, cfg.max_eval_batch)
+    gens = []
+    for g in range(2):
+        replay = Replay(cfg.buffer_size, TOKEN_FIELDS, ACTION_FIELDS, cfg.value_target, cfg.value_lambda,
+                        cfg.value_positions_per_game, seed + g)
+        sp = SelfPlay(
+            cfg.parallel, cfg.pairing_list(), sims=cfg.sims, leaves_per_step=cfg.leaves_per_step,
+            temp_decisions=cfg.temp_decisions, c_puct=cfg.c_puct, root_noise=cfg.root_noise,
+            dirichlet_alpha=cfg.dirichlet_alpha, record=True, max_games=cfg.games_per_gen, seed=seed * 1000 + g,
+            value_mix=cfg.value_mix, full_search_prob=cfg.full_search_prob,
+            cheap_sims=cfg.cheap_sims or max(8, cfg.sims // 6),
+            completed_q={"visits": False, "completed_q": True}[cfg.policy_target],
+        )
+        drive(sp, {0: player}, device, on_samples=replay.add, plan=plan)
+        gens.append(replay)
+    report = {}
+    for name in ("start", "fresh"):
+        torch.manual_seed(cfg.seed)
+        net = load(start, device) if name == "start" else Net(cfg.d_model, cfg.layers, cfg.heads).to(device)
+        opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+        rng = np.random.default_rng(cfg.seed)
+        rows = []
+        for replay in gens:
+            held = rng.permutation(replay.n)[:4096]
+            rows.append(heldout(net, replay, held, device, cfg))
+            n_policy, n_value = int(replay.policy_row[:replay.n].sum()), int(replay.value_row[:replay.n].sum())
+            train_steps(net, opt, replay, cfg, rng, device, plan, n_policy, n_value, cfg.reuse, cfg.value_reuse)
+        report[name] = rows
+    with open(out_path, "w") as f:
+        json.dump(report, f, indent=1)
+    for name, rows in report.items():
+        print(name, json.dumps({k: rows[1][k] for k in ("heldout_policy_loss", "heldout_value_loss", "heldout_value_auc")}))
+    return report
+
+
+def pretrain(cfg: Config, games: int, sims: int, passes: float, shrink: float, perturb: float, seed: int = 1):
+    """Generation 0 from heuristic search: train a fresh net on heuristic self-play,
+    shrink and perturb it (Ash & Adams 2020), and save it as the run's latest.pt
+    with gen -1 so `train` continues at gen 0."""
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    out = os.path.join(cfg.out_dir, cfg.name)
+    os.makedirs(out, exist_ok=True)
+    replay, info = collect_heuristic(cfg, games, sims, seed, cap=300 * games)
+    print(f"collected {json.dumps(info)}", flush=True)
+    torch.manual_seed(cfg.seed)
+    net = Net(cfg.d_model, cfg.layers, cfg.heads).to(device)
+    opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    plan = plan_eval(net, device, MAX_TOKENS, MAX_ACTIONS, cfg.max_eval_batch)
+    rng = np.random.default_rng(cfg.seed)
+    held = rng.permutation(replay.n)[:4096]
+    before = heldout(net, replay, held, device, cfg)
+    n_policy, n_value = int(replay.policy_row[:replay.n].sum()), int(replay.value_row[:replay.n].sum())
+    steps, pl, vl, secs = train_steps(net, opt, replay, cfg, rng, device, plan, n_policy, n_value, passes, passes)
+    trained = heldout(net, replay, held, device, cfg)
+    save(net, os.path.join(out, "gen0_trained.pt"), {"gen": -1, "search": cfg.search_settings()})
+    shrink_perturb(net, cfg, shrink, perturb)
+    rec = {"pretrain": info, "sims": sims, "passes": passes, "shrink": shrink, "perturb": perturb, "train_steps": steps,
+           "train_s": round(secs, 1), "policy_loss": round(pl / steps, 4), "value_loss": round(vl / steps, 4),
+           "untrained_on_its_data": before, "trained_on_its_data": trained,
+           "shrunk_on_its_data": heldout(net, replay, held, device, cfg)}
+    save(net, os.path.join(out, "latest.pt"), {"gen": -1, "search": cfg.search_settings()})
+    save(net, os.path.join(out, "gen0_start.pt"), {"gen": -1, "search": cfg.search_settings()})
+    with open(os.path.join(out, "pretrain.json"), "w") as f:
+        json.dump(rec, f, indent=1)
+    print(json.dumps(rec), flush=True)
+
+
 def run(cfg: Config, resume: bool = True):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out = os.path.join(cfg.out_dir, cfg.name)
@@ -459,34 +599,8 @@ def run(cfg: Config, resume: bool = True):
         # --- train
         if device.type == "cuda":
             torch.cuda.empty_cache()  # self-play's cache, before training allocates its own
-        steps = max(1, int(new_policy * cfg.reuse / cfg.batch_size))
-        if cfg.split_batches():
-            policy_rows = np.flatnonzero(replay.policy_row[:replay.n])
-            value_rows = np.flatnonzero(replay.value_row[:replay.n])
-            value_batch = max(1, round(cfg.value_reuse * new_value / steps))
-        net.train()
-        t0 = time.time()
-        pl_sum = vl_sum = 0.0
-        for _ in range(steps):
-            if cfg.split_batches():
-                rows = np.concatenate([policy_rows[rng.integers(0, len(policy_rows), cfg.batch_size)],
-                                       value_rows[rng.integers(0, len(value_rows), value_batch)]])
-                loss, pl, vl = losses(net, replay.batch(rows), device, cfg.value_weight, split=cfg.batch_size)
-            else:
-                batch = replay.sample(cfg.batch_size, rng)
-                loss, pl, vl = losses(net, batch, device, cfg.value_weight)
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
-            opt.step()
-            if device.type == "cuda" and torch.cuda.memory_reserved(device) > plan.flush_at:
-                torch.cuda.empty_cache()
-            pl_sum += float(pl)
-            vl_sum += float(vl)
-        train_s = time.time() - t0
-        if pl_sum == 0.0 or not math.isfinite(pl_sum + vl_sum):
-            raise DeviceFailure(f"training losses are {pl_sum / steps}, {vl_sum / steps}; the GPU is not computing. "
-                                "Restart the process (training resumes from latest.pt).")
+        steps, pl_sum, vl_sum, train_s = train_steps(net, opt, replay, cfg, rng, device, plan, new_policy, new_value,
+                                                     cfg.reuse, cfg.value_reuse)
 
         rec = {
             "gen": gen,

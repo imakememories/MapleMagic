@@ -1,4 +1,4 @@
-"""mmz train <config.yaml> | mmz eval <checkpoint> [--vs ...] | mmz sampler-pilot <checkpoint> | mmz yardstick <checkpoint>..."""
+"""mmz train <config.yaml> | mmz pretrain <config.yaml> | mmz eval <checkpoint> [--vs ...] | mmz sampler-pilot <checkpoint> | mmz yardstick <checkpoint>..."""
 from __future__ import annotations
 
 import argparse
@@ -55,6 +55,22 @@ def main(argv=None):
     s.add_argument("--sims", type=int, default=64)
     s.add_argument("--keep", type=float, default=0.25, help="share of each game's decisions kept")
     s.add_argument("--seeds", type=int, default=2)
+    pt = sub.add_parser("pretrain", help="generation 0 from heuristic self-play, shrunk and perturbed")
+    pt.add_argument("config")
+    pt.add_argument("--games", type=int, default=2000)
+    pt.add_argument("--sims", type=int, default=800)
+    pt.add_argument("--passes", type=float, default=2.0)
+    pt.add_argument("--shrink", type=float, default=0.4)
+    pt.add_argument("--perturb", type=float, default=0.1)
+    pl = sub.add_parser("plasticity", help="a start checkpoint and a fresh net trained on the same self-play")
+    pl.add_argument("config")
+    pl.add_argument("start")
+    pl.add_argument("--out", required=True)
+    sp_ = sub.add_parser("shrink-perturb", help="shrink and perturb a checkpoint into a run's gen-0 start")
+    sp_.add_argument("config")
+    sp_.add_argument("trained")
+    sp_.add_argument("--shrink", type=float, required=True)
+    sp_.add_argument("--perturb", type=float, required=True)
     y = sub.add_parser("yardstick", help="score value heads on fresh games their runs never trained on")
     y.add_argument("checkpoints", nargs="+")
     y.add_argument("--games", type=int, default=100)
@@ -65,6 +81,25 @@ def main(argv=None):
     from .train import Config, match, run, summarize_stats
     if a.cmd == "train":
         run(Config.from_yaml(a.config), resume=not a.fresh)
+    elif a.cmd == "pretrain":
+        from .train import pretrain
+        pretrain(Config.from_yaml(a.config), a.games, a.sims, a.passes, a.shrink, a.perturb)
+    elif a.cmd == "plasticity":
+        from .train import plasticity
+        plasticity(Config.from_yaml(a.config), a.start, a.out)
+    elif a.cmd == "shrink-perturb":
+        import os
+
+        from .model import load, save
+        from .train import shrink_perturb
+        cfg = Config.from_yaml(a.config)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        net = load(a.trained, device)
+        shrink_perturb(net, cfg, a.shrink, a.perturb)
+        out = os.path.join(cfg.out_dir, cfg.name)
+        for name in ("latest.pt", "gen0_start.pt"):
+            save(net, os.path.join(out, name), {"gen": -1, "search": cfg.search_settings()})
+        print(f"wrote {out}/latest.pt with shrink {a.shrink}, perturb {a.perturb}")
     elif a.cmd == "eval":
         from .model import load, load_meta
         cfg = Config.from_yaml(a.config) if a.config else Config()
