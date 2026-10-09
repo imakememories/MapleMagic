@@ -21,3 +21,4 @@ value_positions_per_game: 16
 value_reuse: 2.0
 value_target: td
 value_lambda: 0.95
+full_search_prob: 1.0

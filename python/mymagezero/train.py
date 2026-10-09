@@ -55,7 +55,7 @@ class Config:
     value_mix: float = 1.0
     # Playout-cap randomization: the chance of a full search; other moves use cheap_sims
     # (0 = max(8, sims // 6)) and train only the value.
-    full_search_prob: float = 1.0
+    full_search_prob: float = 0.25
     cheap_sims: int = 0
     # Policy targets: "visits" (visit shares) or "completed_q" (Gumbel MuZero's completed-Q softmax).
     policy_target: str = "visits"

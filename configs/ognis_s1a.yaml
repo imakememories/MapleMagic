@@ -20,3 +20,4 @@ seed: 0
 value_positions_per_game: 16
 value_reuse: 2.0
 value_target: z
+full_search_prob: 1.0
