@@ -190,6 +190,7 @@ dependencies = [
  "mimalloc",
  "mmz-engine",
  "rayon",
+ "serde_json",
 ]
 
 [[package]]

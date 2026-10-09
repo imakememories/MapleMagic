@@ -11,27 +11,51 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from . import ACTION_VOCAB, HIST_VOCAB, NUM_CARDS, TOKEN_VOCAB
+from . import (ACTION_VOCAB, CARD_STATIC, HIST_VOCAB, LEGACY_TOKEN_FIELDS, NUM_CARDS, STATIC_BITS, STATIC_FIELDS,
+               STATIC_VOCAB, TOKEN_BITS, TOKEN_VOCAB)
+
+CARD_ID_DROPOUT = 0.2
 
 
 class FieldEmbedding(nn.Module):
-    def __init__(self, vocab: list[int], d: int):
-        super().__init__()
-        self.tables = nn.ModuleList(nn.Embedding(v, d) for v in vocab)
+    """One table per field, summed. A field with bits > 0 is a bitmask, embedded
+    multi-hot; tables from `new_from` on start near zero (std 0.02)."""
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: [..., fields] int
-        out = self.tables[0](x[..., 0])
-        for i in range(1, len(self.tables)):
-            out = out + self.tables[i](x[..., i])
+    def __init__(self, vocab: list[int], d: int, bits: list[int] | None = None, new_from: int | None = None):
+        super().__init__()
+        self.bits = list(bits or [0] * len(vocab))
+        self.tables = nn.ModuleList(nn.Linear(b, d, bias=False) if b else nn.Embedding(v, d)
+                                    for v, b in zip(vocab, self.bits))
+        if new_from is not None:
+            for t in list(self.tables)[new_from:]:
+                nn.init.normal_(t.weight, std=0.02)
+
+    def forward(self, x: torch.Tensor, keep0: torch.Tensor | None = None) -> torch.Tensor:
+        """x: [..., fields] int. `keep0` scales field 0's embedding (card-id dropout)."""
+        out = None
+        for i, (table, b) in enumerate(zip(self.tables, self.bits)):
+            if b:
+                e = table(((x[..., i, None] >> torch.arange(b, device=x.device)) & 1).to(table.weight.dtype))
+            else:
+                e = table(x[..., i])
+            if i == 0 and keep0 is not None:
+                e = e * keep0[..., None]
+            out = e if out is None else out + e
         return out
 
 
 class Net(nn.Module):
-    def __init__(self, d: int = 192, layers: int = 4, heads: int = 4):
+    def __init__(self, d: int = 192, layers: int = 4, heads: int = 4, attributes: bool = False):
         super().__init__()
-        self.config = dict(d=d, layers=layers, heads=heads)
-        self.tok = FieldEmbedding(TOKEN_VOCAB, d)
+        self.config = dict(d=d, layers=layers, heads=heads, attributes=attributes)
+        if attributes:
+            # Live attributes as token fields, and each card's printed ones by its id.
+            self.tok = FieldEmbedding(TOKEN_VOCAB, d, TOKEN_BITS, new_from=LEGACY_TOKEN_FIELDS)
+            self.static = FieldEmbedding(STATIC_VOCAB, d, STATIC_BITS, new_from=0)
+            table = torch.tensor(np.array(CARD_STATIC, dtype=np.int64).reshape(-1, STATIC_FIELDS))
+            self.register_buffer("card_static", table, persistent=False)
+        else:
+            self.tok = FieldEmbedding(TOKEN_VOCAB[:LEGACY_TOKEN_FIELDS], d)
         self.act = FieldEmbedding(ACTION_VOCAB, d)
         self.summary = nn.Parameter(torch.zeros(1, 1, d))
         layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=0.0, batch_first=True, norm_first=True)
@@ -50,7 +74,7 @@ class Net(nn.Module):
         ar_n = torch.arange(N + 1, device=tok.device)
         # Summary token at position 0 is never masked.
         tok_pad = ar_n[None, :] > tok_len[:, None]
-        x = torch.cat([self.summary.expand(B, 1, -1), self.tok(tok)], dim=1)
+        x = torch.cat([self.summary.expand(B, 1, -1), self.embed_tokens(tok)], dim=1)
         h = self.norm(self.encoder(x, src_key_padding_mask=tok_pad))
         s = h[:, 0]
         a = self.act(act)
@@ -62,6 +86,18 @@ class Net(nn.Module):
         return logits, self.value(s).squeeze(-1)
 
 
+    def embed_tokens(self, tok: torch.Tensor) -> torch.Tensor:
+        if not self.config["attributes"]:
+            return self.tok(tok)
+        card = tok[..., 0]
+        is_card = (card > 0) & (card <= NUM_CARDS)
+        keep = None
+        if self.training:
+            # Card-id dropout: some cards are seen only through their attributes.
+            keep = (~(is_card & (torch.rand(card.shape, device=card.device) < CARD_ID_DROPOUT))).float()
+        return self.tok(tok, keep) + self.static(self.card_static[torch.where(is_card, card, 0)])
+
+
 class Siamese(nn.Module):
     """Embeds what a player knows (observation and history) and candidate opponent
     hands; a hand close to the knowledge is a likely one."""
@@ -69,7 +105,7 @@ class Siamese(nn.Module):
     def __init__(self, d: int = 96, layers: int = 2, heads: int = 4, emb: int = 64):
         super().__init__()
         self.config = dict(d=d, layers=layers, heads=heads, emb=emb)
-        self.tok = FieldEmbedding(TOKEN_VOCAB, d)
+        self.tok = FieldEmbedding(TOKEN_VOCAB[:LEGACY_TOKEN_FIELDS], d)
         self.hist = FieldEmbedding(HIST_VOCAB, d)
         self.segment = nn.Embedding(2, d)
         self.summary = nn.Parameter(torch.zeros(1, 1, d))

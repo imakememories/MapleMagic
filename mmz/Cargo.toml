@@ -10,3 +10,4 @@ default = ["mimalloc"]
 mmz-engine = { path = "../engine" }
 mimalloc = { version = "0.1", default-features = false, optional = true }
 rayon = "1.12"
+serde_json = "1"

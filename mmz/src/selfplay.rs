@@ -237,17 +237,29 @@ impl SelfPlay {
                 self.world_plan.push(i);
                 worlds.push(w);
             }
-            if slot.leaves.is_empty() {
-                continue;
-            }
-            self.batch_plan.push((i, slot.leaves.len()));
-            let game = slot.game.as_ref().unwrap();
-            let model = slot.models[game.to_act().index()];
-            let perfect = self.cfg.perfect_obs[model as usize];
-            for leaf in &slot.leaves {
-                out.push(LeafRequest { tokens: observe_with(leaf, leaf.to_act(), perfect), actions: choice_fields(leaf), model });
+            if !slot.leaves.is_empty() {
+                self.batch_plan.push((i, slot.leaves.len()));
             }
         }
+        // Observations in parallel, kept in slot order.
+        let perfect = self.cfg.perfect_obs;
+        let per_slot: Vec<Vec<LeafRequest>> = self
+            .slots
+            .par_iter()
+            .map(|slot| {
+                let Some(game) = slot.game.as_ref().filter(|_| !slot.leaves.is_empty()) else { return Vec::new() };
+                let model = slot.models[game.to_act().index()];
+                slot.leaves
+                    .iter()
+                    .map(|leaf| LeafRequest {
+                        tokens: observe_with(leaf, leaf.to_act(), perfect[model as usize]),
+                        actions: choice_fields(leaf),
+                        model,
+                    })
+                    .collect()
+            })
+            .collect();
+        out.extend(per_slot.into_iter().flatten());
         Batch { leaves: out, worlds }
     }
 

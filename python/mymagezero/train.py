@@ -76,6 +76,8 @@ class Config:
     world_candidates: int = 50
     world_pool: int = 16
     world_temp: float = 0.0
+    # Card attributes (types, colors, keywords, mana value, subtypes, ability lines) beside card ids.
+    card_attributes: bool = False
     # Rows per forward pass; 0 sizes it for this machine (model.plan_eval).
     max_eval_batch: int = 0
     seed: int = 0
@@ -451,7 +453,7 @@ def collect_heuristic(cfg: Config, games: int, sims: int, seed: int, cap: int) -
 def shrink_perturb(net: Net, cfg: Config, shrink: float, perturb: float):
     """theta <- shrink * theta + perturb * theta_fresh, theta_fresh a new initialization."""
     torch.manual_seed(cfg.seed + 7)
-    fresh = Net(cfg.d_model, cfg.layers, cfg.heads).to(next(net.parameters()).device)
+    fresh = Net(cfg.d_model, cfg.layers, cfg.heads, cfg.card_attributes).to(next(net.parameters()).device)
     with torch.no_grad():
         for p, q in zip(net.parameters(), fresh.parameters()):
             p.mul_(shrink).add_(perturb * q)
@@ -483,7 +485,7 @@ def plasticity(cfg: Config, start: str, out_path: str, seed: int = 3):
     report = {}
     for name in ("start", "fresh"):
         torch.manual_seed(cfg.seed)
-        net = load(start, device) if name == "start" else Net(cfg.d_model, cfg.layers, cfg.heads).to(device)
+        net = load(start, device) if name == "start" else Net(cfg.d_model, cfg.layers, cfg.heads, cfg.card_attributes).to(device)
         opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
         rng = np.random.default_rng(cfg.seed)
         rows = []
@@ -524,7 +526,7 @@ def pretrain(cfg: Config, games: int, sims: int, passes: float, shrink: float, p
             json.dump(info, f)
         print(f"collected {json.dumps(info)}", flush=True)
     torch.manual_seed(cfg.seed)
-    net = Net(cfg.d_model, cfg.layers, cfg.heads).to(device)
+    net = Net(cfg.d_model, cfg.layers, cfg.heads, cfg.card_attributes).to(device)
     opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     plan = plan_eval(net, device, MAX_TOKENS, MAX_ACTIONS, cfg.max_eval_batch)
     rng = np.random.default_rng(cfg.seed)
@@ -569,7 +571,7 @@ def run(cfg: Config, resume: bool = True):
         kept = os.path.exists(replay_path) and replay.load(replay_path)
         print(f"resumed from {latest} at generation {start_gen}, replay buffer {replay.n if kept else 'empty'}")
     else:
-        net = Net(cfg.d_model, cfg.layers, cfg.heads).to(device)
+        net = Net(cfg.d_model, cfg.layers, cfg.heads, cfg.card_attributes).to(device)
         if os.path.exists(log_path):
             os.replace(log_path, os.path.join(out, f"log.{time.strftime('%Y%m%d-%H%M%S')}.jsonl"))
     torch.manual_seed(cfg.seed + start_gen)

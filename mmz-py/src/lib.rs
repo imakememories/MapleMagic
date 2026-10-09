@@ -1,7 +1,10 @@
 //! Python bindings, `mymagezero._core`. Observations and choices cross as
 //! zero-padded uint16 numpy arrays with a length per row.
 
-use mmz::features::{action_vocab, token_vocab, ACTION_FIELDS, MAX_TOKENS, TOKEN_FIELDS};
+use mmz::features::{
+    action_vocab, card_static_table, static_bits, static_vocab, token_bits, token_vocab, ACTION_FIELDS,
+    LEGACY_TOKEN_FIELDS, MAX_TOKENS, STATIC_FIELDS, TOKEN_FIELDS,
+};
 use mmz::game::{deck_names, deck_pairs, Outcome};
 use mmz::history::{hist_vocab, HIST_FIELDS, MAX_HIST};
 use mmz::ismcts::{Config, Eval, MapleSelect, WorldSampler, RETENTION_BUCKETS};
@@ -423,6 +426,13 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ACTION_FIELDS", ACTION_FIELDS)?;
     m.add("MAX_TOKENS", MAX_TOKENS)?;
     m.add("TOKEN_VOCAB", token_vocab().to_vec())?;
+    m.add("TOKEN_BITS", token_bits().to_vec())?;
+    m.add("LEGACY_TOKEN_FIELDS", LEGACY_TOKEN_FIELDS)?;
+    m.add("STATIC_FIELDS", STATIC_FIELDS)?;
+    m.add("STATIC_BITS", static_bits().to_vec())?;
+    m.add("STATIC_VOCAB", static_vocab().to_vec())?;
+    // Each token card's printed attributes, by token field 0 (row 0: hidden).
+    m.add("CARD_STATIC", card_static_table().into_iter().flatten().collect::<Vec<u16>>())?;
     m.add("ACTION_VOCAB", action_vocab().to_vec())?;
     m.add("DECKS", deck_names())?;
     m.add("DECK_PAIRS", deck_pairs())?;
