@@ -330,6 +330,8 @@ def summarize_stats(s: dict) -> dict:
     return {
         "leaf_worlds_per_sim": round(s["leaf_worlds"] / n, 3),
         "evals_per_sim": round(s["unique_leaves"] / n, 3),
+        "leaf_decisions": round(s["leaf_decisions"] / max(s["leaves"], 1), 2),
+        "leaf_turns": round(s["leaf_turns"] / max(s["leaves"], 1), 3),
         "dropped_illegal_per_sim": round(s["dropped_illegal"] / n, 3),
         "dropped_diverged_per_sim": round(s["dropped_diverged"] / n, 3),
         "no_world_per_sim": round(s["no_world_sims"] / n, 4),
@@ -420,23 +422,30 @@ def train_steps(net, opt, replay: Replay, cfg: Config, rng, device, plan: EvalPl
 
 def collect_heuristic(cfg: Config, games: int, sims: int, seed: int, cap: int) -> tuple[Replay, dict]:
     """Self-play between heuristic agents searching `sims` simulations, recorded
-    like network self-play (CPU only)."""
+    like network self-play (CPU only), in chunks of `cfg.parallel` games so each
+    chunk's samples leave Rust before the next starts."""
     from . import ACTION_FIELDS, TOKEN_FIELDS
     replay = Replay(cap, TOKEN_FIELDS, ACTION_FIELDS, cfg.value_target, cfg.value_lambda,
                     cfg.value_positions_per_game, seed)
-    sp = SelfPlay(
-        cfg.parallel, cfg.pairing_list(), temp_decisions=cfg.temp_decisions, seat_models=("heuristic", "heuristic"),
-        record=True, max_games=games, heuristic_sims=sims, seed=seed, record_heuristic=True,
-        completed_q={"visits": False, "completed_q": True}[cfg.policy_target],
-    )
     t0 = time.time()
-    if sp.gather() is not None:
-        raise RuntimeError("heuristic self-play asked for the network")
-    while (s := sp.take_samples()) is not None:
-        replay.add(s)
-    results = sp.take_results()
-    return replay, {"games": len(results), "aborted": sum(r["aborted"] for r in results),
-                    "samples": replay.n, "seconds": round(time.time() - t0, 1)}
+    played = aborted = 0
+    for chunk, at in enumerate(range(0, games, cfg.parallel)):
+        sp = SelfPlay(
+            cfg.parallel, cfg.pairing_list(), temp_decisions=cfg.temp_decisions,
+            seat_models=("heuristic", "heuristic"), record=True, max_games=min(cfg.parallel, games - at),
+            heuristic_sims=sims, seed=seed * 1000 + chunk, record_heuristic=True,
+            completed_q={"visits": False, "completed_q": True}[cfg.policy_target],
+        )
+        if sp.gather() is not None:
+            raise RuntimeError("heuristic self-play asked for the network")
+        while (s := sp.take_samples()) is not None:
+            replay.add(s)
+        results = sp.take_results()
+        played += len(results)
+        aborted += sum(r["aborted"] for r in results)
+        del sp, s
+        print(f"  {played} games, {replay.n} samples, {time.time() - t0:.0f}s", flush=True)
+    return replay, {"games": played, "aborted": aborted, "samples": replay.n, "seconds": round(time.time() - t0, 1)}
 
 
 def shrink_perturb(net: Net, cfg: Config, shrink: float, perturb: float):
@@ -498,8 +507,22 @@ def pretrain(cfg: Config, games: int, sims: int, passes: float, shrink: float, p
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     out = os.path.join(cfg.out_dir, cfg.name)
     os.makedirs(out, exist_ok=True)
-    replay, info = collect_heuristic(cfg, games, sims, seed, cap=300 * games)
-    print(f"collected {json.dumps(info)}", flush=True)
+    data = os.path.join(out, f"pretrain_data_{games}x{sims}.npz")
+    info_path = data.replace(".npz", ".json")
+    if os.path.exists(data) and os.path.exists(info_path):
+        from . import ACTION_FIELDS, TOKEN_FIELDS
+        replay = Replay(180 * games, TOKEN_FIELDS, ACTION_FIELDS, cfg.value_target, cfg.value_lambda,
+                        cfg.value_positions_per_game, seed)
+        if not replay.load(data):
+            raise RuntimeError(f"can't reuse {data}")
+        info = json.load(open(info_path))
+        print(f"reusing {data}: {json.dumps(info)}", flush=True)
+    else:
+        replay, info = collect_heuristic(cfg, games, sims, seed, cap=180 * games)
+        replay.save(data)
+        with open(info_path, "w") as f:
+            json.dump(info, f)
+        print(f"collected {json.dumps(info)}", flush=True)
     torch.manual_seed(cfg.seed)
     net = Net(cfg.d_model, cfg.layers, cfg.heads).to(device)
     opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)

@@ -109,6 +109,11 @@ pub struct SearchStats {
     pub stale_priors: u64,
     pub world_requests: u64,
     pub world_skips: u64,
+    /// Expanded leaves, with their summed depth in decisions below the root
+    /// and in turns past the root's.
+    pub leaves: u64,
+    pub leaf_decisions: u64,
+    pub leaf_turns: u64,
 }
 
 impl std::ops::AddAssign for SearchStats {
@@ -123,6 +128,9 @@ impl std::ops::AddAssign for SearchStats {
         self.stale_priors += o.stale_priors;
         self.world_requests += o.world_requests;
         self.world_skips += o.world_skips;
+        self.leaves += o.leaves;
+        self.leaf_decisions += o.leaf_decisions;
+        self.leaf_turns += o.leaf_turns;
     }
 }
 
@@ -462,6 +470,7 @@ impl Search {
                 // Marked now so other simulations in this batch don't queue it again.
                 self.nodes[node as usize].expanded = true;
                 self.add_virtual_loss(&path);
+                self.note_leaf(path.len(), &g);
                 self.pending.push(PendingSim { path, leaf_node: node, weights: vec![1.0], term_sum: 0.0, term_n: 0.0 });
                 self.stats.leaf_worlds += 1;
                 self.stats.unique_leaves += 1;
@@ -478,6 +487,12 @@ impl Search {
                 node = self.child(node, e, g.to_act());
             }
         }
+    }
+
+    fn note_leaf(&mut self, decisions: usize, leaf: &Game) {
+        self.stats.leaves += 1;
+        self.stats.leaf_decisions += decisions as u64;
+        self.stats.leaf_turns += u64::from(leaf.state.turn.saturating_sub(self.root.state.turn));
     }
 
     /// A determinization of the root where the observer is to act.
@@ -568,6 +583,7 @@ impl Search {
                 if !self.nodes[node as usize].expanded {
                     self.nodes[node as usize].expanded = true;
                     self.add_virtual_loss(&path);
+                    self.note_leaf(path.len(), &alive[0]);
                     self.stats.leaf_worlds += alive.len() as u64;
                     let (games, weights) = if self.cfg.maple_dedupe { self.dedupe(alive) } else {
                         let n = alive.len();
@@ -1590,6 +1606,112 @@ mod tests {
             }
         }
         assert_eq!(checked, 40);
+    }
+
+    /// Ognis positions paired with a copy in which one card differs: an
+    /// opponent's hand card that is Chaos Warp in one and a Mountain in the
+    /// other (`known`: the player to act has seen it), or the player to act's
+    /// own library top card. The swapped card trades places with an unseen
+    /// card, so both copies hold the same cards.
+    fn certification_twins(n: usize, known: bool) -> Vec<(Game, Game, &'static str)> {
+        use crate::game::{set_card, unseen_slots};
+        use mtg_kernel::card_def::card_id_by_name;
+        use mtg_kernel::ids::ObjectId;
+        let deck = crate::commander::CommanderDeck::named("Ognis").expect("the Ognis deck is complete");
+        let (warp, mountain) = (card_id_by_name("Chaos Warp").unwrap(), card_id_by_name("Mountain").unwrap());
+        let mut rng = SplitMix64::seed(23);
+        let mut out: Vec<(Game, Game, &'static str)> = Vec::new();
+        for seed in 0..200u64 {
+            let mut g = Game::new_commander(&deck, &deck, seed);
+            while !g.is_over() && out.len() < n {
+                let me = g.to_act();
+                let opp = me.opponent();
+                let pick = rng.next_u64() % 5;
+                if pick == 0 && g.state.turn >= 3 {
+                    let st = &g.state;
+                    let unseen_hand = unseen_slots(st, me, opp, true);
+                    let hand: Vec<ObjectId> =
+                        st.players[opp.index()].hand.iter().copied().filter(|id| known || unseen_hand.contains(id)).collect();
+                    let rest: Vec<ObjectId> = unseen_slots(st, me, opp, false)
+                        .into_iter()
+                        .filter(|&id| st.objects.get(id).zone == mtg_kernel::state::Zone::Library)
+                        .collect();
+                    if let (Some(&h), Some(&l)) = (hand.first(), rest.first()) {
+                        let mut a = g.clone();
+                        if known {
+                            a.state.reveal_hand_card(me, opp, h).unwrap();
+                        }
+                        let mut b = a.clone();
+                        set_card(&mut a.state, h, warp);
+                        set_card(&mut a.state, l, mountain);
+                        set_card(&mut b.state, h, mountain);
+                        set_card(&mut b.state, l, warp);
+                        out.push((a, b, "opponent's hand: Chaos Warp or a Mountain"));
+                    }
+                } else if pick == 1 && !known && !sees_own_library(&g) {
+                    let lib = g.state.players[me.index()].library.clone();
+                    let def = |id: ObjectId| g.state.objects.get(id).card_def;
+                    let own = unseen_slots(&g.state, me, me, false);
+                    if let Some(&other) = lib.iter().skip(1).find(|&&id| own.contains(&id) && def(id) != def(lib[0])) {
+                        if own.contains(&lib[0]) {
+                            let mut b = g.clone();
+                            let (top, below) = (def(lib[0]), def(other));
+                            set_card(&mut b.state, lib[0], below);
+                            set_card(&mut b.state, other, top);
+                            out.push((g.clone(), b, "own library top card"));
+                        }
+                    }
+                }
+                let k = g.choices().len();
+                g.apply((rng.next_u64() % k as u64) as usize);
+            }
+            if out.len() >= n {
+                break;
+            }
+        }
+        out
+    }
+
+    fn searches() -> [Config; 3] {
+        [Config::default(), pimc(5), maple(5, MapleSelect::RefWorld)]
+    }
+
+    #[test]
+    fn search_cannot_tell_hidden_removal_from_a_land_or_its_own_top_card() {
+        let twins = certification_twins(40, false);
+        for kind in ["opponent's hand: Chaos Warp or a Mountain", "own library top card"] {
+            assert!(twins.iter().filter(|t| t.2 == kind).count() >= 8, "too few {kind} twins");
+        }
+        for (a, b, what) in &twins {
+            for cfg in searches() {
+                let mut x = Search::new(a, cfg.clone(), 9);
+                let mut y = Search::new(b, cfg.clone(), 9);
+                x.run(48, 8, &mut HeuristicEval);
+                y.run(48, 8, &mut HeuristicEval);
+                assert_eq!(x.root_visits(), y.root_visits(), "{what}: {cfg:?}");
+                assert_eq!(x.root_value(), y.root_value(), "{what}: {cfg:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn search_sees_a_revealed_opponent_card() {
+        // The positive control: the same swap on a card the searcher has seen.
+        let twins = certification_twins(20, true);
+        assert_eq!(twins.len(), 20);
+        for cfg in searches() {
+            let differ = twins
+                .iter()
+                .filter(|(a, b, _)| {
+                    let mut x = Search::new(a, cfg.clone(), 9);
+                    let mut y = Search::new(b, cfg.clone(), 9);
+                    x.run(48, 8, &mut HeuristicEval);
+                    y.run(48, 8, &mut HeuristicEval);
+                    x.root_visits() != y.root_visits() || x.root_value() != y.root_value()
+                })
+                .count();
+            assert!(differ >= 5, "{cfg:?}: a known card changed only {differ} of 20 searches");
+        }
     }
 
     fn sorted_hand(g: &Game, observer: PlayerId) -> Vec<u16> {

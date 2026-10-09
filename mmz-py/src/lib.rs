@@ -407,6 +407,9 @@ impl SelfPlay {
             d.set_item("stale_priors", s.stale_priors)?;
             d.set_item("world_requests", s.world_requests)?;
             d.set_item("world_skips", s.world_skips)?;
+            d.set_item("leaves", s.leaves)?;
+            d.set_item("leaf_decisions", s.leaf_decisions)?;
+            d.set_item("leaf_turns", s.leaf_turns)?;
             out.push(d);
         }
         Ok(out)
