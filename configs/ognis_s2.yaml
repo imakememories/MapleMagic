@@ -23,3 +23,6 @@ value_target: td
 value_lambda: 0.95
 full_search_prob: 0.25
 policy_target: completed_q
+init_std: 0.0
+lr_warmup: 0
+lr_cosine: false

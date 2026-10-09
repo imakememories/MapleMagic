@@ -43,10 +43,10 @@ class Config:
     reuse: float = 4.0  # expected times each new sample is trained on
     lr: float = 1e-3
     # Learning-rate warm-up steps, then (with lr_cosine) a cosine decay over the run's generations.
-    lr_warmup: int = 0
-    lr_cosine: bool = False
+    lr_warmup: int = 500
+    lr_cosine: bool = True
     # Every embedding table N(0, init_std) in a fresh net (0 = PyTorch's defaults).
-    init_std: float = 0.0
+    init_std: float = 0.02
     weight_decay: float = 1e-4
     value_weight: float = 1.0
     # Value targets: "z" (the result) or "td" (TD(lambda) over search root values).
