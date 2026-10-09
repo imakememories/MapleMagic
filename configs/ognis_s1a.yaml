@@ -19,3 +19,4 @@ heuristic_sims: 200
 seed: 0
 value_positions_per_game: 16
 value_reuse: 2.0
+value_target: z

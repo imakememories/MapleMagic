@@ -45,7 +45,7 @@ class Config:
     weight_decay: float = 1e-4
     value_weight: float = 1.0
     # Value targets: "z" (the result) or "td" (TD(lambda) over search root values).
-    value_target: str = "z"
+    value_target: str = "td"
     value_lambda: float = 0.95
     # Positions per game that train the value (0 = every position, all in one batch with the policy).
     value_positions_per_game: int = 16

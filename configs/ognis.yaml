@@ -18,3 +18,4 @@ eval_sims: 64
 heuristic_sims: 200
 seed: 0
 value_positions_per_game: 0
+value_target: z
