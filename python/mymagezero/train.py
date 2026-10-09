@@ -42,6 +42,11 @@ class Config:
     batch_size: int = 512
     reuse: float = 4.0  # expected times each new sample is trained on
     lr: float = 1e-3
+    # Learning-rate warm-up steps, then (with lr_cosine) a cosine decay over the run's generations.
+    lr_warmup: int = 0
+    lr_cosine: bool = False
+    # Every embedding table N(0, init_std) in a fresh net (0 = PyTorch's defaults).
+    init_std: float = 0.0
     weight_decay: float = 1e-4
     value_weight: float = 1.0
     # Value targets: "z" (the result) or "td" (TD(lambda) over search root values).
@@ -203,16 +208,18 @@ class Replay:
         os.replace(tmp, path)
 
     def load(self, path: str) -> bool:
-        with np.load(path) as f:
+        import zipfile
+        with np.load(path) as f, zipfile.ZipFile(path) as z:
             why = None
-            if f["tok"].shape != self.tok.shape or f["act"].shape != self.act.shape:
-                why = f"its shapes {f['tok'].shape}, {f['act'].shape} differ from {self.tok.shape}, {self.act.shape}"
+            shapes = (npy_header(z, "tok")[0], npy_header(z, "act")[0])
+            if shapes != (self.tok.shape, self.act.shape):
+                why = f"its shapes {shapes} differ from {self.tok.shape}, {self.act.shape}"
             elif any(x not in f for x in self.ROW_FIELDS):
                 if (self.kind, self.k) != ("z", 0):
                     why = "it predates per-row game, player and value fields"
                 else:
                     for k in ("tok", "tok_len", "act", "act_len", "pi", "z"):
-                        getattr(self, k)[:] = f[k]
+                        read_npy_into(z, k, getattr(self, k))
                     self.value_target[:] = self.z
                     self.value_row[:] = self.policy_row[:] = True
                     self.n, self.pos = int(f["n"]), int(f["pos"])
@@ -224,9 +231,35 @@ class Replay:
                 print(f"not loading the replay buffer {path}: {why}")
                 return False
             for k in ("tok", "tok_len", "act", "act_len", "pi", "z") + self.ROW_FIELDS:
-                getattr(self, k)[:] = f[k]
+                read_npy_into(z, k, getattr(self, k))
             self.n, self.pos = int(f["n"]), int(f["pos"])
         return True
+
+
+def npy_header(z, name: str):
+    """(shape, fortran order, dtype) of array `name` in an open .npz."""
+    with z.open(name + ".npy") as fp:
+        version = np.lib.format.read_magic(fp)
+        read = np.lib.format.read_array_header_1_0 if version == (1, 0) else np.lib.format.read_array_header_2_0
+        return read(fp)
+
+
+def read_npy_into(z, name: str, out: np.ndarray, chunk: int = 64 << 20):
+    """Reads array `name` of an .npz straight into `out`, a chunk at a time
+    (np.load would hold a second full copy, which Windows keeps charged)."""
+    with z.open(name + ".npy") as fp:
+        version = np.lib.format.read_magic(fp)
+        read = np.lib.format.read_array_header_1_0 if version == (1, 0) else np.lib.format.read_array_header_2_0
+        shape, fortran, dtype = read(fp)
+        if tuple(shape) != out.shape or dtype != out.dtype or fortran:
+            raise ValueError(f"{name}: {shape} {dtype} doesn't fit {out.shape} {out.dtype}")
+        view = memoryview(out.reshape(-1).view(np.uint8))
+        at = 0
+        while at < len(view):
+            n = fp.readinto(view[at:at + chunk])
+            if not n:
+                raise EOFError(f"{name} ends early")
+            at += n
 
 
 class DeviceFailure(RuntimeError):
@@ -387,10 +420,23 @@ def match(cfg: Config, net_a, opponent, games: int, device, seed: int,
             "games": games, **stats}
 
 
+def lr_scale(cfg: Config, step: int, progress: float) -> float:
+    """The learning rate's multiplier at global `step`, `progress` (0..1) through the run."""
+    warm = min(1.0, (step + 1) / cfg.lr_warmup) if cfg.lr_warmup else 1.0
+    return warm * (0.5 * (1 + math.cos(math.pi * progress)) if cfg.lr_cosine else 1.0)
+
+
+def init_embeddings(net: Net, std: float):
+    for m in net.modules():
+        if isinstance(m, torch.nn.Embedding):
+            torch.nn.init.normal_(m.weight, std=std)
+
+
 def train_steps(net, opt, replay: Replay, cfg: Config, rng, device, plan: EvalPlan, new_policy: int, new_value: int,
-                reuse: float, value_reuse: float):
+                reuse: float, value_reuse: float, step0: int = 0, progress: tuple[float, float] = (0.0, 0.0)):
     """Train on the buffer so each new policy row is used about `reuse` times and
-    each new value row about `value_reuse` times. Returns (steps, policy loss sum,
+    each new value row about `value_reuse` times, from global step `step0`, the run
+    `progress` from its first to its last step. Returns (steps, policy loss sum,
     value loss sum, seconds)."""
     steps = max(1, int(new_policy * reuse / cfg.batch_size))
     if cfg.split_batches():
@@ -400,7 +446,10 @@ def train_steps(net, opt, replay: Replay, cfg: Config, rng, device, plan: EvalPl
     net.train()
     t0 = time.time()
     pl_sum = vl_sum = 0.0
-    for _ in range(steps):
+    for i in range(steps):
+        if cfg.lr_warmup or cfg.lr_cosine:
+            for g in opt.param_groups:
+                g["lr"] = cfg.lr * lr_scale(cfg, step0 + i, progress[0] + (progress[1] - progress[0]) * i / steps)
         if cfg.split_batches():
             rows = np.concatenate([policy_rows[rng.integers(0, len(policy_rows), cfg.batch_size)],
                                    value_rows[rng.integers(0, len(value_rows), value_batch)]])
@@ -563,15 +612,19 @@ def run(cfg: Config, resume: bool = True):
                     cfg.value_positions_per_game, cfg.seed)
     start_gen = 0
     opt_state = None
+    step = 0
     if resume and os.path.exists(latest):
         net = load(latest, device)
         ck = torch.load(latest, map_location="cpu", weights_only=False)
         start_gen = ck.get("gen", -1) + 1
         opt_state = ck.get("opt")
+        step = ck.get("step", 0)
         kept = os.path.exists(replay_path) and replay.load(replay_path)
         print(f"resumed from {latest} at generation {start_gen}, replay buffer {replay.n if kept else 'empty'}")
     else:
         net = Net(cfg.d_model, cfg.layers, cfg.heads, cfg.card_attributes).to(device)
+        if cfg.init_std:
+            init_embeddings(net, cfg.init_std)
         if os.path.exists(log_path):
             os.replace(log_path, os.path.join(out, f"log.{time.strftime('%Y%m%d-%H%M%S')}.jsonl"))
     torch.manual_seed(cfg.seed + start_gen)
@@ -625,7 +678,9 @@ def run(cfg: Config, resume: bool = True):
         if device.type == "cuda":
             torch.cuda.empty_cache()  # self-play's cache, before training allocates its own
         steps, pl_sum, vl_sum, train_s = train_steps(net, opt, replay, cfg, rng, device, plan, new_policy, new_value,
-                                                     cfg.reuse, cfg.value_reuse)
+                                                     cfg.reuse, cfg.value_reuse, step,
+                                                     (gen / cfg.generations, (gen + 1) / cfg.generations))
+        step += steps
 
         rec = {
             "gen": gen,
@@ -659,7 +714,7 @@ def run(cfg: Config, resume: bool = True):
         meta = {"gen": gen, "search": cfg.search_settings()}
         save(net, os.path.join(out, f"gen{gen:04d}.pt"), meta)
         replay.save(replay_path)
-        save(net, latest, {**meta, "opt": opt.state_dict()})
+        save(net, latest, {**meta, "opt": opt.state_dict(), "step": step})
         with open(log_path, "a") as f:
             f.write(json.dumps(rec) + "\n")
         print(json.dumps(rec), flush=True)

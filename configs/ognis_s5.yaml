@@ -23,3 +23,4 @@ value_target: td
 value_lambda: 0.95
 full_search_prob: 0.25
 card_attributes: true
+max_eval_batch: 768
