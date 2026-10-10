@@ -72,7 +72,8 @@ def main(argv=None):
     sp_.add_argument("--shrink", type=float, required=True)
     sp_.add_argument("--perturb", type=float, required=True)
     pg = sub.add_parser("play", help="play a game against an agent in the terminal")
-    pg.add_argument("checkpoint", nargs="?", default=None, help="network to play against (default: the heuristic agent)")
+    pg.add_argument("checkpoint", nargs="?", default="runs/ognis_s6e/latest.pt", help="network to play against")
+    pg.add_argument("--heuristic", action="store_true", help="play the heuristic agent instead of a network")
     pg.add_argument("--sims", type=int, default=400, help="the agent's simulations per decision")
     pg.add_argument("--seat", choices=["0", "1", "random"], default="random", help="your seat")
     pg.add_argument("--seed", type=int, default=None, help="the deal (default: random)")
@@ -93,7 +94,7 @@ def main(argv=None):
         pretrain(Config.from_yaml(a.config), a.games, a.sims, a.passes, a.shrink, a.perturb)
     elif a.cmd == "play":
         from .play import play
-        play(a.checkpoint, a.sims, a.seat, a.seed, a.deck, a.show_thinking)
+        play(None if a.heuristic else a.checkpoint, a.sims, a.seat, a.seed, a.deck, a.show_thinking)
     elif a.cmd == "plasticity":
         from .train import plasticity
         plasticity(Config.from_yaml(a.config), a.start, a.out)

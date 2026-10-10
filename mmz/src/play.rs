@@ -5,7 +5,7 @@ use crate::game::{Game, Kind};
 use mtg_kernel::card_def::{CardType, CARD_DEFS};
 use mtg_kernel::engine::{effective_power, effective_toughness, object_has_type};
 use mtg_kernel::ids::{ObjectId, PlayerId};
-use mtg_kernel::state::{GameState, StackItemKind, Zone};
+use mtg_kernel::state::{GameState, StackItemKind, Step, Zone};
 use std::fmt::Write;
 
 fn card(def: u16) -> &'static str {
@@ -39,7 +39,8 @@ fn permanent(st: &GameState, id: ObjectId) -> String {
     if o.tapped {
         s.push_str(" (tapped)");
     }
-    if st.engine.combat.attackers.contains(&id) {
+    let in_combat = matches!(st.step, Step::DeclareAttackers | Step::DeclareBlockers | Step::CombatDamage);
+    if in_combat && st.engine.combat.attackers.contains(&id) {
         s.push_str(" (attacking)");
     }
     s
@@ -60,10 +61,10 @@ pub fn render(g: &Game, viewer: PlayerId) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "Turn {} ({:?}), {}'s turn{}",
+        "Round {}, {} turn, {:?}{}",
         st.turn,
+        if st.active_player == viewer { "your" } else { "the opponent's" },
         st.step,
-        if st.active_player == viewer { "your" } else { "the opponent" },
         if g.mulligan_declarations(viewer).is_some() { ", deciding mulligans" } else { "" }
     );
     for p in [viewer.opponent(), viewer] {

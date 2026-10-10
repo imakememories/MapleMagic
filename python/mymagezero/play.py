@@ -52,14 +52,10 @@ def play(checkpoint: str | None, sims: int, seat: str, seed: int | None, deck: s
     m = Match(deck, deck, seed)
     who = f"network {checkpoint}" if checkpoint else "the heuristic agent"
     print(f"Game {seed}: you are seat {human} against {who} at {sims} simulations a move.\n")
-    shown = None
     while not m.is_over():
-        board = m.render(human)
-        if board != shown:
-            print("=" * 72)
-            print(board, end="")
-            shown = board
         if m.to_act() == human:
+            print("=" * 72)
+            print(m.render(human), end="")
             print("Your decision:")
             i = ask(m.choices(human))
             if i is None:
