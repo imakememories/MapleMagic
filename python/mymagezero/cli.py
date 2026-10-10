@@ -1,4 +1,4 @@
-"""mmz train <config.yaml> | mmz pretrain <config.yaml> | mmz eval <checkpoint> [--vs ...] | mmz sampler-pilot <checkpoint> | mmz yardstick <checkpoint>..."""
+"""mmz train <config.yaml> | mmz pretrain <config.yaml> | mmz play [checkpoint] | mmz eval <checkpoint> [--vs ...] | mmz sampler-pilot <checkpoint> | mmz yardstick <checkpoint>..."""
 from __future__ import annotations
 
 import argparse
@@ -71,6 +71,13 @@ def main(argv=None):
     sp_.add_argument("trained")
     sp_.add_argument("--shrink", type=float, required=True)
     sp_.add_argument("--perturb", type=float, required=True)
+    pg = sub.add_parser("play", help="play a game against an agent in the terminal")
+    pg.add_argument("checkpoint", nargs="?", default=None, help="network to play against (default: the heuristic agent)")
+    pg.add_argument("--sims", type=int, default=400, help="the agent's simulations per decision")
+    pg.add_argument("--seat", choices=["0", "1", "random"], default="random", help="your seat")
+    pg.add_argument("--seed", type=int, default=None, help="the deal (default: random)")
+    pg.add_argument("--deck", default="Ognis")
+    pg.add_argument("--show-thinking", action="store_true", help="print the agent's search summary each move")
     y = sub.add_parser("yardstick", help="score value heads on fresh games their runs never trained on")
     y.add_argument("checkpoints", nargs="+")
     y.add_argument("--games", type=int, default=100)
@@ -84,6 +91,9 @@ def main(argv=None):
     elif a.cmd == "pretrain":
         from .train import pretrain
         pretrain(Config.from_yaml(a.config), a.games, a.sims, a.passes, a.shrink, a.perturb)
+    elif a.cmd == "play":
+        from .play import play
+        play(a.checkpoint, a.sims, a.seat, a.seed, a.deck, a.show_thinking)
     elif a.cmd == "plasticity":
         from .train import plasticity
         plasticity(Config.from_yaml(a.config), a.start, a.out)

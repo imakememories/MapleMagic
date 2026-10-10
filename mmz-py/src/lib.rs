@@ -5,7 +5,10 @@ use mmz::features::{
     action_vocab, card_static_table, static_bits, static_vocab, token_bits, token_vocab, ACTION_FIELDS,
     LEGACY_TOKEN_FIELDS, MAX_TOKENS, STATIC_FIELDS, TOKEN_FIELDS,
 };
-use mmz::game::{deck_names, deck_pairs, Outcome};
+use mmz::features::{choice_fields, observe_with};
+use mmz::game::{deck_names, deck_pairs, Game, Outcome};
+use mmz::ismcts::{HeuristicEval, Search};
+use mmz::play;
 use mmz::history::{hist_vocab, HIST_FIELDS, MAX_HIST};
 use mmz::ismcts::{Config, Eval, MapleSelect, WorldSampler, RETENTION_BUCKETS};
 use mmz::mtg_kernel::card_def::{CardType, CARD_DEFS};
@@ -419,9 +422,130 @@ impl SelfPlay {
     }
 }
 
+/// One game for a person to play: the board and choices as text, and an agent
+/// whose search the caller drives with a network (or the heuristic).
+#[pyclass(unsendable)]
+struct Match {
+    game: Game,
+    search: Option<Search>,
+    leaves: Vec<Game>,
+}
+
+#[pymethods]
+impl Match {
+    #[new]
+    #[pyo3(signature = (deck0="Ognis", deck1="Ognis", seed=0))]
+    fn new(deck0: &str, deck1: &str, seed: u64) -> PyResult<Self> {
+        let game = Game::new(deck0, deck1, seed).map_err(PyValueError::new_err)?;
+        Ok(Match { game, search: None, leaves: Vec::new() })
+    }
+
+    /// The seat (0 or 1) to act.
+    fn to_act(&self) -> u8 {
+        self.game.to_act().index() as u8
+    }
+
+    fn is_over(&self) -> bool {
+        self.game.is_over()
+    }
+
+    /// "win 0", "win 1", "draw" or "aborted: why"; None while playing.
+    fn outcome(&self) -> Option<String> {
+        self.game.outcome().map(|o| match o {
+            Outcome::Win(p) => format!("win {}", p.index()),
+            Outcome::Draw => "draw".into(),
+            Outcome::Aborted => format!("aborted: {}", self.game.abort_reason.clone().unwrap_or_default()),
+        })
+    }
+
+    /// The board as seat `viewer` sees it.
+    fn render(&self, viewer: u8) -> String {
+        play::render(&self.game, seat(viewer))
+    }
+
+    /// Each choice of the player to act, as seat `viewer` may read it.
+    fn choices(&self, viewer: u8) -> Vec<String> {
+        (0..self.game.choices().len()).map(|i| play::describe(&self.game, i, seat(viewer))).collect()
+    }
+
+    fn apply(&mut self, i: usize) -> PyResult<()> {
+        if i >= self.game.choices().len() {
+            return Err(PyValueError::new_err(format!("choice {i} of {}", self.game.choices().len())));
+        }
+        self.search = None;
+        self.leaves.clear();
+        self.game.apply(i);
+        Ok(())
+    }
+
+    /// The heuristic agent's choice: IS-MCTS over `sims` simulations.
+    fn heuristic_choice(&self, sims: u32, seed: u64) -> usize {
+        let mut s = Search::new(&self.game, Config::default(), seed);
+        s.run(sims, 8, &mut HeuristicEval);
+        s.best()
+    }
+
+    /// Starts the agent's search at the current decision.
+    fn start_search(&mut self, seed: u64) {
+        self.search = Some(Search::new(&self.game, Config::default(), seed));
+        self.leaves.clear();
+    }
+
+    fn simulations(&self) -> u32 {
+        self.search.as_ref().map_or(0, |s| s.simulations)
+    }
+
+    /// Up to `n` leaves to evaluate as (tokens, token_len, actions, action_len),
+    /// or None when every simulation in this batch ended the game.
+    fn gather<'py>(&mut self, py: Python<'py>, n: usize) -> PyResult<Option<Bound<'py, PyAny>>> {
+        let search = self.search.as_mut().ok_or_else(|| PyValueError::new_err("start_search first"))?;
+        self.leaves = search.gather(n);
+        if self.leaves.is_empty() {
+            return Ok(None);
+        }
+        let toks: Vec<Vec<Tok>> = self.leaves.iter().map(|l| observe_with(l, l.to_act(), false)).collect();
+        let acts: Vec<Vec<Act>> = self.leaves.iter().map(choice_fields).collect();
+        let (tflat, tlen, tw) = pad(&toks.iter().collect::<Vec<_>>(), 1);
+        let (aflat, alen, aw) = pad(&acts.iter().collect::<Vec<_>>(), 1);
+        let n = self.leaves.len();
+        let out = (arr3(py, tflat, n, tw, TOKEN_FIELDS)?, tlen.into_pyarray(py), arr3(py, aflat, n, aw, ACTION_FIELDS)?, alen.into_pyarray(py));
+        Ok(Some(out.into_pyobject(py)?.into_any()))
+    }
+
+    /// The network's priors [B, A] and values [B] for the last gather.
+    fn feed(&mut self, priors: PyReadonlyArray2<'_, f32>, values: PyReadonlyArray1<'_, f32>) -> PyResult<()> {
+        let search = self.search.as_mut().ok_or_else(|| PyValueError::new_err("start_search first"))?;
+        let (p, v) = (priors.as_array(), values.as_array());
+        if p.shape()[0] != self.leaves.len() || v.len() != self.leaves.len() {
+            return Err(PyValueError::new_err(format!("expected {} rows", self.leaves.len())));
+        }
+        let evals = (0..self.leaves.len()).map(|i| Eval { priors: p.row(i).to_vec(), value: v[i] }).collect();
+        let leaves = std::mem::take(&mut self.leaves);
+        search.feed(&leaves, evals);
+        Ok(())
+    }
+
+    /// The searched choice, with the root's visit shares and value.
+    fn best(&self) -> PyResult<(usize, Vec<f32>, f32)> {
+        let s = self.search.as_ref().ok_or_else(|| PyValueError::new_err("start_search first"))?;
+        let visits = s.root_visits();
+        let total: f32 = visits.iter().sum::<f32>().max(1.0);
+        Ok((s.best(), visits.iter().map(|v| v / total).collect(), s.root_value()))
+    }
+}
+
+fn seat(i: u8) -> mmz::mtg_kernel::ids::PlayerId {
+    if i == 0 {
+        mmz::mtg_kernel::ids::PlayerId::P0
+    } else {
+        mmz::mtg_kernel::ids::PlayerId::P1
+    }
+}
+
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SelfPlay>()?;
+    m.add_class::<Match>()?;
     m.add("TOKEN_FIELDS", TOKEN_FIELDS)?;
     m.add("ACTION_FIELDS", ACTION_FIELDS)?;
     m.add("MAX_TOKENS", MAX_TOKENS)?;

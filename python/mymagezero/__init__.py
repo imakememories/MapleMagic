@@ -10,6 +10,7 @@ from ._core import (  # noqa: F401
     HIST_FIELDS,
     HIST_VOCAB,
     LEGACY_TOKEN_FIELDS,
+    Match,
     MAX_HIST,
     MAX_TOKENS,
     NUM_CARDS,
