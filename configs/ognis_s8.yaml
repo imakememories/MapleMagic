@@ -1,0 +1,27 @@
+# S8: S6e trained twice as long (40 generations; the cosine decay spans all 40).
+name: ognis_s8
+pairings: [[Ognis, Ognis]]
+generations: 40
+games_per_gen: 690
+parallel: 256
+sims: 64
+leaves_per_step: 8
+temp_decisions: 40
+buffer_size: 200000
+batch_size: 512
+reuse: 4.0
+d_model: 192
+layers: 1
+eval_every: 5
+eval_games: 128
+eval_sims: 64
+heuristic_sims: 200
+seed: 0
+value_positions_per_game: 16
+value_reuse: 2.0
+value_target: td
+value_lambda: 0.95
+full_search_prob: 0.25
+init_std: 0.02
+lr_warmup: 500
+lr_cosine: true
