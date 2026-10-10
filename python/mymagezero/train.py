@@ -432,6 +432,14 @@ def init_embeddings(net: Net, std: float):
             torch.nn.init.normal_(m.weight, std=std)
 
 
+def new_net(cfg: Config, device) -> Net:
+    """A freshly initialized network for `cfg`."""
+    net = Net(cfg.d_model, cfg.layers, cfg.heads, cfg.card_attributes).to(device)
+    if cfg.init_std:
+        init_embeddings(net, cfg.init_std)
+    return net
+
+
 def train_steps(net, opt, replay: Replay, cfg: Config, rng, device, plan: EvalPlan, new_policy: int, new_value: int,
                 reuse: float, value_reuse: float, step0: int = 0, progress: tuple[float, float] = (0.0, 0.0)):
     """Train on the buffer so each new policy row is used about `reuse` times and
@@ -502,7 +510,7 @@ def collect_heuristic(cfg: Config, games: int, sims: int, seed: int, cap: int) -
 def shrink_perturb(net: Net, cfg: Config, shrink: float, perturb: float):
     """theta <- shrink * theta + perturb * theta_fresh, theta_fresh a new initialization."""
     torch.manual_seed(cfg.seed + 7)
-    fresh = Net(cfg.d_model, cfg.layers, cfg.heads, cfg.card_attributes).to(next(net.parameters()).device)
+    fresh = new_net(cfg, next(net.parameters()).device)
     with torch.no_grad():
         for p, q in zip(net.parameters(), fresh.parameters()):
             p.mul_(shrink).add_(perturb * q)
@@ -534,7 +542,7 @@ def plasticity(cfg: Config, start: str, out_path: str, seed: int = 3):
     report = {}
     for name in ("start", "fresh"):
         torch.manual_seed(cfg.seed)
-        net = load(start, device) if name == "start" else Net(cfg.d_model, cfg.layers, cfg.heads, cfg.card_attributes).to(device)
+        net = load(start, device) if name == "start" else new_net(cfg, device)
         opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
         rng = np.random.default_rng(cfg.seed)
         rows = []
@@ -575,7 +583,7 @@ def pretrain(cfg: Config, games: int, sims: int, passes: float, shrink: float, p
             json.dump(info, f)
         print(f"collected {json.dumps(info)}", flush=True)
     torch.manual_seed(cfg.seed)
-    net = Net(cfg.d_model, cfg.layers, cfg.heads, cfg.card_attributes).to(device)
+    net = new_net(cfg, device)
     opt = torch.optim.AdamW(net.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
     plan = plan_eval(net, device, MAX_TOKENS, MAX_ACTIONS, cfg.max_eval_batch)
     rng = np.random.default_rng(cfg.seed)
@@ -622,9 +630,7 @@ def run(cfg: Config, resume: bool = True):
         kept = os.path.exists(replay_path) and replay.load(replay_path)
         print(f"resumed from {latest} at generation {start_gen}, replay buffer {replay.n if kept else 'empty'}")
     else:
-        net = Net(cfg.d_model, cfg.layers, cfg.heads, cfg.card_attributes).to(device)
-        if cfg.init_std:
-            init_embeddings(net, cfg.init_std)
+        net = new_net(cfg, device)
         if os.path.exists(log_path):
             os.replace(log_path, os.path.join(out, f"log.{time.strftime('%Y%m%d-%H%M%S')}.jsonl"))
     torch.manual_seed(cfg.seed + start_gen)
