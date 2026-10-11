@@ -79,6 +79,10 @@ def main(argv=None):
     pg.add_argument("--seed", type=int, default=None, help="the deal (default: random)")
     pg.add_argument("--deck", default="Ognis")
     pg.add_argument("--show-thinking", action="store_true", help="print the agent's search summary each move")
+    wb = sub.add_parser("web", help="a barebones web page for playing against an agent")
+    wb.add_argument("checkpoint", nargs="?", default="runs/ognis_s6e/latest.pt", help="the network agent")
+    wb.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to play from another device on your network")
+    wb.add_argument("--port", type=int, default=8765)
     y = sub.add_parser("yardstick", help="score value heads on fresh games their runs never trained on")
     y.add_argument("checkpoints", nargs="+")
     y.add_argument("--games", type=int, default=100)
@@ -95,6 +99,9 @@ def main(argv=None):
     elif a.cmd == "play":
         from .play import play
         play(None if a.heuristic else a.checkpoint, a.sims, a.seat, a.seed, a.deck, a.show_thinking)
+    elif a.cmd == "web":
+        from .web import serve
+        serve(a.checkpoint, a.host, a.port)
     elif a.cmd == "plasticity":
         from .train import plasticity
         plasticity(Config.from_yaml(a.config), a.start, a.out)
