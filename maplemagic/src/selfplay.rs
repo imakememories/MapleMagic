@@ -16,8 +16,9 @@ pub const RANDOM: u8 = 254;
 pub struct SelfPlayConfig {
     /// Simulations per move for each network model id (0, 1).
     pub model_sims: [u32; 2],
-    /// Leaves each search contributes per batch (virtual loss spreads them).
-    pub leaves_per_step: usize,
+    /// Leaves each search contributes per batch (virtual loss spreads them),
+    /// per network model id.
+    pub leaves_per_step: [usize; 2],
     /// Decisions per game that sample moves in proportion to visits.
     pub temp_decisions: u32,
     pub search: Config,
@@ -485,7 +486,7 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
             game.apply(pick);
             continue;
         }
-        let want = cfg.leaves_per_step.min((sims - search.simulations) as usize).max(1);
+        let want = cfg.leaves_per_step[m].min((sims - search.simulations) as usize).max(1);
         let leaves = search.gather(want);
         if leaves.is_empty() {
             continue; // all simulations hit terminal states; loop again
@@ -535,7 +536,7 @@ mod tests {
     fn each_model_plays_both_decks_of_a_pairing() {
         let cfg = SelfPlayConfig {
             model_sims: [8, 8],
-            leaves_per_step: 4,
+            leaves_per_step: [4; 2],
             temp_decisions: 0,
             search: Config::default(),
             pairings: vec![("Burn".into(), "Rally".into())],
@@ -577,7 +578,7 @@ mod tests {
     fn two_model_config(seat_models: [u8; 2]) -> SelfPlayConfig {
         SelfPlayConfig {
             model_sims: [8, 8],
-            leaves_per_step: 4,
+            leaves_per_step: [4; 2],
             temp_decisions: 0,
             search: Config::default(),
             pairings: vec![("Burn".into(), "Rally".into()), ("Elves".into(), "Faeries".into())],
@@ -648,7 +649,7 @@ mod tests {
     fn test_config() -> SelfPlayConfig {
         SelfPlayConfig {
             model_sims: [16, 12],
-            leaves_per_step: 4,
+            leaves_per_step: [4; 2],
             temp_decisions: 10,
             search: Config::default(),
             pairings: vec![("Burn".into(), "Rally".into())],
@@ -776,5 +777,30 @@ mod tests {
         assert!(!in_range(&root_values([1.0, 1.0 / 7.0], [false, true])), "model 1's settings leaked into model 0");
         assert!(in_range(&root_values([1.0 / 7.0, 1.0], [false; 2])));
         assert!(in_range(&root_values([1.0; 2], [true, false])));
+    }
+
+    #[test]
+    fn each_model_batches_its_own_leaves_per_step() {
+        // Plain IS-MCTS: one leaf per simulation.
+        let cfg = SelfPlayConfig { leaves_per_step: [1, 4], ..test_config() };
+        assert_eq!(cfg.seat_models, [0, 1]);
+        let mut sp = SelfPlay::new(4, cfg, 1);
+        let mut most = [0usize; 2];
+        loop {
+            let batch = sp.gather();
+            if batch.is_empty() {
+                break;
+            }
+            for &(i, n) in &sp.batch_plan {
+                let slot = &sp.slots[i];
+                let m = slot.models[slot.game.as_ref().unwrap().to_act().index()] as usize;
+                most[m] = most[m].max(n);
+            }
+            let evals = batch.leaves.iter().map(|l| Eval { priors: vec![1.0; l.actions.len()], value: 0.0 }).collect();
+            sp.feed(evals, Vec::new());
+        }
+        assert_eq!(sp.take_results().len(), 4);
+        assert_eq!(most[0], 1, "{most:?}");
+        assert!(most[1] > 1, "{most:?}");
     }
 }

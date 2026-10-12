@@ -97,15 +97,15 @@ struct SelfPlay {
 impl SelfPlay {
     /// seat_models: 0/1 for networks, or "heuristic" / "random". sims is model 0's
     /// budget, opp_sims model 1's. Search settings are pairs, one per model id;
-    /// maple_select, maple_resample, world_sampler, value_scale, heuristic_values and value_mix may also be one value for both.
+    /// leaves_per_step (default 4), maple_select, maple_resample, world_sampler, value_scale, heuristic_values and value_mix may also be one value for both.
     #[new]
-    #[pyo3(signature = (parallel, pairings, sims=200, leaves_per_step=4, temp_decisions=30, c_puct=1.0, root_noise=0.25, dirichlet_alpha=0.3, fpu_reduction=0.2, seat_models=None, record=true, max_games=None, heuristic_sims=200, seed=0, opp_sims=None, maple_worlds=(0, 0), maple_select=None, maple_resample=None, maple_dedupe=true, perfect_obs=(false, false), pimc_worlds=(0, 0), world_sampler=None, world_candidates=50, world_pool=16, world_temp=0.0, retention=None, value_scale=None, heuristic_values=None, value_mix=None, full_search_prob=1.0, cheap_sims=0, completed_q=false, record_heuristic=false))]
+    #[pyo3(signature = (parallel, pairings, sims=200, leaves_per_step=None, temp_decisions=30, c_puct=1.0, root_noise=0.25, dirichlet_alpha=0.3, fpu_reduction=0.2, seat_models=None, record=true, max_games=None, heuristic_sims=200, seed=0, opp_sims=None, maple_worlds=(0, 0), maple_select=None, maple_resample=None, maple_dedupe=true, perfect_obs=(false, false), pimc_worlds=(0, 0), world_sampler=None, world_candidates=50, world_pool=16, world_temp=0.0, retention=None, value_scale=None, heuristic_values=None, value_mix=None, full_search_prob=1.0, cheap_sims=0, completed_q=false, record_heuristic=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         parallel: usize,
         pairings: Vec<(String, String)>,
         sims: u32,
-        leaves_per_step: usize,
+        leaves_per_step: Option<Bound<'_, PyAny>>,
         temp_decisions: u32,
         c_puct: f32,
         root_noise: f32,
@@ -139,6 +139,7 @@ impl SelfPlay {
         if (maple_worlds.0 > 0 && pimc_worlds.0 > 0) || (maple_worlds.1 > 0 && pimc_worlds.1 > 0) {
             return Err(PyValueError::new_err("a model can't use both maple_worlds and pimc_worlds"));
         }
+        let leaves_per_step = per_model(leaves_per_step.as_ref(), 4usize, |v| v.extract::<usize>().map_err(Into::into))?;
         let maple_select = per_model(maple_select.as_ref(), MapleSelect::RefWorld, parse_select)?;
         let maple_resample = per_model(maple_resample.as_ref(), false, |v| v.extract::<bool>().map_err(Into::into))?;
         let world_sampler = per_model(world_sampler.as_ref(), WorldSampler::Uniform, parse_sampler)?;
