@@ -1,18 +1,18 @@
-//! Python bindings, `mymagezero._core`. Observations and choices cross as
+//! Python bindings, `maplemagic._core`. Observations and choices cross as
 //! zero-padded uint16 numpy arrays with a length per row.
 
-use mmz::features::{
+use maplemagic::features::{
     action_vocab, card_static_table, static_bits, static_vocab, token_bits, token_vocab, ACTION_FIELDS,
     LEGACY_TOKEN_FIELDS, MAX_TOKENS, STATIC_FIELDS, TOKEN_FIELDS,
 };
-use mmz::features::{choice_fields, observe_with};
-use mmz::game::{deck_names, deck_pairs, Game, Outcome};
-use mmz::ismcts::{HeuristicEval, Search};
-use mmz::play;
-use mmz::history::{hist_vocab, HIST_FIELDS, MAX_HIST};
-use mmz::ismcts::{Config, Eval, MapleSelect, WorldSampler, RETENTION_BUCKETS};
-use mmz::mtg_kernel::card_def::{CardType, CARD_DEFS};
-use mmz::selfplay::{SelfPlay as RsSelfPlay, SelfPlayConfig, HEURISTIC, RANDOM};
+use maplemagic::features::{choice_fields, observe_with};
+use maplemagic::game::{deck_names, deck_pairs, Game, Outcome};
+use maplemagic::ismcts::{HeuristicEval, Search};
+use maplemagic::play;
+use maplemagic::history::{hist_vocab, HIST_FIELDS, MAX_HIST};
+use maplemagic::ismcts::{Config, Eval, MapleSelect, WorldSampler, RETENTION_BUCKETS};
+use maplemagic::mtg_kernel::card_def::{CardType, CARD_DEFS};
+use maplemagic::selfplay::{SelfPlay as RsSelfPlay, SelfPlayConfig, HEURISTIC, RANDOM};
 use numpy::{IntoPyArray, PyArrayMethods, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -534,11 +534,11 @@ impl Match {
     }
 }
 
-fn seat(i: u8) -> mmz::mtg_kernel::ids::PlayerId {
+fn seat(i: u8) -> maplemagic::mtg_kernel::ids::PlayerId {
     if i == 0 {
-        mmz::mtg_kernel::ids::PlayerId::P0
+        maplemagic::mtg_kernel::ids::PlayerId::P0
     } else {
-        mmz::mtg_kernel::ids::PlayerId::P1
+        maplemagic::mtg_kernel::ids::PlayerId::P1
     }
 }
 
@@ -565,7 +565,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("HIST_VOCAB", hist_vocab().to_vec())?;
     m.add("NUM_CARDS", CARD_DEFS.len())?;
     m.add("CARD_NAMES", CARD_DEFS.iter().map(|d| d.name).collect::<Vec<_>>())?;
-    let kind = |d: &mmz::mtg_kernel::card_def::CardDef| {
+    let kind = |d: &maplemagic::mtg_kernel::card_def::CardDef| {
         if d.is_land {
             0u8
         } else if d.has_type(CardType::Instant) {

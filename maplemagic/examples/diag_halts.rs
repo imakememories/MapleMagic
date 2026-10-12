@@ -1,7 +1,7 @@
 //! Play random games and print the choices leading up to each abort.
-use mmz::game::{Game, Outcome};
-use mmz::mtg_kernel::card_def::CARD_DEFS;
-use mmz::mtg_kernel::state::SplitMix64;
+use maplemagic::game::{Game, Outcome};
+use maplemagic::mtg_kernel::card_def::CARD_DEFS;
+use maplemagic::mtg_kernel::state::SplitMix64;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

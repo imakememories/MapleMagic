@@ -3,10 +3,10 @@
 //! m<k> for MAPLE with k worlds (u for union selection) or p<k> for PIMC, and
 //! o to deal the opponent's true hand in every world (a cheating ceiling).
 //! Games come in pairs on one deal, with the agents swapping decks.
-use mmz::game::{Game, Outcome};
-use mmz::ismcts::{Config, HeuristicEval, MapleSelect, RolloutEval, Search, SearchStats, WorldSampler};
-use mmz::mtg_kernel::ids::PlayerId;
-use mmz::mtg_kernel::state::SplitMix64;
+use maplemagic::game::{Game, Outcome};
+use maplemagic::ismcts::{Config, HeuristicEval, MapleSelect, RolloutEval, Search, SearchStats, WorldSampler};
+use maplemagic::mtg_kernel::ids::PlayerId;
+use maplemagic::mtg_kernel::state::SplitMix64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;

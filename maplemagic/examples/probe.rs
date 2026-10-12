@@ -1,6 +1,6 @@
-use mmz::game::Game;
-use mmz::ismcts::{Config, HeuristicEval, Search};
-use mmz::mtg_kernel::state::SplitMix64;
+use maplemagic::game::Game;
+use maplemagic::ismcts::{Config, HeuristicEval, Search};
+use maplemagic::mtg_kernel::state::SplitMix64;
 fn main() {
     let mut g = Game::new("Burn", "Rally", 5).unwrap();
     let mut rng = SplitMix64::seed(1);

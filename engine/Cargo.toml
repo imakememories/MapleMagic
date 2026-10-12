@@ -1,5 +1,5 @@
 [package]
-name = "mmz-engine"
+name = "maplemagic-engine"
 version = "0.1.0"
 edition.workspace = true
 description = "MTG rules engine trimmed from jackmaiorino/mtg-kernel (MIT)"

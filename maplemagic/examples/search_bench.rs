@@ -5,13 +5,13 @@
 //! per simulation.
 //!
 //! usage: search_bench [positions]
-use mmz::commander::CommanderDeck;
-use mmz::game::Game;
-use mmz::ismcts::{Config, HeuristicEval, MapleSelect, Search};
-use mmz::mtg_kernel::card_def::card_id_by_name;
-use mmz::mtg_kernel::engine::{self, Action, Decision};
-use mmz::mtg_kernel::runtime_decks::runtime_deck_by_id;
-use mmz::mtg_kernel::state::SplitMix64;
+use maplemagic::commander::CommanderDeck;
+use maplemagic::game::Game;
+use maplemagic::ismcts::{Config, HeuristicEval, MapleSelect, Search};
+use maplemagic::mtg_kernel::card_def::card_id_by_name;
+use maplemagic::mtg_kernel::engine::{self, Action, Decision};
+use maplemagic::mtg_kernel::runtime_decks::runtime_deck_by_id;
+use maplemagic::mtg_kernel::state::SplitMix64;
 use std::hint::black_box;
 use std::time::Instant;
 

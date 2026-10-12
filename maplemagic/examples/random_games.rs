@@ -9,12 +9,12 @@
 //! `--threads N` caps the worker threads (default: every core).
 //!
 //! usage: random_games <deck a> <deck b> [games] [first seed] [--check] [--replay] [--threads N]
-use mmz::commander::CommanderDeck;
-use mmz::features::{choice_fields, observe};
-use mmz::game::{Game, Kind, Outcome};
-use mmz::mtg_kernel::card_def::CARD_DEFS;
-use mmz::mtg_kernel::ids::PlayerId;
-use mmz::mtg_kernel::state::SplitMix64;
+use maplemagic::commander::CommanderDeck;
+use maplemagic::features::{choice_fields, observe};
+use maplemagic::game::{Game, Kind, Outcome};
+use maplemagic::mtg_kernel::card_def::CARD_DEFS;
+use maplemagic::mtg_kernel::ids::PlayerId;
+use maplemagic::mtg_kernel::state::SplitMix64;
 use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 

@@ -1,4 +1,4 @@
-"""mmz train <config.yaml> | mmz pretrain <config.yaml> | mmz play [checkpoint] | mmz eval <checkpoint> [--vs ...] | mmz sampler-pilot <checkpoint> | mmz yardstick <checkpoint>..."""
+"""maplemagic train <config.yaml> | maplemagic pretrain <config.yaml> | maplemagic play [checkpoint] | maplemagic eval <checkpoint> [--vs ...] | maplemagic sampler-pilot <checkpoint> | maplemagic yardstick <checkpoint>..."""
 from __future__ import annotations
 
 import argparse
@@ -8,7 +8,7 @@ import torch
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="mmz")
+    ap = argparse.ArgumentParser(prog="maplemagic")
     sub = ap.add_subparsers(dest="cmd", required=True)
     t = sub.add_parser("train", help="run the self-play training loop")
     t.add_argument("config")

@@ -1,4 +1,4 @@
-"""Play a game against an agent in the terminal: `mmz play [checkpoint]`."""
+"""Play a game against an agent in the terminal: `maplemagic play [checkpoint]`."""
 from __future__ import annotations
 
 import random

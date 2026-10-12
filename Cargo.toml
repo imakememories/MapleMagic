@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["engine", "mmz", "mmz-py"]
+members = ["engine", "maplemagic", "maplemagic-py"]
 
 [workspace.package]
 edition = "2021"

@@ -1,5 +1,5 @@
 [package]
-name = "mmz"
+name = "maplemagic"
 version = "0.1.0"
 edition.workspace = true
 
@@ -7,7 +7,7 @@ edition.workspace = true
 default = ["mimalloc"]
 
 [dependencies]
-mmz-engine = { path = "../engine" }
+maplemagic-engine = { path = "../engine" }
 mimalloc = { version = "0.1", default-features = false, optional = true }
 rayon = "1.12"
 serde_json = "1"

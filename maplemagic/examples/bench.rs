@@ -1,7 +1,7 @@
 //! Random-policy throughput through the `Game` wrapper (auto-pay, flattened
 //! combat), single thread and N threads.
-use mmz::game::{deck_pairs, Game};
-use mmz::mtg_kernel::state::SplitMix64;
+use maplemagic::game::{deck_pairs, Game};
+use maplemagic::mtg_kernel::state::SplitMix64;
 use std::time::{Duration, Instant};
 
 fn run(secs: f64, tid: u64) -> (u64, u64) {

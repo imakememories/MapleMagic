@@ -1,4 +1,4 @@
-"""A barebones page for playing against an agent: `mmz web`, then open the printed address."""
+"""A barebones page for playing against an agent: `maplemagic web`, then open the printed address."""
 from __future__ import annotations
 
 import json

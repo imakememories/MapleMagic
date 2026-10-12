@@ -159,6 +159,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "maplemagic"
+version = "0.1.0"
+dependencies = [
+ "maplemagic-engine",
+ "mimalloc",
+ "rayon",
+ "serde_json",
+]
+
+[[package]]
+name = "maplemagic-engine"
+version = "0.1.0"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
+]
+
+[[package]]
+name = "maplemagic-py"
+version = "0.1.0"
+dependencies = [
+ "maplemagic",
+ "numpy",
+ "pyo3",
+]
+
+[[package]]
 name = "matrixmultiply"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -181,36 +211,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
 dependencies = [
  "libmimalloc-sys",
-]
-
-[[package]]
-name = "mmz"
-version = "0.1.0"
-dependencies = [
- "mimalloc",
- "mmz-engine",
- "rayon",
- "serde_json",
-]
-
-[[package]]
-name = "mmz-engine"
-version = "0.1.0"
-dependencies = [
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "toml",
-]
-
-[[package]]
-name = "mmz-py"
-version = "0.1.0"
-dependencies = [
- "mmz",
- "numpy",
- "pyo3",
 ]
 
 [[package]]

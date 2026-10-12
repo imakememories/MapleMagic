@@ -1,4 +1,4 @@
-# Step 3: the S1c settings, starting from a gen-0 net trained on heuristic self-play (mmz pretrain), shrunk and perturbed.
+# Step 3: the S1c settings, starting from a gen-0 net trained on heuristic self-play (maplemagic pretrain), shrunk and perturbed.
 name: ognis_s3
 pairings: [[Ognis, Ognis]]
 generations: 20
