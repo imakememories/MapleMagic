@@ -776,15 +776,21 @@ def run(cfg: Config, resume: bool = True):
             rec["vs_prev"] = round(p["score"], 3)
             rec["eval_s"] = round(h["seconds"] + p["seconds"], 1)
 
-        meta = {"gen": gen, "search": cfg.search_settings()}
+        search = cfg.search_settings()
+        if trainer is not None and gen + 1 < cfg.sampler_start_gen:
+            search["world_sampler"] = "uniform"
+        meta = {"gen": gen, "search": search}
         if trainer is not None:
             meta["sampler"] = trainer.state()
         save(net, os.path.join(out, f"gen{gen:04d}.pt"), meta)
+        latest_meta = {**meta, "opt": opt.state_dict(), "step": step}
+        if trainer is not None:
+            latest_meta["sampler_opt"] = trainer.opt.state_dict()
+        # The checkpoint before the buffers: a kill in between drops this generation's rows rather than repeating them.
+        save(net, latest, latest_meta)
         replay.save(replay_path)
         if trainer is not None:
             trainer.buf.save(sampler_path)
-            meta["sampler_opt"] = trainer.opt.state_dict()
-        save(net, latest, {**meta, "opt": opt.state_dict(), "step": step})
         with open(log_path, "a") as f:
             f.write(json.dumps(rec) + "\n")
         print(json.dumps(rec), flush=True)

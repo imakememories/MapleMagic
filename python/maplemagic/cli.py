@@ -162,6 +162,7 @@ def main(argv=None):
                     scorers[model_id] = siamese_scorer(load_siamese(src or own, device), device)
                 except ValueError as err:
                     ap.error(f"scored worlds: {err}; pass a sampler file (--sampler-from / --opp-sampler-from)")
+                print(f"model {model_id}: worlds scored by the sampler in {src or own}")
             elif kind == "retention":
                 if src is None:
                     ap.error("retention worlds need a sampler file (--sampler-from / --opp-sampler-from)")

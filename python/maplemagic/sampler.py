@@ -34,7 +34,9 @@ def collect(checkpoint: str, cfg, games: int, sims: int, device, keep: float = 0
     parts = []
 
     def add(smp):
-        tok, tl = smp[0], smp[1]
+        # Seen-hand runs show the true hand in smp[0]; the anchor is the hidden observation.
+        tok = smp[7][10] if len(smp[7]) > 10 and smp[7][10] is not None else smp[0]
+        tl = smp[1]
         hist, hl, pool, pl, hand_n, game, turn = smp[7][:7]
         rows = np.nonzero(rng.random(len(tl)) < keep)[0]
         parts.append(dict(tok=tok[rows, :MAX_TOKENS], tok_len=tl[rows], hist=hist[rows, :MAX_HIST], hist_len=hl[rows],

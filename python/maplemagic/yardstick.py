@@ -27,7 +27,8 @@ def collect(checkpoint: str, games: int, seed: int, device) -> dict:
     cfg = run_config(checkpoint)
     s = {**cfg.search_settings(), **(load_meta(checkpoint).get("search") or {})}
     net = load(checkpoint, device)
-    sampler = s.get("world_sampler", "uniform")
+    # Diagnostic samplers (oracle, retention) aren't how a run plays; only learned worlds are kept.
+    sampler = "scored" if s.get("world_sampler") == "scored" else "uniform"
     sp = SelfPlay(
         min(games, cfg.parallel), cfg.pairing_list(), sims=cfg.sims, leaves_per_step=cfg.leaves_per_step,
         temp_decisions=cfg.temp_decisions, c_puct=cfg.c_puct, root_noise=cfg.root_noise,
