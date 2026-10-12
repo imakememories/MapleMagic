@@ -316,7 +316,10 @@ impl SelfPlay {
 
     /// Training samples from finished games, or None: (tokens, token_len, actions,
     /// action_len, policy, z, root_value, (hist, hist_len, pool, pool_len, hand_n,
-    /// game, turn, heuristic, player, full)). The pool is the opponent's unseen cards + 1, its hand first.
+    /// game, turn, heuristic, player, full, anchor)). The pool is the opponent's unseen cards + 1, its hand first.
+    /// anchor is None unless seen-hand rows were recorded; then it is the hidden
+    /// observation, shaped like tokens with the same token_len (rows recorded
+    /// without a seen hand repeat their tokens, which are already hidden).
     fn take_samples<'py>(&mut self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
         let s = self.inner.take_samples();
         if s.is_empty() {
@@ -343,6 +346,22 @@ impl SelfPlay {
         let heuristic: Vec<f32> = s.iter().map(|x| x.heuristic).collect();
         let player: Vec<u8> = s.iter().map(|x| x.player).collect();
         let full: Vec<bool> = s.iter().map(|x| x.full).collect();
+        let anchor = if s.iter().all(|x| x.anchor.is_empty()) {
+            None
+        } else {
+            let rows: Vec<&Vec<Tok>> = s
+                .iter()
+                .map(|x| {
+                    if x.anchor.is_empty() {
+                        return &x.tokens;
+                    }
+                    assert_eq!(x.anchor.len(), x.tokens.len(), "the anchor matches the tokens token for token");
+                    &x.anchor
+                })
+                .collect();
+            let (aflat, _, w) = pad(&rows, tw);
+            Some(arr3(py, aflat, n, w, TOKEN_FIELDS)?)
+        };
         let out = (
             arr3(py, tflat, n, tw, TOKEN_FIELDS)?,
             tlen.into_pyarray(py),
@@ -362,6 +381,7 @@ impl SelfPlay {
                 heuristic.into_pyarray(py),
                 player.into_pyarray(py),
                 full.into_pyarray(py),
+                anchor,
             ),
         );
         Ok(Some(out.into_pyobject(py)?.into_any()))

@@ -76,6 +76,9 @@ pub struct Sample {
     pub player: u8,
     /// Whether the move had a full search (its policy is a training target).
     pub full: bool,
+    /// With a seen hand, what the player can actually see (the hidden
+    /// observation, token for token with `tokens`); else empty.
+    pub anchor: Vec<[u16; TOKEN_FIELDS]>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +127,7 @@ struct Pending {
     turn: u32,
     heuristic: f32,
     full: bool,
+    anchor: Vec<[u16; TOKEN_FIELDS]>,
 }
 
 struct Slot {
@@ -355,6 +359,7 @@ fn pending_sample(search: &Search, game: &Game, history: &History, cfg: &SelfPla
         turn: game.state.turn,
         heuristic: heuristic_value(game, me),
         full,
+        anchor: if perfect { observe_with(game, me, false) } else { Vec::new() },
     }
 }
 
@@ -413,6 +418,7 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
                     heuristic: p.heuristic,
                     player: p.player.index() as u8,
                     full: p.full,
+                    anchor: p.anchor,
                 });
             }
             result = Some(GameResult { decks: slot.decks.clone(), models: slot.models, outcome, decisions: game.decisions });
@@ -618,6 +624,25 @@ mod tests {
         assert_eq!((a.maple_select, a.maple_resample, a.perfect_obs), (MapleSelect::Union, true, false));
         assert_eq!((b.maple_select, b.maple_resample, b.perfect_obs), (MapleSelect::RefWorld, false, true));
         assert_eq!(a.root_noise, 0.0, "no exploration noise outside training");
+    }
+
+    #[test]
+    fn perfect_samples_keep_a_hidden_anchor() {
+        let game = Game::new("Ognis", "Ognis", 5).unwrap();
+        let me = game.to_act();
+        assert_eq!(game.hidden_pool(me).0.len(), 7, "the opponent's hand is unknown");
+        let mut search = Search::new(&game, Config::default(), 1);
+        search.run(8, 4, &mut HeuristicEval);
+        let (history, cfg) = (History::default(), test_config());
+        let seen = pending_sample(&search, &game, &history, &cfg, true, true);
+        assert_eq!(seen.tokens, observe_with(&game, me, true));
+        assert_eq!(seen.anchor, observe_with(&game, me, false));
+        assert_ne!(seen.tokens, seen.anchor);
+        assert_eq!(seen.anchor.len(), seen.tokens.len());
+        let opp_hand_by_identity = |t: &[[u16; TOKEN_FIELDS]]| t.iter().filter(|t| t[1] == 2 && t[0] > 0).count();
+        assert_eq!(opp_hand_by_identity(&seen.tokens), 7);
+        assert_eq!(opp_hand_by_identity(&seen.anchor), 0);
+        assert!(pending_sample(&search, &game, &history, &cfg, false, true).anchor.is_empty());
     }
 
     fn test_config() -> SelfPlayConfig {
