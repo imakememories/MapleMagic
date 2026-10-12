@@ -1,9 +1,10 @@
 # MAPLE-r, seen hand: the control for ognis_m1, with 5 random worlds instead of learned ones; everything else the same.
+# 400 games a generation: MAPLE games run ~230 decisions (S6e: ~149), so this matches S6e's ~2.34M self-play evaluations a generation.
 name: ognis_m1r
 pairings: [[Ognis, Ognis]]
 generations: 20
-games_per_gen: 690
-parallel: 256
+games_per_gen: 400
+parallel: 128
 sims: 16
 cheap_sims: 3
 leaves_per_step: 1
