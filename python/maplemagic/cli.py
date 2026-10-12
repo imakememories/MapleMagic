@@ -35,8 +35,11 @@ def main(argv=None):
     e.add_argument("--world-candidates", type=int, default=None)
     e.add_argument("--world-pool", type=int, default=None)
     e.add_argument("--world-temp", type=float, default=None)
-    e.add_argument("--sampler-from", default=None, help="sampler file for the checkpoint's scored or retention worlds")
+    e.add_argument("--sampler-from", default=None,
+                   help="sampler file for the checkpoint's scored or retention worlds (scored default: its own)")
     e.add_argument("--opp-sampler-from", default=None, help="the same for the opponent network")
+    e.add_argument("--leaves-per-step", type=int, default=None, help="the checkpoint's leaves per step (default: config's)")
+    e.add_argument("--opp-leaves-per-step", type=int, default=None, help="the same for the opponent")
     e.add_argument("--value-scale", type=float, default=None, help="multiply the checkpoint's leaf values")
     e.add_argument("--opp-value-scale", type=float, default=None, help="the same for the opponent network")
     e.add_argument("--heuristic-values", action="store_true", default=None,
@@ -139,7 +142,7 @@ def main(argv=None):
                                      "maple_select": a.maple_select, "maple_resample": a.maple_resample,
                                      "world_sampler": a.world_sampler, "value_scale": a.value_scale,
                                      "heuristic_values": a.heuristic_values, "value_mix": a.value_mix})
-        sb = None
+        sb = path = None
         if a.vs in ("heuristic", "random"):
             opp = a.vs
         else:
@@ -150,20 +153,24 @@ def main(argv=None):
                                  "world_sampler": a.opp_world_sampler, "value_scale": a.opp_value_scale,
                                  "heuristic_values": a.opp_heuristic_values, "value_mix": a.opp_value_mix})
         scorers, retention = {}, None
-        for model_id, search, path in ((0, sa, a.sampler_from), (1, sb, a.opp_sampler_from)):
+        for model_id, search, src, own in ((0, sa, a.sampler_from, a.checkpoint), (1, sb, a.opp_sampler_from, path)):
             kind = (search or {}).get("world_sampler", "uniform")
-            if kind not in ("scored", "retention"):
-                continue
-            if path is None:
-                ap.error(f"{kind} worlds need a sampler file (--sampler-from / --opp-sampler-from)")
-            ck = torch.load(path, map_location=device, weights_only=False)
             if kind == "scored":
+                # Without a sampler file, the side's own checkpoint's sampler.
                 from .model import load_siamese, siamese_scorer
-                scorers[model_id] = siamese_scorer(load_siamese(path, device), device)
-            else:
-                retention = ck["retention"]
+                try:
+                    scorers[model_id] = siamese_scorer(load_siamese(src or own, device), device)
+                except ValueError as err:
+                    ap.error(f"scored worlds: {err}; pass a sampler file (--sampler-from / --opp-sampler-from)")
+            elif kind == "retention":
+                if src is None:
+                    ap.error("retention worlds need a sampler file (--sampler-from / --opp-sampler-from)")
+                retention = torch.load(src, map_location=device, weights_only=False)["retention"]
+        lps = None
+        if a.leaves_per_step is not None or a.opp_leaves_per_step is not None:
+            lps = (a.leaves_per_step or cfg.leaves_per_step, a.opp_leaves_per_step or cfg.leaves_per_step)
         r = match(cfg, net, opp, a.games, device, seed=a.seed, search_a=sa, search_b=sb, opp_sims=a.opp_sims,
-                  scorers=scorers, retention=retention)
+                  scorers=scorers, retention=retention, leaves_per_step=lps)
         print(r["plan"].describe())
         print(f"score {r['score']:.3f} ± {r['ci95']:.3f}  (W{r['w']} L{r['l']} D{r['d']}, {r['seconds']:.0f}s)")
         print(f"  A {json.dumps(sa)}: {r['evals_a']} evals, {json.dumps(summarize_stats(r['search_stats'][0]))}")
@@ -172,6 +179,7 @@ def main(argv=None):
         if a.out:
             with open(a.out, "w") as f:
                 json.dump({"a": a.checkpoint, "b": a.vs, "sims": a.sims, "opp_sims": a.opp_sims or a.sims,
+                           "leaves_per_step": lps or (cfg.leaves_per_step,) * 2,
                            "search_a": sa, "search_b": sb, "evals_a": r["evals_a"], "evals_b": r["evals_b"],
                            "stats": [summarize_stats(x) for x in r["search_stats"]], "games": r["games"]}, f)
 

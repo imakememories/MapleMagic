@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import yaml
 
 from . import MAX_TOKENS, SelfPlay
-from .model import load, load_meta, plan_eval, to_tensors
+from .model import load, load_meta, load_siamese, plan_eval, siamese_scorer, to_tensors
 from .train import Config, drive
 
 TURNS = [("1-3", 1, 3), ("4-7", 4, 7), ("8+", 8, 10**6)]
@@ -27,16 +27,20 @@ def collect(checkpoint: str, games: int, seed: int, device) -> dict:
     cfg = run_config(checkpoint)
     s = {**cfg.search_settings(), **(load_meta(checkpoint).get("search") or {})}
     net = load(checkpoint, device)
+    sampler = s.get("world_sampler", "uniform")
     sp = SelfPlay(
         min(games, cfg.parallel), cfg.pairing_list(), sims=cfg.sims, leaves_per_step=cfg.leaves_per_step,
         temp_decisions=cfg.temp_decisions, c_puct=cfg.c_puct, root_noise=cfg.root_noise,
         dirichlet_alpha=cfg.dirichlet_alpha, record=True, max_games=games, seed=seed,
         maple_worlds=(s["maple_worlds"],) * 2, maple_select=s["maple_select"], maple_resample=s["maple_resample"],
         perfect_obs=(s["perfect_obs"],) * 2, pimc_worlds=(s.get("pimc_worlds", 0),) * 2,
-        value_mix=s.get("value_mix", 1.0),
+        value_mix=s.get("value_mix", 1.0), world_sampler=sampler, world_candidates=cfg.world_candidates,
+        world_pool=cfg.world_pool, world_temp=cfg.world_temp,
     )
+    scorers = {0: siamese_scorer(load_siamese(checkpoint, device), device)} if sampler == "scored" else None
     parts = []
-    drive(sp, {0: net}, device, on_samples=parts.append, plan=plan_eval(net, device, MAX_TOKENS, 96, cfg.max_eval_batch))
+    drive(sp, {0: net}, device, on_samples=parts.append, plan=plan_eval(net, device, MAX_TOKENS, 96, cfg.max_eval_batch),
+          scorers=scorers)
     pad = lambda xs: np.concatenate([np.pad(x, [(0, 0), (0, max(y.shape[1] for y in xs) - x.shape[1])]
                                             + [(0, 0)] * (x.ndim - 2)) for x in xs])
     cat = lambda xs: np.concatenate(xs)

@@ -172,7 +172,12 @@ def grow_tables(state: dict, model: nn.Module) -> dict:
 
 
 def load_siamese(path: str, device) -> Siamese:
+    """From a sampler file or a run checkpoint's `sampler` entry."""
     ck = torch.load(path, map_location=device, weights_only=False)
+    if "sampler" in ck:
+        ck = ck["sampler"]
+    elif "emb" not in ck.get("config", {}):
+        raise ValueError(f"{path} has no world sampler")
     snet = Siamese(**ck["config"]).to(device)
     snet.load_state_dict(grow_tables(ck["state"], snet))
     return snet
@@ -280,7 +285,7 @@ def save(net: Net, path: str, extra: dict | None = None):
 def load_meta(path: str) -> dict:
     """Everything a checkpoint stores besides the weights (gen, search...)."""
     ck = torch.load(path, map_location="cpu", weights_only=False)
-    return {k: v for k, v in ck.items() if k not in ("state", "opt")}
+    return {k: v for k, v in ck.items() if k not in ("state", "opt", "sampler", "sampler_opt")}
 
 
 def load(path: str, device) -> Net:

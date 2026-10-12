@@ -13,7 +13,7 @@ import torch
 import yaml
 
 from . import DECK_PAIRS, MAX_TOKENS, SelfPlay
-from .model import EvalPlan, Net, evaluate, load, losses, plan_eval, save, to_tensors
+from .model import EvalPlan, Net, evaluate, load, losses, plan_eval, save, siamese_scorer, to_tensors
 
 MAX_ACTIONS = 96
 
@@ -81,6 +81,12 @@ class Config:
     world_candidates: int = 50
     world_pool: int = 16
     world_temp: float = 0.0
+    # With world_sampler "scored", the Siamese sampler trains beside the network on these
+    # rows per game, and self-play uses it from generation sampler_start_gen (uniform before).
+    sampler_rows_per_game: int = 32
+    sampler_buffer: int = 50_000
+    sampler_batch: int = 256
+    sampler_start_gen: int = 1
     # Card attributes (types, colors, keywords, mana value, subtypes, ability lines) beside card ids.
     card_attributes: bool = False
     # Rows per forward pass; 0 sizes it for this machine (model.plan_eval).
@@ -371,14 +377,16 @@ def summarize_stats(s: dict) -> dict:
         "dropped_diverged_per_sim": round(s["dropped_diverged"] / n, 3),
         "no_world_per_sim": round(s["no_world_sims"] / n, 4),
         "stale_priors_per_sim": round(s["stale_priors"] / n, 4),
+        "world_requests": s["world_requests"],
+        "world_skips": s["world_skips"],
     }
 
 
 def match(cfg: Config, net_a, opponent, games: int, device, seed: int,
           search_a: dict | None = None, search_b: dict | None = None, opp_sims: int | None = None,
-          scorers: dict | None = None, retention=None) -> dict:
+          scorers: dict | None = None, retention=None, leaves_per_step: tuple[int, int] | None = None) -> dict:
     """Score of net_a against `opponent` (a Net, "heuristic" or "random"), with
-    search settings per side (default: cfg's)."""
+    search settings and leaves per step per side (default: cfg's)."""
     nets = {0: net_a}
     opp_id = 1
     if isinstance(opponent, str):
@@ -388,7 +396,8 @@ def match(cfg: Config, net_a, opponent, games: int, device, seed: int,
     sa = search_a or cfg.search_settings()
     sb = search_b or cfg.search_settings()
     sp = SelfPlay(
-        min(games, cfg.parallel), cfg.pairing_list(), sims=cfg.eval_sims, leaves_per_step=cfg.leaves_per_step,
+        min(games, cfg.parallel), cfg.pairing_list(), sims=cfg.eval_sims,
+        leaves_per_step=cfg.leaves_per_step if leaves_per_step is None else tuple(leaves_per_step),
         temp_decisions=0, c_puct=cfg.c_puct, root_noise=0.0, seat_models=(0, opp_id), record=False,
         max_games=games, heuristic_sims=cfg.heuristic_sims, seed=seed, opp_sims=opp_sims,
         maple_worlds=(sa["maple_worlds"], sb["maple_worlds"]),
@@ -614,6 +623,7 @@ def run(cfg: Config, resume: bool = True):
     log_path = os.path.join(out, "log.jsonl")
     latest = os.path.join(out, "latest.pt")
     replay_path = os.path.join(out, "replay.npz")
+    sampler_path = os.path.join(out, "sampler_replay.npz")
 
     from . import ACTION_FIELDS, TOKEN_FIELDS
     replay = Replay(cfg.buffer_size, TOKEN_FIELDS, ACTION_FIELDS, cfg.value_target, cfg.value_lambda,
@@ -621,12 +631,14 @@ def run(cfg: Config, resume: bool = True):
     start_gen = 0
     opt_state = None
     step = 0
+    sampler_ck = None
     if resume and os.path.exists(latest):
         net = load(latest, device)
         ck = torch.load(latest, map_location="cpu", weights_only=False)
         start_gen = ck.get("gen", -1) + 1
         opt_state = ck.get("opt")
         step = ck.get("step", 0)
+        sampler_ck = (ck.get("sampler"), ck.get("sampler_opt"))
         kept = os.path.exists(replay_path) and replay.load(replay_path)
         print(f"resumed from {latest} at generation {start_gen}, replay buffer {replay.n if kept else 'empty'}")
     else:
@@ -646,16 +658,36 @@ def run(cfg: Config, resume: bool = True):
           f"{len(cfg.pairing_list())} pairings")
     plan = plan_eval(net, device, MAX_TOKENS, MAX_ACTIONS, cfg.max_eval_batch)
     print(plan.describe(), flush=True)
+    trainer = None
+    if cfg.world_sampler == "scored":
+        from .sampler import SamplerTrainer
+        trainer = SamplerTrainer(cfg, device, cfg.seed)
+        if sampler_ck is not None:
+            if sampler_ck[0] is not None:
+                trainer.load(*sampler_ck)
+            kept = os.path.exists(sampler_path) and trainer.buf.load(sampler_path)
+            print(f"sampler {'restored' if sampler_ck[0] is not None else 'new'}, "
+                  f"its buffer {trainer.buf.n if kept else 'empty'}")
 
     for gen in range(start_gen, cfg.generations):
         # --- self-play
         prev = copy.deepcopy(net).eval()
         first = replay.pos
         new = [0]
+        sampler_new = []
+        world_sampler = cfg.world_sampler
+        if trainer is not None:
+            prev_snet = copy.deepcopy(trainer.snet).eval()
+            world_sampler = "scored" if gen >= cfg.sampler_start_gen else "uniform"
+            # Per generation, so a resumed run picks the same sampler rows.
+            trainer.rng = np.random.default_rng([cfg.seed, gen])
+            trainer.scorings, trainer.score_s = 0, 0.0
 
         def add(s):
             replay.add(s)
             new[0] += len(s[1])
+            if trainer is not None:
+                sampler_new.append(trainer.add(s))
 
         sp = SelfPlay(
             cfg.parallel, cfg.pairing_list(), sims=cfg.sims, leaves_per_step=cfg.leaves_per_step,
@@ -664,12 +696,13 @@ def run(cfg: Config, resume: bool = True):
             seed=cfg.seed * 100_003 + gen, maple_worlds=(cfg.maple_worlds, cfg.maple_worlds),
             maple_select=cfg.maple_select, maple_resample=cfg.maple_resample,
             perfect_obs=(cfg.perfect_obs, cfg.perfect_obs), pimc_worlds=(cfg.pimc_worlds, cfg.pimc_worlds),
-            world_sampler=cfg.world_sampler, world_candidates=cfg.world_candidates, world_pool=cfg.world_pool,
+            world_sampler=world_sampler, world_candidates=cfg.world_candidates, world_pool=cfg.world_pool,
             world_temp=cfg.world_temp, value_mix=cfg.value_mix, full_search_prob=cfg.full_search_prob,
             cheap_sims=cfg.cheap_sims or max(8, cfg.sims // 6),
             completed_q={"visits": False, "completed_q": True}[cfg.policy_target],
         )
-        sp_stats = drive(sp, {0: net}, device, on_samples=add, plan=plan)
+        scorers = {0: trainer.scorer()} if world_sampler == "scored" else None
+        sp_stats = drive(sp, {0: net}, device, on_samples=add, plan=plan, scorers=scorers)
         search = summarize_stats(sp.search_stats()[0])
         results = sp.take_results()
         aborted = sum(r["aborted"] for r in results)
@@ -679,13 +712,30 @@ def run(cfg: Config, resume: bool = True):
         held_stats = heldout(net, replay, held, device, cfg) if len(held) else {}
         fresh = (first + np.arange(min(new[0], replay.cap))) % replay.cap
         new_policy, new_value = int(replay.policy_row[fresh].sum()), int(replay.value_row[fresh].sum())
+        if trainer is not None:
+            sampler_new = np.unique(np.concatenate(sampler_new)) if sampler_new else np.zeros(0, np.int64)
+            sampler_held = trainer.heldout(trainer.rng.permutation(sampler_new)[:2048], sampler_new)
 
         # --- train
         if device.type == "cuda":
             torch.cuda.empty_cache()  # self-play's cache, before training allocates its own
+        progress = (gen / cfg.generations, (gen + 1) / cfg.generations)
         steps, pl_sum, vl_sum, train_s = train_steps(net, opt, replay, cfg, rng, device, plan, new_policy, new_value,
-                                                     cfg.reuse, cfg.value_reuse, step,
-                                                     (gen / cfg.generations, (gen + 1) / cfg.generations))
+                                                     cfg.reuse, cfg.value_reuse, step, progress)
+        sampler_stats = {}
+        if trainer is not None:
+            # The network's learning-rate schedule, step for step.
+            lr_at = lambda i: cfg.lr * lr_scale(cfg, step + i, progress[0] + (progress[1] - progress[0]) * i / steps)
+            sampler_loss, sampler_s = trainer.train(steps, lr_at)
+            sampler_stats = {
+                "sampler_loss": None if sampler_loss is None else round(sampler_loss, 4),
+                "sampler_rows": len(sampler_new),
+                "sampler_buffer": trainer.buf.n,
+                "sampler_s": round(sampler_s, 1),
+                "sampler_scorings": trainer.scorings,
+                "sampler_score_s": round(trainer.score_s, 1),
+                **sampler_held,
+            }
         step += steps
 
         rec = {
@@ -701,25 +751,39 @@ def run(cfg: Config, resume: bool = True):
             "evals": sp_stats["evals"],
             "evals_per_s": round(sp_stats["evals"] / max(sp_stats["seconds"], 1e-6)),
             "evals_per_move": round(sp_stats["evals"] / max(new[0], 1), 1),
-            **({"search": search} if cfg.maple_worlds or cfg.pimc_worlds else {}),
+            **({"search": search} if cfg.maple_worlds or cfg.pimc_worlds or cfg.world_sampler != "uniform" else {}),
             "train_steps": steps,
             "train_s": round(train_s, 1),
             "policy_loss": round(pl_sum / steps, 4),
             "value_loss": round(vl_sum / steps, 4),
             **held_stats,
+            **sampler_stats,
         }
 
         # --- evaluate
         if cfg.eval_every and (gen + 1) % cfg.eval_every == 0:
-            h = match(cfg, net, "heuristic", cfg.eval_games, device, seed=10_000 + gen)
-            p = match(cfg, net, prev, cfg.eval_games, device, seed=20_000 + gen)
+            sa = sb = scorers = None
+            if trainer is not None:
+                # Each network searches as in self-play: this one plays the next generation, prev played this one.
+                next_sampler = "scored" if gen + 1 >= cfg.sampler_start_gen else "uniform"
+                sa = {**cfg.search_settings(), "world_sampler": next_sampler}
+                sb = {**cfg.search_settings(), "world_sampler": world_sampler}
+                scorers = {0: siamese_scorer(trainer.snet, device), 1: siamese_scorer(prev_snet, device)}
+            h = match(cfg, net, "heuristic", cfg.eval_games, device, seed=10_000 + gen, search_a=sa, scorers=scorers)
+            p = match(cfg, net, prev, cfg.eval_games, device, seed=20_000 + gen, search_a=sa, search_b=sb,
+                      scorers=scorers)
             rec["vs_heuristic"] = round(h["score"], 3)
             rec["vs_prev"] = round(p["score"], 3)
             rec["eval_s"] = round(h["seconds"] + p["seconds"], 1)
 
         meta = {"gen": gen, "search": cfg.search_settings()}
+        if trainer is not None:
+            meta["sampler"] = trainer.state()
         save(net, os.path.join(out, f"gen{gen:04d}.pt"), meta)
         replay.save(replay_path)
+        if trainer is not None:
+            trainer.buf.save(sampler_path)
+            meta["sampler_opt"] = trainer.opt.state_dict()
         save(net, latest, {**meta, "opt": opt.state_dict(), "step": step})
         with open(log_path, "a") as f:
             f.write(json.dumps(rec) + "\n")
