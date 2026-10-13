@@ -65,6 +65,9 @@ pub struct Config {
     pub world_temp: f32,
     /// Log-odds per (turn bucket, card definition).
     pub retention: Option<Arc<Vec<f32>>>,
+    /// A simulation that reaches a node still awaiting its evaluation stops
+    /// there and ends the batch, instead of choosing without priors.
+    pub collisions: bool,
 }
 
 impl Default for Config {
@@ -86,6 +89,7 @@ impl Default for Config {
             world_pool: 16,
             world_temp: 0.0,
             retention: None,
+            collisions: false,
         }
     }
 }
@@ -114,6 +118,10 @@ pub struct SearchStats {
     pub leaves: u64,
     pub leaf_decisions: u64,
     pub leaf_turns: u64,
+    /// Simulations stopped at a node awaiting its evaluation (not counted in `sims`).
+    pub collisions: u64,
+    /// Selections at a node awaiting its evaluation, made without priors.
+    pub blind_selects: u64,
 }
 
 impl std::ops::AddAssign for SearchStats {
@@ -131,6 +139,8 @@ impl std::ops::AddAssign for SearchStats {
         self.leaves += o.leaves;
         self.leaf_decisions += o.leaf_decisions;
         self.leaf_turns += o.leaf_turns;
+        self.collisions += o.collisions;
+        self.blind_selects += o.blind_selects;
     }
 }
 
@@ -250,6 +260,8 @@ pub struct Search {
     root_evals: Vec<Option<f32>>,
     /// Per root node: (key, prior) before root noise.
     clean_priors: Vec<Vec<(u64, f32)>>,
+    /// With collisions: the (node, edge) pairs whose `avail` this simulation raised.
+    avail_log: Vec<(u32, u32)>,
     pub simulations: u32,
     pub stats: SearchStats,
 }
@@ -306,6 +318,7 @@ impl Search {
             candidates: Vec::new(),
             root_evals: Vec::new(),
             clean_priors: Vec::new(),
+            avail_log: Vec::new(),
             simulations: 0,
             stats: SearchStats::default(),
             cfg,
@@ -448,15 +461,22 @@ impl Search {
                 self.stats.no_world_sims += 1;
                 continue;
             };
-            self.descend(g, root, &mut leaves);
+            if !self.descend(g, root, &mut leaves) {
+                if self.cfg.pimc_worlds > 0 {
+                    // This world goes first in the next batch.
+                    self.next_world -= 1;
+                }
+                break;
+            }
         }
         leaves
     }
 
-    /// One simulation in world `g` from root node `root`.
-    fn descend(&mut self, mut g: Game, root: u32, leaves: &mut Vec<Game>) {
+    /// One simulation in world `g` from root node `root`; false if it collided.
+    fn descend(&mut self, mut g: Game, root: u32, leaves: &mut Vec<Game>) -> bool {
         let mut node = root;
         let mut path: Vec<(u32, usize, PlayerId)> = Vec::new();
+        self.avail_log.clear();
         loop {
             if let Some(o) = g.outcome() {
                 let v = terminal_value(o, self.observer);
@@ -464,7 +484,7 @@ impl Search {
                 self.simulations += 1;
                 self.stats.sims += 1;
                 self.stats.terminal_worlds += 1;
-                return;
+                return true;
             }
             if !self.nodes[node as usize].expanded {
                 // Marked now so other simulations in this batch don't queue it again.
@@ -475,7 +495,10 @@ impl Search {
                 self.stats.leaf_worlds += 1;
                 self.stats.unique_leaves += 1;
                 leaves.push(g);
-                return;
+                return true;
+            }
+            if self.collides(node) {
+                return false;
             }
             let chooser = g.to_act();
             let e = self.select(node, &keys_of(&g));
@@ -487,6 +510,19 @@ impl Search {
                 node = self.child(node, e, g.to_act());
             }
         }
+    }
+
+    /// With collisions, whether `node` (expanded) still awaits its evaluation. If
+    /// so the simulation stops: no virtual loss was added, so only `avail` is undone.
+    fn collides(&mut self, node: u32) -> bool {
+        if !self.cfg.collisions || !self.nodes[node as usize].edges.is_empty() {
+            return false;
+        }
+        for &(n, e) in &self.avail_log {
+            self.nodes[n as usize].edges[e as usize].avail -= 1.0;
+        }
+        self.stats.collisions += 1;
+        true
     }
 
     fn note_leaf(&mut self, decisions: usize, leaf: &Game) {
@@ -528,8 +564,10 @@ impl Search {
         let mut leaves = Vec::new();
         let mut done = 0;
         let mut attempts = 0;
-        while done < max_sims && attempts < max_sims * 4 {
+        let mut collided = false;
+        while done < max_sims && attempts < max_sims * 4 && !collided {
             attempts += 1;
+            self.avail_log.clear();
             let mut alive = if self.cfg.maple_resample { self.sample_worlds(self.cfg.maple_worlds) } else { self.worlds.clone() };
             if alive.is_empty() {
                 self.simulations += 1;
@@ -593,6 +631,10 @@ impl Search {
                     self.pending.push(PendingSim { path, leaf_node: node, weights, term_sum, term_n });
                     leaves.extend(games);
                     done += 1;
+                    break;
+                }
+                if self.collides(node) {
+                    collided = true;
                     break;
                 }
                 let keys = match self.cfg.maple_select {
@@ -856,7 +898,14 @@ impl Search {
         let cfg = self.cfg.clone();
         let n = &mut self.nodes[node as usize];
         // Keys new to this node get its mean prior.
-        let mean_prior = if n.edges.is_empty() { 1.0 } else { n.edges.iter().map(|e| e.prior).sum::<f32>() / n.edges.len() as f32 };
+        let mean_prior = if n.edges.is_empty() {
+            // Only a node awaiting its evaluation has no edges here.
+            debug_assert!(!cfg.collisions, "select at a node awaiting its evaluation");
+            self.stats.blind_selects += 1;
+            1.0
+        } else {
+            n.edges.iter().map(|e| e.prior).sum::<f32>() / n.edges.len() as f32
+        };
         let mut legal: Vec<usize> = Vec::with_capacity(keys.len());
         for &key in keys {
             let i = match n.edges.iter().position(|e| e.key == key) {
@@ -867,6 +916,9 @@ impl Search {
                 }
             };
             n.edges[i].avail += 1.0;
+            if cfg.collisions {
+                self.avail_log.push((node, i as u32));
+            }
             legal.push(i);
         }
         let (vis, sum) = legal.iter().fold((0.0f32, 0.0f32), |(v, s), &i| (v + n.edges[i].visits, s + n.edges[i].value_sum));
@@ -1046,14 +1098,148 @@ mod tests {
         Config { pimc_worlds: k, ..Config::default() }
     }
 
+    fn collide(c: Config) -> Config {
+        Config { collisions: true, ..c }
+    }
+
     fn configs() -> Vec<Config> {
-        vec![
+        let base = vec![
             Config::default(),
             maple(5, MapleSelect::RefWorld),
             maple(5, MapleSelect::Union),
             Config { maple_resample: true, ..maple(3, MapleSelect::RefWorld) },
             pimc(5),
-        ]
+        ];
+        base.iter().cloned().chain(base.iter().cloned().map(collide)).collect()
+    }
+
+    /// Prior 0.9 on one root choice, the rest shared.
+    struct Favour(u64);
+
+    impl Evaluator for Favour {
+        fn eval(&mut self, leaves: &[Game]) -> Vec<Eval> {
+            leaves
+                .iter()
+                .map(|g| {
+                    let n = g.choices().len() as f32;
+                    Eval { priors: g.choices().iter().map(|c| if c.key == self.0 { 0.9 } else { 0.1 / n }).collect(), value: 0.0 }
+                })
+                .collect()
+        }
+    }
+
+    /// Mid-game positions with at least `choices` choices.
+    fn positions(n: usize, choices: usize) -> Vec<Game> {
+        let mut rng = SplitMix64::seed(17);
+        let mut out = Vec::new();
+        for seed in 0..40 {
+            let mut g = Game::new("Faeries", "Spy", seed).unwrap();
+            while !g.is_over() && out.len() < n {
+                if g.state.turn >= 3 && g.choices().len() >= choices && rng.next_u64() % 6 == 0 {
+                    out.push(g.clone());
+                }
+                let k = g.choices().len();
+                g.apply((rng.next_u64() % k as u64) as usize);
+            }
+        }
+        assert_eq!(out.len(), n);
+        out
+    }
+
+    #[test]
+    fn collisions_wait_for_the_priors() {
+        for g in positions(10, 3) {
+            let key = g.choices()[2].key;
+            for base in [Config::default(), maple(5, MapleSelect::Union)] {
+                // A 2-simulation search in one batch: without collisions the second
+                // simulation chooses before the root's priors arrive, so it takes choice 0.
+                for (cfg, want) in [(base.clone(), 0), (collide(base.clone()), 2)] {
+                    let mut s = Search::new(&g, cfg.clone(), 1);
+                    s.run(2, 2, &mut Favour(key));
+                    let v = s.root_visits();
+                    assert_eq!(v.iter().sum::<f32>(), 1.0, "{cfg:?}: {v:?}");
+                    assert_eq!(v[want], 1.0, "{cfg:?}: {v:?}");
+                    assert_eq!(s.stats.collisions, u64::from(cfg.collisions));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn collisions_never_select_without_priors() {
+        let mut rng = SplitMix64::seed(8);
+        let (mut blind, mut collisions) = (0, 0);
+        for g in positions(20, 2) {
+            for base in configs().into_iter().take(5) {
+                let mut on = Search::new(&g, collide(base.clone()), rng.next_u64());
+                on.run(64, 8, &mut HeuristicEval);
+                assert_eq!(on.stats.blind_selects, 0, "{base:?}");
+                assert_eq!(on.stats.sims, on.simulations as u64);
+                collisions += on.stats.collisions;
+                let mut off = Search::new(&g, base, rng.next_u64());
+                off.run(64, 8, &mut HeuristicEval);
+                blind += off.stats.blind_selects;
+            }
+        }
+        assert!(collisions > 0 && blind > 0, "{collisions} collisions, {blind} blind selections");
+    }
+
+    /// Every edge that has been offered or visited: (key, visits, value sum, avail, children), per node.
+    fn tree(s: &Search) -> Vec<Vec<(u64, f32, f32, f32, [u32; 2])>> {
+        s.nodes
+            .iter()
+            .map(|n| {
+                n.edges.iter().filter(|e| e.avail != 0.0 || e.visits != 0.0).map(|e| (e.key, e.visits, e.value_sum, e.avail, e.child)).collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_collision_leaves_no_trace() {
+        let (mut checked, mut deep) = (0, 0);
+        for g in positions(12, 2) {
+            for cfg in [collide(Config::default()), collide(maple(5, MapleSelect::Union)), collide(pimc(3))] {
+                let mut a = Search::new(&g, cfg.clone(), 4);
+                let mut b = Search::new(&g, cfg.clone(), 4);
+                a.run(12, 4, &mut HeuristicEval);
+                b.run(12, 4, &mut HeuristicEval);
+                let before = b.simulations;
+                let leaves = b.gather(32);
+                if b.stats.collisions == a.stats.collisions {
+                    continue;
+                }
+                // The same simulations without the colliding one.
+                let sims = if cfg.maple_worlds > 0 { (b.simulations - before) as usize + b.pending.len() } else { leaves.len() };
+                a.gather(sims);
+                if a.simulations != b.simulations || a.pending.len() != b.pending.len() {
+                    continue; // b also ended games after its last leaf
+                }
+                assert_eq!(tree(&a), tree(&b), "{cfg:?}");
+                assert_eq!(a.next_world, b.next_world);
+                checked += 1;
+                deep += usize::from(!b.avail_log.is_empty());
+            }
+        }
+        assert!(checked >= 24 && deep >= 12, "{checked} collisions compared, {deep} below the root");
+    }
+
+    #[test]
+    fn gathering_again_before_feeding_collides_at_once() {
+        for g in positions(4, 2) {
+            for cfg in [collide(Config::default()), collide(maple(5, MapleSelect::Union)), collide(pimc(3))] {
+                let mut s = Search::new(&g, cfg.clone(), 5);
+                let first = s.gather(8);
+                assert!(!first.is_empty());
+                let pending = s.pending.len();
+                for _ in 0..3 {
+                    assert!(s.gather(8).is_empty(), "{cfg:?}");
+                }
+                assert_eq!(s.pending.len(), pending);
+                let evals = HeuristicEval.eval(&first);
+                s.feed(&first, evals);
+                assert_eq!(s.simulations as usize, pending);
+            }
+        }
     }
 
     #[test]
@@ -1066,7 +1252,7 @@ mod tests {
             assert!(s.simulations >= 200);
             // Each root's first simulation expands it without visiting an edge.
             let roots = s.roots().len() as f32;
-            assert!((total - s.simulations as f32).abs() <= roots, "{cfg:?}: {total} vs {}", s.simulations);
+            assert!((total - s.simulations as f32).abs() <= roots + 1e-3, "{cfg:?}: {total} vs {}", s.simulations);
             assert!(s.best() < g.choices().len());
             assert_eq!(s.stats.sims, s.simulations as u64);
         }
@@ -1108,28 +1294,30 @@ mod tests {
     #[test]
     fn pimc_searches_each_world_in_its_own_tree() {
         let g = Game::new("Faeries", "Spy", 5).unwrap();
-        let mut s = Search::new(&g, pimc(5), 11);
-        s.run(200, 8, &mut HeuristicEval);
-        assert_eq!(s.worlds.len(), 5);
-        assert_eq!(s.simulations, 200);
-        let mut seen = std::collections::HashSet::new();
-        for r in 0..5u32 {
-            let visits: f32 = s.nodes[r as usize].edges.iter().map(|e| e.visits).sum();
-            // The first simulation expands the root and visits no edge.
-            assert_eq!(visits, 39.0, "world {r}");
-            for n in subtree(&s, r) {
-                assert!(seen.insert(n), "node {n} is shared between worlds");
+        for cfg in [pimc(5), collide(pimc(5))] {
+            let mut s = Search::new(&g, cfg, 11);
+            s.run(200, 8, &mut HeuristicEval);
+            assert_eq!(s.worlds.len(), 5);
+            assert_eq!(s.simulations, 200);
+            let mut seen = std::collections::HashSet::new();
+            for r in 0..5u32 {
+                let visits: f32 = s.nodes[r as usize].edges.iter().map(|e| e.visits).sum();
+                // The first simulation expands the root and visits no edge.
+                assert_eq!(visits, 39.0, "world {r}");
+                for n in subtree(&s, r) {
+                    assert!(seen.insert(n), "node {n} is shared between worlds");
+                }
             }
-        }
-        // The move comes from the average of the per-world distributions.
-        let mut avg = vec![0.0f32; g.choices().len()];
-        for r in 0..5 {
-            for (a, e) in avg.iter_mut().zip(s.root_edges(r)) {
-                *a += e.0 / 39.0 / 5.0;
+            // The move comes from the average of the per-world distributions.
+            let mut avg = vec![0.0f32; g.choices().len()];
+            for r in 0..5 {
+                for (a, e) in avg.iter_mut().zip(s.root_edges(r)) {
+                    *a += e.0 / 39.0 / 5.0;
+                }
             }
-        }
-        for (v, a) in s.root_visits().iter().zip(&avg) {
-            assert!((v - a * 195.0).abs() < 1e-3, "{v} vs {}", a * 195.0);
+            for (v, a) in s.root_visits().iter().zip(&avg) {
+                assert!((v - a * 195.0).abs() < 1e-3, "{v} vs {}", a * 195.0);
+            }
         }
     }
 
@@ -1247,6 +1435,8 @@ mod tests {
                 scored(maple(5, MapleSelect::RefWorld)),
                 retention(Config::default()),
                 retention(maple(5, MapleSelect::RefWorld)),
+                collide(Config::default()),
+                collide(maple(5, MapleSelect::Union)),
             ] {
                 let mut a = Search::new(g, cfg.clone(), 9);
                 let mut b = Search::new(swapped, cfg.clone(), 9);

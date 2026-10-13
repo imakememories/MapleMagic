@@ -4,7 +4,7 @@
 //! (apply a choice and build the next decision's choices), and whole searches
 //! per simulation.
 //!
-//! usage: search_bench [positions]
+//! usage: search_bench [positions] [--collisions]
 use maplemagic::commander::CommanderDeck;
 use maplemagic::game::Game;
 use maplemagic::ismcts::{Config, HeuristicEval, MapleSelect, Search};
@@ -54,7 +54,7 @@ fn time(ps: &[Game], reps: usize, mut f: impl FnMut(&Game, u64)) -> f64 {
     t.elapsed().as_secs_f64() * 1e6 / i as f64
 }
 
-fn report(label: &str, ps: &[Game]) {
+fn report(label: &str, ps: &[Game], collisions: bool) {
     let objects: f64 = ps.iter().map(|g| g.state.objects.len() as f64).sum::<f64>() / ps.len() as f64;
     let choices: f64 = ps.iter().map(|g| g.choices().len() as f64).sum::<f64>() / ps.len() as f64;
     let clone = time(ps, 20, |g, _| {
@@ -95,9 +95,9 @@ fn report(label: &str, ps: &[Game]) {
         }
         (t.elapsed().as_secs_f64() * 1e6 / n as f64, evals as f64 / n as f64, digest)
     };
-    let (ismcts, _, ismcts_digest) = search(Config::default(), 200);
-    let (maple, maple_evals, maple_digest) =
-        search(Config { maple_worlds: 5, maple_select: MapleSelect::RefWorld, ..Config::default() }, 64);
+    let base = Config { collisions, ..Config::default() };
+    let (ismcts, _, ismcts_digest) = search(base.clone(), 200);
+    let (maple, maple_evals, maple_digest) = search(Config { maple_worlds: 5, maple_select: MapleSelect::RefWorld, ..base }, 64);
     println!(
         "{label:<22} {:>7.0} {:>7.1} {:>8.1} {:>8.1} {:>8.1} {:>8.1} {:>9.1} {:>8.1} ({maple_evals:.1} evals/sim) {:04x}{:04x}",
         objects,
@@ -115,12 +115,13 @@ fn report(label: &str, ps: &[Game]) {
 
 fn main() {
     let n: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(60);
+    let c = std::env::args().any(|a| a == "--collisions");
     println!("{:<22} {:>7} {:>7} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8}", "positions", "objects", "choices", "clone", "deal", "engine", "step", "IS-MCTS", "MAPLE");
     println!("{:<22} {:>7} {:>7} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8}", "", "", "", "us", "us", "us", "us", "us/sim", "us/sim");
-    report("Pauper (Faeries/Spy)", &positions(n, &|s| Game::new("Faeries", "Spy", s).unwrap()));
-    report("Pauper (Rally/Burn)", &positions(n, &|s| Game::new("Rally", "Burn", s).unwrap()));
+    report("Pauper (Faeries/Spy)", &positions(n, &|s| Game::new("Faeries", "Spy", s).unwrap()), c);
+    report("Pauper (Rally/Burn)", &positions(n, &|s| Game::new("Rally", "Burn", s).unwrap()), c);
     let (a, b) = (padded("Masked Meower", "Rally"), padded("Goblin Tomb Raider", "Burn"));
-    report("Commander (stand-in)", &positions(n, &|s| Game::new_commander(&a, &b, s)));
+    report("Commander (stand-in)", &positions(n, &|s| Game::new_commander(&a, &b, s)), c);
     let ognis = CommanderDeck::named_with_stand_in("Ognis", Some("Mountain")).unwrap();
-    report("Commander (Ognis)", &positions(n, &|s| Game::new_commander(&ognis, &ognis, s)));
+    report("Commander (Ognis)", &positions(n, &|s| Game::new_commander(&ognis, &ognis, s)), c);
 }

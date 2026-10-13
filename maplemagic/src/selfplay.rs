@@ -39,6 +39,7 @@ pub struct SelfPlayConfig {
     pub perfect_obs: [bool; 2],
     pub pimc_worlds: [u32; 2],
     pub world_sampler: [WorldSampler; 2],
+    pub collisions: [bool; 2],
     /// Multiplies the network's leaf values.
     pub value_scale: [f32; 2],
     /// Leaf values from [`heuristic_value`] instead of the network.
@@ -388,6 +389,7 @@ fn search_config(cfg: &SelfPlayConfig, m: usize) -> Config {
     c.pimc_worlds = cfg.pimc_worlds[m];
     c.perfect_obs = cfg.perfect_obs[m];
     c.world_sampler = cfg.world_sampler[m];
+    c.collisions = cfg.collisions[m];
     c
 }
 
@@ -443,6 +445,7 @@ fn advance(slot: &mut Slot, cfg: &SelfPlayConfig) -> (Vec<Sample>, Option<GameRe
                 pimc_worlds: 0,
                 perfect_obs: false,
                 world_sampler: WorldSampler::Uniform,
+                collisions: false,
                 ..cfg.search.clone()
             };
             let mut s = Search::new(game, c, slot.rng.next_u64());
@@ -550,6 +553,7 @@ mod tests {
             perfect_obs: [false, false],
             pimc_worlds: [0, 0],
             world_sampler: [WorldSampler::Uniform; 2],
+            collisions: [false; 2],
             value_scale: [1.0; 2],
             heuristic_values: [false; 2],
             value_mix: [1.0; 2],
@@ -592,6 +596,7 @@ mod tests {
             perfect_obs: [false, true],
             pimc_worlds: [0, 0],
             world_sampler: [WorldSampler::Scored, WorldSampler::Uniform],
+            collisions: [true, false],
             value_scale: [1.0; 2],
             heuristic_values: [false; 2],
             value_mix: [1.0; 2],
@@ -624,6 +629,7 @@ mod tests {
         let (a, b) = (search_config(&cfg, 0), search_config(&cfg, 1));
         assert_eq!((a.maple_select, a.maple_resample, a.perfect_obs), (MapleSelect::Union, true, false));
         assert_eq!((b.maple_select, b.maple_resample, b.perfect_obs), (MapleSelect::RefWorld, false, true));
+        assert_eq!((a.collisions, b.collisions), (true, false));
         assert_eq!(a.root_noise, 0.0, "no exploration noise outside training");
     }
 
@@ -663,6 +669,7 @@ mod tests {
             perfect_obs: [false, false],
             pimc_worlds: [0, 0],
             world_sampler: [WorldSampler::Uniform; 2],
+            collisions: [false; 2],
             value_scale: [1.0; 2],
             heuristic_values: [false; 2],
             value_mix: [1.0; 2],
@@ -777,6 +784,23 @@ mod tests {
         assert!(!in_range(&root_values([1.0, 1.0 / 7.0], [false, true])), "model 1's settings leaked into model 0");
         assert!(in_range(&root_values([1.0 / 7.0, 1.0], [false; 2])));
         assert!(in_range(&root_values([1.0; 2], [true, false])));
+    }
+
+    #[test]
+    fn only_a_model_with_collisions_waits_for_priors() {
+        let mut sp = SelfPlay::new(4, SelfPlayConfig { collisions: [true, false], ..test_config() }, 1);
+        loop {
+            let batch = sp.gather();
+            if batch.is_empty() {
+                break;
+            }
+            let evals = batch.leaves.iter().map(|l| Eval { priors: vec![1.0; l.actions.len()], value: 0.0 }).collect();
+            sp.feed(evals, Vec::new());
+        }
+        assert_eq!(sp.take_results().len(), 4);
+        let [a, b] = sp.stats();
+        assert!(a.collisions > 0 && a.blind_selects == 0, "{a:?}");
+        assert!(b.collisions == 0 && b.blind_selects > 0, "{b:?}");
     }
 
     #[test]

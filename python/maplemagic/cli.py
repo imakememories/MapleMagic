@@ -40,6 +40,10 @@ def main(argv=None):
     e.add_argument("--opp-sampler-from", default=None, help="the same for the opponent network")
     e.add_argument("--leaves-per-step", type=int, default=None, help="the checkpoint's leaves per step (default: config's)")
     e.add_argument("--opp-leaves-per-step", type=int, default=None, help="the same for the opponent")
+    e.add_argument("--collisions", action=argparse.BooleanOptionalAction, default=None,
+                   help="stop simulations at nodes awaiting evaluation, for the checkpoint (default: as trained)")
+    e.add_argument("--opp-collisions", action=argparse.BooleanOptionalAction, default=None,
+                   help="the same for the opponent network")
     e.add_argument("--value-scale", type=float, default=None, help="multiply the checkpoint's leaf values")
     e.add_argument("--opp-value-scale", type=float, default=None, help="the same for the opponent network")
     e.add_argument("--heuristic-values", action="store_true", default=None,
@@ -134,6 +138,8 @@ def main(argv=None):
             meta = load_meta(path).get("search")
             # Keys a checkpoint lacks postdate it: they take the defaults, not --config's.
             s = {**Config().search_settings(), **meta} if meta is not None else cfg.search_settings()
+            # A checkpoint without the key searched without collisions, whatever the default is now.
+            s["collisions"] = (meta or {}).get("collisions", False)
             s.update({k: v for k, v in overrides.items() if v is not None})
             return s
 
@@ -141,7 +147,8 @@ def main(argv=None):
         sa = settings(a.checkpoint, {"maple_worlds": a.maple_worlds, "pimc_worlds": a.pimc_worlds,
                                      "maple_select": a.maple_select, "maple_resample": a.maple_resample,
                                      "world_sampler": a.world_sampler, "value_scale": a.value_scale,
-                                     "heuristic_values": a.heuristic_values, "value_mix": a.value_mix})
+                                     "heuristic_values": a.heuristic_values, "value_mix": a.value_mix,
+                                     "collisions": a.collisions})
         sb = path = None
         if a.vs in ("heuristic", "random"):
             opp = a.vs
@@ -151,7 +158,8 @@ def main(argv=None):
             sb = settings(path, {"maple_worlds": a.opp_maple_worlds, "pimc_worlds": a.opp_pimc_worlds,
                                  "maple_select": a.opp_maple_select, "maple_resample": a.opp_maple_resample,
                                  "world_sampler": a.opp_world_sampler, "value_scale": a.opp_value_scale,
-                                 "heuristic_values": a.opp_heuristic_values, "value_mix": a.opp_value_mix})
+                                 "heuristic_values": a.opp_heuristic_values, "value_mix": a.opp_value_mix,
+                                 "collisions": a.opp_collisions})
         scorers, retention = {}, None
         for model_id, search, src, own in ((0, sa, a.sampler_from, a.checkpoint), (1, sb, a.opp_sampler_from, path)):
             kind = (search or {}).get("world_sampler", "uniform")

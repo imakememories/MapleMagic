@@ -24,11 +24,13 @@ def collect(checkpoint: str, cfg, games: int, sims: int, device, keep: float = 0
     temperature). Keeps a `keep` share of each game's decisions."""
     from .train import drive
     net = load(checkpoint, device)
-    s = {**cfg.search_settings(), **(load_meta(checkpoint).get("search") or {})}
+    meta = load_meta(checkpoint).get("search") or {}
+    s = {**cfg.search_settings(), **meta}
     sp = SelfPlay(
         min(games, cfg.parallel), cfg.pairing_list(), sims=sims, leaves_per_step=cfg.leaves_per_step, temp_decisions=0,
         root_noise=0.0, record=True, max_games=games, seed=seed, maple_worlds=(s["maple_worlds"],) * 2,
         maple_select=s["maple_select"], perfect_obs=(s["perfect_obs"],) * 2, pimc_worlds=(s.get("pimc_worlds", 0),) * 2,
+        collisions=meta.get("collisions", False),
     )
     rng = np.random.default_rng(seed)
     parts = []

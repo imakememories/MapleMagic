@@ -97,9 +97,9 @@ struct SelfPlay {
 impl SelfPlay {
     /// seat_models: 0/1 for networks, or "heuristic" / "random". sims is model 0's
     /// budget, opp_sims model 1's. Search settings are pairs, one per model id;
-    /// leaves_per_step (default 4), maple_select, maple_resample, world_sampler, value_scale, heuristic_values and value_mix may also be one value for both.
+    /// leaves_per_step (default 4), maple_select, maple_resample, world_sampler, collisions, value_scale, heuristic_values and value_mix may also be one value for both.
     #[new]
-    #[pyo3(signature = (parallel, pairings, sims=200, leaves_per_step=None, temp_decisions=30, c_puct=1.0, root_noise=0.25, dirichlet_alpha=0.3, fpu_reduction=0.2, seat_models=None, record=true, max_games=None, heuristic_sims=200, seed=0, opp_sims=None, maple_worlds=(0, 0), maple_select=None, maple_resample=None, maple_dedupe=true, perfect_obs=(false, false), pimc_worlds=(0, 0), world_sampler=None, world_candidates=50, world_pool=16, world_temp=0.0, retention=None, value_scale=None, heuristic_values=None, value_mix=None, full_search_prob=1.0, cheap_sims=0, completed_q=false, record_heuristic=false))]
+    #[pyo3(signature = (parallel, pairings, sims=200, leaves_per_step=None, temp_decisions=30, c_puct=1.0, root_noise=0.25, dirichlet_alpha=0.3, fpu_reduction=0.2, seat_models=None, record=true, max_games=None, heuristic_sims=200, seed=0, opp_sims=None, maple_worlds=(0, 0), maple_select=None, maple_resample=None, maple_dedupe=true, perfect_obs=(false, false), pimc_worlds=(0, 0), world_sampler=None, world_candidates=50, world_pool=16, world_temp=0.0, retention=None, value_scale=None, heuristic_values=None, value_mix=None, full_search_prob=1.0, cheap_sims=0, completed_q=false, record_heuristic=false, collisions=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         parallel: usize,
@@ -135,6 +135,7 @@ impl SelfPlay {
         cheap_sims: u32,
         completed_q: bool,
         record_heuristic: bool,
+        collisions: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         if (maple_worlds.0 > 0 && pimc_worlds.0 > 0) || (maple_worlds.1 > 0 && pimc_worlds.1 > 0) {
             return Err(PyValueError::new_err("a model can't use both maple_worlds and pimc_worlds"));
@@ -146,6 +147,7 @@ impl SelfPlay {
         let value_scale = per_model(value_scale.as_ref(), 1.0f32, |v| v.extract::<f32>().map_err(Into::into))?;
         let heuristic_values = per_model(heuristic_values.as_ref(), false, |v| v.extract::<bool>().map_err(Into::into))?;
         let value_mix = per_model(value_mix.as_ref(), 1.0f32, |v| v.extract::<f32>().map_err(Into::into))?;
+        let collisions = per_model(collisions.as_ref(), false, |v| v.extract::<bool>().map_err(Into::into))?;
         let retention = retention.map(|r| r.as_array().to_vec());
         let want = RETENTION_BUCKETS * CARD_DEFS.len();
         if world_sampler.contains(&WorldSampler::Retention) && retention.as_ref().map(|r| r.len()) != Some(want) {
@@ -195,6 +197,7 @@ impl SelfPlay {
             perfect_obs: [perfect_obs.0, perfect_obs.1],
             pimc_worlds: [pimc_worlds.0, pimc_worlds.1],
             world_sampler,
+            collisions,
             value_scale,
             heuristic_values,
             value_mix,
@@ -437,6 +440,8 @@ impl SelfPlay {
             d.set_item("leaves", s.leaves)?;
             d.set_item("leaf_decisions", s.leaf_decisions)?;
             d.set_item("leaf_turns", s.leaf_turns)?;
+            d.set_item("collisions", s.collisions)?;
+            d.set_item("blind_selects", s.blind_selects)?;
             out.push(d);
         }
         Ok(out)

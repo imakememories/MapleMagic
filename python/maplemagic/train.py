@@ -81,6 +81,9 @@ class Config:
     world_candidates: int = 50
     world_pool: int = 16
     world_temp: float = 0.0
+    # A simulation that reaches a node awaiting its evaluation stops and ends the batch,
+    # instead of choosing before the node's priors arrive.
+    collisions: bool = False
     # With world_sampler "scored", the Siamese sampler trains beside the network on these
     # rows per game, and self-play uses it from generation sampler_start_gen (uniform before).
     sampler_rows_per_game: int = 32
@@ -114,6 +117,7 @@ class Config:
             "pimc_worlds": self.pimc_worlds,
             "world_sampler": self.world_sampler,
             "value_mix": self.value_mix,
+            "collisions": self.collisions,
         }
 
     def split_batches(self) -> bool:
@@ -379,6 +383,8 @@ def summarize_stats(s: dict) -> dict:
         "stale_priors_per_sim": round(s["stale_priors"] / n, 4),
         "world_requests": s["world_requests"],
         "world_skips": s["world_skips"],
+        "collisions_per_sim": round(s["collisions"] / n, 4),
+        "blind_selects_per_sim": round(s["blind_selects"] / n, 4),
     }
 
 
@@ -409,6 +415,7 @@ def match(cfg: Config, net_a, opponent, games: int, device, seed: int,
         retention=retention, value_scale=(sa.get("value_scale", 1.0), sb.get("value_scale", 1.0)),
         heuristic_values=(sa.get("heuristic_values", False), sb.get("heuristic_values", False)),
         value_mix=(sa.get("value_mix", 1.0), sb.get("value_mix", 1.0)),
+        collisions=(sa.get("collisions", False), sb.get("collisions", False)),
     )
     plan = plan_eval(net_a, device, MAX_TOKENS, MAX_ACTIONS, cfg.max_eval_batch)
     stats = drive(sp, nets, device, plan=plan, scorers=scorers)
@@ -544,7 +551,7 @@ def plasticity(cfg: Config, start: str, out_path: str, seed: int = 3):
             dirichlet_alpha=cfg.dirichlet_alpha, record=True, max_games=cfg.games_per_gen, seed=seed * 1000 + g,
             value_mix=cfg.value_mix, full_search_prob=cfg.full_search_prob,
             cheap_sims=cfg.cheap_sims or max(8, cfg.sims // 6),
-            completed_q={"visits": False, "completed_q": True}[cfg.policy_target],
+            completed_q={"visits": False, "completed_q": True}[cfg.policy_target], collisions=cfg.collisions,
         )
         drive(sp, {0: player}, device, on_samples=replay.add, plan=plan)
         gens.append(replay)
@@ -699,7 +706,7 @@ def run(cfg: Config, resume: bool = True):
             world_sampler=world_sampler, world_candidates=cfg.world_candidates, world_pool=cfg.world_pool,
             world_temp=cfg.world_temp, value_mix=cfg.value_mix, full_search_prob=cfg.full_search_prob,
             cheap_sims=cfg.cheap_sims or max(8, cfg.sims // 6),
-            completed_q={"visits": False, "completed_q": True}[cfg.policy_target],
+            completed_q={"visits": False, "completed_q": True}[cfg.policy_target], collisions=cfg.collisions,
         )
         scorers = {0: trainer.scorer()} if world_sampler == "scored" else None
         sp_stats = drive(sp, {0: net}, device, on_samples=add, plan=plan, scorers=scorers)

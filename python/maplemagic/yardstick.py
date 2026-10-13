@@ -25,7 +25,8 @@ def collect(checkpoint: str, games: int, seed: int, device) -> dict:
     """Self-play as the run trained (its sims, sampled opening decisions and root
     noise), with deals from `seed`. Every decision of both seats is kept."""
     cfg = run_config(checkpoint)
-    s = {**cfg.search_settings(), **(load_meta(checkpoint).get("search") or {})}
+    meta = load_meta(checkpoint).get("search") or {}
+    s = {**cfg.search_settings(), **meta}
     net = load(checkpoint, device)
     # Diagnostic samplers (oracle, retention) aren't how a run plays; only learned worlds are kept.
     sampler = "scored" if s.get("world_sampler") == "scored" else "uniform"
@@ -36,7 +37,7 @@ def collect(checkpoint: str, games: int, seed: int, device) -> dict:
         maple_worlds=(s["maple_worlds"],) * 2, maple_select=s["maple_select"], maple_resample=s["maple_resample"],
         perfect_obs=(s["perfect_obs"],) * 2, pimc_worlds=(s.get("pimc_worlds", 0),) * 2,
         value_mix=s.get("value_mix", 1.0), world_sampler=sampler, world_candidates=cfg.world_candidates,
-        world_pool=cfg.world_pool, world_temp=cfg.world_temp,
+        world_pool=cfg.world_pool, world_temp=cfg.world_temp, collisions=meta.get("collisions", False),
     )
     scorers = {0: siamese_scorer(load_siamese(checkpoint, device), device)} if sampler == "scored" else None
     parts = []
