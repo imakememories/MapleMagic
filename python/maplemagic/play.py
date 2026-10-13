@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 from . import Match
-from .model import evaluate, load
+from .model import evaluate, load, load_meta
 
 
 class Agent:
@@ -16,11 +16,13 @@ class Agent:
     def __init__(self, checkpoint: str | None, sims: int, device):
         self.net = load(checkpoint, device).eval() if checkpoint else None
         self.sims, self.device = sims, device
+        # As the network trained; a checkpoint without the key searched without collisions.
+        self.collisions = bool(checkpoint and (load_meta(checkpoint).get("search") or {}).get("collisions", False))
 
     def choose(self, m: Match, seed: int) -> tuple[int, str]:
         if self.net is None:
             return m.heuristic_choice(self.sims, seed), ""
-        m.start_search(seed)
+        m.start_search(seed, self.collisions)
         while m.simulations() < self.sims:
             batch = m.gather(8)
             if batch is None:

@@ -512,8 +512,9 @@ impl Match {
     }
 
     /// Starts the agent's search at the current decision.
-    fn start_search(&mut self, seed: u64) {
-        self.search = Some(Search::new(&self.game, Config::default(), seed));
+    #[pyo3(signature = (seed, collisions=false))]
+    fn start_search(&mut self, seed: u64, collisions: bool) {
+        self.search = Some(Search::new(&self.game, Config { collisions, ..Config::default() }, seed));
         self.leaves.clear();
     }
 

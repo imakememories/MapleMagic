@@ -66,7 +66,8 @@ pub struct Config {
     /// Log-odds per (turn bucket, card definition).
     pub retention: Option<Arc<Vec<f32>>>,
     /// A simulation that reaches a node still awaiting its evaluation stops
-    /// there and ends the batch, instead of choosing without priors.
+    /// there and ends the batch (PIMC: its world's part of it), instead of
+    /// choosing without priors.
     pub collisions: bool,
 }
 
@@ -252,8 +253,8 @@ pub struct Search {
     pending: Vec<PendingSim>,
     /// Fixed worlds: MAPLE's, or PIMC's (world `i` searched from root node `i`).
     worlds: Vec<Game>,
-    /// PIMC: the world the next simulation descends in.
-    next_world: usize,
+    /// PIMC: simulations started in each world.
+    world_sims: Vec<u32>,
     /// Opponent hands the worlds are dealt from (None: dealt at random).
     hands: Option<Vec<Vec<u16>>>,
     /// Scored sampling: distinct candidate hands and how often each was drawn.
@@ -315,7 +316,7 @@ impl Search {
             rng: SplitMix64::seed(seed),
             pending: Vec::new(),
             worlds: Vec::new(),
-            next_world: 0,
+            world_sims: Vec::new(),
             hands: None,
             candidates: Vec::new(),
             root_evals: Vec::new(),
@@ -377,6 +378,7 @@ impl Search {
         }
         if self.cfg.pimc_worlds > 0 {
             self.worlds = self.sample_worlds(self.cfg.pimc_worlds);
+            self.world_sims = vec![0; self.worlds.len()];
             for _ in 1..self.worlds.len() {
                 self.nodes.push(Node::new(self.observer));
             }
@@ -444,15 +446,20 @@ impl Search {
         }
         let mut leaves = Vec::new();
         let mut attempts = 0;
+        // PIMC: worlds that collided in this batch.
+        let mut blocked: Vec<usize> = Vec::new();
         while leaves.len() < max_leaves && attempts < max_leaves * 4 {
             attempts += 1;
             let start = if self.cfg.pimc_worlds > 0 {
-                // PIMC: the worlds take turns, each from its own root.
-                (!self.worlds.is_empty()).then(|| {
-                    let w = self.next_world % self.worlds.len();
-                    self.next_world += 1;
-                    (self.worlds[w].clone(), w as u32)
-                })
+                // PIMC: the worlds take turns, each from its own root. One that collided
+                // waits for the next batch, and the others don't get ahead of it.
+                match self.world_sims.iter().min() {
+                    Some(&least) => {
+                        let Some(w) = (0..self.worlds.len()).find(|&w| self.world_sims[w] == least && !blocked.contains(&w)) else { break };
+                        Some((self.worlds[w].clone(), w as u32))
+                    }
+                    None => None,
+                }
             } else {
                 self.root_world().map(|g| (g, 0))
             };
@@ -463,11 +470,13 @@ impl Search {
                 self.stats.no_world_sims += 1;
                 continue;
             };
-            if !self.descend(g, root, &mut leaves) {
+            if self.descend(g, root, &mut leaves) {
                 if self.cfg.pimc_worlds > 0 {
-                    // This world goes first in the next batch.
-                    self.next_world -= 1;
+                    self.world_sims[root as usize] += 1;
                 }
+            } else if self.cfg.pimc_worlds > 0 {
+                blocked.push(root as usize);
+            } else {
                 break;
             }
         }
@@ -1257,13 +1266,33 @@ mod tests {
                     continue; // b also ended games after its last leaf
                 }
                 assert_eq!(tree(&a), tree(&b), "{cfg:?}");
-                assert_eq!(a.next_world, b.next_world);
+                assert_eq!(a.world_sims, b.world_sims);
                 assert_eq!(SearchStats { collisions: 0, ..a.stats }, SearchStats { collisions: 0, ..b.stats }, "{cfg:?}");
                 checked += 1;
                 deep += usize::from(!b.avail_log.is_empty());
             }
         }
         assert!(checked >= 24 && deep >= 12, "{checked} collisions compared, {deep} below the root");
+    }
+
+    #[test]
+    fn a_pimc_collision_holds_back_only_its_world() {
+        let mut ended = 0;
+        for g in positions(12, 2) {
+            let mut s = Search::new(&g, collide(pimc(3)), 4);
+            s.run(12, 4, &mut HeuristicEval);
+            let collisions = s.stats.collisions;
+            let leaves = s.gather(32);
+            let (lo, hi) = (*s.world_sims.iter().min().unwrap(), *s.world_sims.iter().max().unwrap());
+            assert!(hi - lo <= 1, "{:?}", s.world_sims);
+            if leaves.len() < 32 {
+                // The batch ended once every least searched world had collided, each once.
+                let waiting = s.world_sims.iter().filter(|&&n| n == lo).count() as u64;
+                assert_eq!(waiting, s.stats.collisions - collisions, "{:?}", s.world_sims);
+                ended += usize::from(waiting < 3);
+            }
+        }
+        assert!(ended >= 4, "{ended} batches went on past a collision");
     }
 
     #[test]
