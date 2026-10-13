@@ -114,8 +114,9 @@ fn report(label: &str, ps: &[Game], collisions: bool) {
 }
 
 fn main() {
-    let n: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(60);
-    let c = std::env::args().any(|a| a == "--collisions");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let c = args.iter().any(|a| a == "--collisions");
+    let n: usize = args.iter().find(|a| !a.starts_with("--")).map_or(60, |s| s.parse().expect("positions: a number"));
     println!("{:<22} {:>7} {:>7} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8}", "positions", "objects", "choices", "clone", "deal", "engine", "step", "IS-MCTS", "MAPLE");
     println!("{:<22} {:>7} {:>7} {:>8} {:>8} {:>8} {:>8} {:>9} {:>8}", "", "", "", "us", "us", "us", "us", "us/sim", "us/sim");
     report("Pauper (Faeries/Spy)", &positions(n, &|s| Game::new("Faeries", "Spy", s).unwrap()), c);

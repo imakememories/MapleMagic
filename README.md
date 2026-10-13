@@ -134,7 +134,8 @@ Every change tried, in order:
 | MAPLE-r searching in training, the network seeing each world's guessed hand | `configs/ognis_m1r.yaml` | 50.1M | 0.708 ± 0.036 | 0.400 ± 0.039 | no |
 | Full MAPLE: the same with worlds from a learned sampler | `configs/ognis_m1.yaml` | 65.8M | 0.842 ± 0.029 | 0.508 ± 0.040 | no |
 
-The S7 and S8 head-to-head matches are 1,200 games. Generation 0 from
+Two head-to-heads are 1,200 games: generation 0 from heuristic self-play
+with the best settings, and 40 generations. Generation 0 from
 heuristic self-play also takes about 15 minutes on the CPU: 2,000 heuristic
 games at 800 simulations.
 

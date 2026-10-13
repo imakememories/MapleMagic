@@ -219,13 +219,15 @@ struct Edge {
 struct Node {
     edges: Vec<Edge>,
     expanded: bool,
+    /// Queued for evaluation, its priors not yet fed.
+    awaiting: bool,
     /// The player choosing at this node.
     actor: PlayerId,
 }
 
 impl Node {
     fn new(actor: PlayerId) -> Node {
-        Node { edges: Vec::new(), expanded: false, actor }
+        Node { edges: Vec::new(), expanded: false, awaiting: false, actor }
     }
 }
 
@@ -489,6 +491,7 @@ impl Search {
             if !self.nodes[node as usize].expanded {
                 // Marked now so other simulations in this batch don't queue it again.
                 self.nodes[node as usize].expanded = true;
+                self.nodes[node as usize].awaiting = true;
                 self.add_virtual_loss(&path);
                 self.note_leaf(path.len(), &g);
                 self.pending.push(PendingSim { path, leaf_node: node, weights: vec![1.0], term_sum: 0.0, term_n: 0.0 });
@@ -512,10 +515,10 @@ impl Search {
         }
     }
 
-    /// With collisions, whether `node` (expanded) still awaits its evaluation. If
-    /// so the simulation stops: no virtual loss was added, so only `avail` is undone.
+    /// With collisions, whether `node` still awaits its evaluation. If so the
+    /// simulation stops: no virtual loss was added, so only `avail` is undone.
     fn collides(&mut self, node: u32) -> bool {
-        if !self.cfg.collisions || !self.nodes[node as usize].edges.is_empty() {
+        if !self.cfg.collisions || !self.nodes[node as usize].awaiting {
             return false;
         }
         for &(n, e) in &self.avail_log {
@@ -568,6 +571,7 @@ impl Search {
         while done < max_sims && attempts < max_sims * 4 && !collided {
             attempts += 1;
             self.avail_log.clear();
+            let counts = (self.stats.terminal_worlds, self.stats.dropped_diverged, self.stats.dropped_illegal);
             let mut alive = if self.cfg.maple_resample { self.sample_worlds(self.cfg.maple_worlds) } else { self.worlds.clone() };
             if alive.is_empty() {
                 self.simulations += 1;
@@ -620,6 +624,7 @@ impl Search {
                 }
                 if !self.nodes[node as usize].expanded {
                     self.nodes[node as usize].expanded = true;
+                    self.nodes[node as usize].awaiting = true;
                     self.add_virtual_loss(&path);
                     self.note_leaf(path.len(), &alive[0]);
                     self.stats.leaf_worlds += alive.len() as u64;
@@ -634,6 +639,8 @@ impl Search {
                     break;
                 }
                 if self.collides(node) {
+                    // An uncounted simulation's worlds aren't counted either.
+                    (self.stats.terminal_worlds, self.stats.dropped_diverged, self.stats.dropped_illegal) = counts;
                     collided = true;
                     break;
                 }
@@ -713,6 +720,7 @@ impl Search {
                 keys.iter().zip(es).zip(&sim.weights).map(|((k, e), &w)| (k.as_slice(), e.priors.as_slice(), w)).collect();
             let priors = aggregate_priors(&per_world);
             let node = &mut self.nodes[sim.leaf_node as usize];
+            node.awaiting = false;
             let mean = 1.0 / priors.len().max(1) as f32;
             let mut stale = 0;
             for e in node.edges.iter_mut().filter(|e| !priors.iter().any(|p| p.0 == e.key)) {
@@ -895,17 +903,14 @@ impl Search {
 
     /// PUCT over the edges for `keys` (the choices legal in this simulation).
     fn select(&mut self, node: u32, keys: &[u64]) -> usize {
-        let cfg = self.cfg.clone();
+        let (c_puct, fpu_reduction, collisions) = (self.cfg.c_puct, self.cfg.fpu_reduction, self.cfg.collisions);
         let n = &mut self.nodes[node as usize];
-        // Keys new to this node get its mean prior.
-        let mean_prior = if n.edges.is_empty() {
-            // Only a node awaiting its evaluation has no edges here.
-            debug_assert!(!cfg.collisions, "select at a node awaiting its evaluation");
+        if n.awaiting {
+            debug_assert!(!collisions, "select at a node awaiting its evaluation");
             self.stats.blind_selects += 1;
-            1.0
-        } else {
-            n.edges.iter().map(|e| e.prior).sum::<f32>() / n.edges.len() as f32
-        };
+        }
+        // Keys new to this node get its mean prior.
+        let mean_prior = if n.edges.is_empty() { 1.0 } else { n.edges.iter().map(|e| e.prior).sum::<f32>() / n.edges.len() as f32 };
         let mut legal: Vec<usize> = Vec::with_capacity(keys.len());
         for &key in keys {
             let i = match n.edges.iter().position(|e| e.key == key) {
@@ -916,20 +921,20 @@ impl Search {
                 }
             };
             n.edges[i].avail += 1.0;
-            if cfg.collisions {
+            if collisions {
                 self.avail_log.push((node, i as u32));
             }
             legal.push(i);
         }
         let (vis, sum) = legal.iter().fold((0.0f32, 0.0f32), |(v, s), &i| (v + n.edges[i].visits, s + n.edges[i].value_sum));
         let parent_q = if vis > 0.0 { sum / vis } else { 0.0 };
-        let fpu = parent_q - cfg.fpu_reduction;
+        let fpu = parent_q - fpu_reduction;
         let mut best = legal[0];
         let mut best_u = f32::NEG_INFINITY;
         for &i in &legal {
             let e = &n.edges[i];
             let q = if e.visits > 0.0 { e.value_sum / e.visits } else { fpu };
-            let u = q + cfg.c_puct * e.prior * e.avail.sqrt() / (1.0 + e.visits);
+            let u = q + c_puct * e.prior * e.avail.sqrt() / (1.0 + e.visits);
             if u > best_u {
                 best_u = u;
                 best = i;
@@ -1102,14 +1107,18 @@ mod tests {
         Config { collisions: true, ..c }
     }
 
-    fn configs() -> Vec<Config> {
-        let base = vec![
+    fn base_configs() -> Vec<Config> {
+        vec![
             Config::default(),
             maple(5, MapleSelect::RefWorld),
             maple(5, MapleSelect::Union),
             Config { maple_resample: true, ..maple(3, MapleSelect::RefWorld) },
             pimc(5),
-        ];
+        ]
+    }
+
+    fn configs() -> Vec<Config> {
+        let base = base_configs();
         base.iter().cloned().chain(base.iter().cloned().map(collide)).collect()
     }
 
@@ -1170,7 +1179,7 @@ mod tests {
         let mut rng = SplitMix64::seed(8);
         let (mut blind, mut collisions) = (0, 0);
         for g in positions(20, 2) {
-            for base in configs().into_iter().take(5) {
+            for base in base_configs() {
                 let mut on = Search::new(&g, collide(base.clone()), rng.next_u64());
                 on.run(64, 8, &mut HeuristicEval);
                 assert_eq!(on.stats.blind_selects, 0, "{base:?}");
@@ -1182,6 +1191,39 @@ mod tests {
             }
         }
         assert!(collisions > 0 && blind > 0, "{collisions} collisions, {blind} blind selections");
+    }
+
+    #[test]
+    fn every_selection_before_the_priors_is_blind() {
+        for g in positions(10, 3) {
+            for cfg in [Config::default(), maple(5, MapleSelect::Union)] {
+                // Every simulation after the first selects at the root before its priors arrive.
+                let mut s = Search::new(&g, cfg.clone(), 2);
+                s.gather(8);
+                assert!(s.pending.len() >= 6, "{cfg:?}");
+                assert!(s.stats.blind_selects >= s.pending.len() as u64 - 1, "{cfg:?}: {:?}", s.stats);
+            }
+        }
+    }
+
+    /// Values only, no priors.
+    struct NoPriors;
+
+    impl Evaluator for NoPriors {
+        fn eval(&mut self, leaves: &[Game]) -> Vec<Eval> {
+            leaves.iter().map(|_| Eval { priors: Vec::new(), value: 0.0 }).collect()
+        }
+    }
+
+    #[test]
+    fn collisions_finish_without_priors() {
+        for g in positions(4, 2) {
+            for base in base_configs() {
+                let mut s = Search::new(&g, collide(base.clone()), 6);
+                s.run(32, 8, &mut NoPriors);
+                assert!(s.simulations >= 32, "{base:?}");
+            }
+        }
     }
 
     /// Every edge that has been offered or visited: (key, visits, value sum, avail, children), per node.
@@ -1216,6 +1258,7 @@ mod tests {
                 }
                 assert_eq!(tree(&a), tree(&b), "{cfg:?}");
                 assert_eq!(a.next_world, b.next_world);
+                assert_eq!(SearchStats { collisions: 0, ..a.stats }, SearchStats { collisions: 0, ..b.stats }, "{cfg:?}");
                 checked += 1;
                 deep += usize::from(!b.avail_log.is_empty());
             }

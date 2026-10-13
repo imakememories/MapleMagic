@@ -586,6 +586,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("ACTION_VOCAB", action_vocab().to_vec())?;
     m.add("DECKS", deck_names())?;
     m.add("DECK_PAIRS", deck_pairs())?;
+    let commander = maplemagic::commander::list_names();
+    m.add("COMMANDER_DECKS", deck_names().into_iter().filter(|n| commander.contains(n)).collect::<Vec<_>>())?;
     m.add("HIST_FIELDS", HIST_FIELDS)?;
     m.add("MAX_HIST", MAX_HIST)?;
     m.add("HIST_VOCAB", hist_vocab().to_vec())?;

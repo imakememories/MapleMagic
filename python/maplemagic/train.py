@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import yaml
 
-from . import DECK_PAIRS, MAX_TOKENS, SelfPlay
+from . import COMMANDER_DECKS, DECK_PAIRS, MAX_TOKENS, SelfPlay
 from .model import EvalPlan, Net, evaluate, load, losses, plan_eval, save, siamese_scorer, to_tensors
 
 MAX_ACTIONS = 96
@@ -22,7 +22,7 @@ MAX_ACTIONS = 96
 class Config:
     name: str = "run"
     out_dir: str = "runs"
-    # Deck pairings; "all" = every ordered pair of the pool.
+    # Deck pairings; "all" = every ordered pair of the Pauper decks.
     pairings: list | str = "all"
     generations: int = 50
     games_per_gen: int = 512
@@ -104,7 +104,7 @@ class Config:
 
     def pairing_list(self) -> list[tuple[str, str]]:
         if self.pairings == "all":
-            return [tuple(p) for p in DECK_PAIRS]
+            return [tuple(p) for p in DECK_PAIRS if p[0] not in COMMANDER_DECKS]
         return [tuple(p) for p in self.pairings]
 
     def search_settings(self) -> dict:
@@ -758,7 +758,7 @@ def run(cfg: Config, resume: bool = True):
             "evals": sp_stats["evals"],
             "evals_per_s": round(sp_stats["evals"] / max(sp_stats["seconds"], 1e-6)),
             "evals_per_move": round(sp_stats["evals"] / max(new[0], 1), 1),
-            **({"search": search} if cfg.maple_worlds or cfg.pimc_worlds or cfg.world_sampler != "uniform" else {}),
+            "search": search,
             "train_steps": steps,
             "train_s": round(train_s, 1),
             "policy_loss": round(pl_sum / steps, 4),

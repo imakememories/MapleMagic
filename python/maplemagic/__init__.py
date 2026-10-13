@@ -5,6 +5,7 @@ from ._core import (  # noqa: F401
     CARD_KINDS,
     CARD_NAMES,
     CARD_STATIC,
+    COMMANDER_DECKS,
     DECKS,
     DECK_PAIRS,
     HIST_FIELDS,
