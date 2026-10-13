@@ -48,8 +48,10 @@ at the hidden cards draws from exactly the cards that remain.
   leaf in every surviving world. A choice's prior is its mean over the worlds
   where it is legal, and the value is the mean over worlds. Worlds the
   network can't tell apart are evaluated once, so a simulation costs about
-  2.4 evaluations. "-r" means the worlds are random; the paper's full MAPLE
-  picks them with a learned network. `sampler-pilot` trains a simpler one,
+  2.4 evaluations. "-r" means the worlds are random. The paper's **full MAPLE**
+  picks them with a learned network: each move it draws 50 candidate opponent
+  hands and keeps the 5 a Siamese network rates closest to what the player
+  has seen, and that network trains alongside the policy and value. Both are
   tested on Ognis below. Where worlds disagree on who acts or what is legal,
   MAPLE-r follows one random world. The **union** variant offers every choice
   legal in any world, as the paper does, and lets the majority's player act.
@@ -129,10 +131,18 @@ Every change tried, in order:
 | **One layer, 192 wide, with the recipe: the best network** | `configs/ognis_s6e.yaml` | 46.7M | **0.828 ± 0.030** | 0.530 ± 0.040 | yes, a tie at less cost |
 | Generation 0 from heuristic self-play, with the best settings | `configs/ognis_s7.yaml` | 49.1M | 0.768 ± 0.034 | 0.445 ± 0.028 | no |
 | 40 generations instead of 20 | `configs/ognis_s8.yaml` | 94.9M | 0.820 ± 0.031 | 0.464 ± 0.028 | no |
+| MAPLE-r searching in training, the network seeing each world's guessed hand | `configs/ognis_m1r.yaml` | 50.1M | 0.708 ± 0.036 | 0.400 ± 0.039 | no |
+| Full MAPLE: the same with worlds from a learned sampler | `configs/ognis_m1.yaml` | 65.8M | 0.842 ± 0.029 | 0.508 ± 0.040 | no |
 
-The last two head-to-head matches are 1,200 games. Generation 0 from
+The S7 and S8 head-to-head matches are 1,200 games. Generation 0 from
 heuristic self-play also takes about 15 minutes on the CPU: 2,000 heuristic
 games at 800 simulations.
+
+The two MAPLE models play MAPLE at 152–155 network evaluations a move (42
+and 45 simulations; the best network uses 156 at 160), and their head-to-head
+is against the best network. Full
+MAPLE's games ran longer, so it trained on more evaluations; see
+"Full MAPLE on Ognis" below.
 
 **What the results say:**
 - **The value head was the bottleneck.** The baseline memorized its games:
@@ -165,16 +175,55 @@ MAPLE over five. 600 games each.
 |---|---|
 | AlphaZe\*\* over one world | 0.505 ± 0.040 |
 | MAPLE-r | 0.478 ± 0.040 |
-| MAPLE with learned worlds | 0.420 ± 0.039 |
+| MAPLE with worlds from an offline sampler | 0.420 ± 0.039 |
 
 - As on Pauper, nothing beats IS-MCTS. At 160 simulations the leaves are only
   3 to 4 decisions past the root, under a quarter of a turn, so every search
   sees nearly the same few plies, and how the worlds are dealt matters
   little.
-- The learned worlds come from `sampler-pilot`, which scores candidate
-  opponent hands. It ranks the true hand no better than a table of how often
+- The offline sampler comes from `sampler-pilot`, trained on a frozen
+  network's games. It ranks the true hand no better than a table of how often
   each unseen card is in the hand, by turn. Scoring took part of each move,
   so this MAPLE got 13% fewer evaluations.
+
+### Full MAPLE on Ognis
+
+**Question:** does the paper's full method, worlds picked by a sampler that
+trains alongside the network, make a stronger bot?
+
+Two models train with MAPLE over 5 worlds, the network seeing each world's
+guessed opponent hand as the paper's networks do. They differ only in where
+the worlds come from: random (MAPLE-r) or the learned sampler (full MAPLE).
+Each move, the sampler draws 50 candidate hands and keeps the 5 it rates
+closest to the player's observation and the opponent's past moves. It trains
+on the true hands from self-play, and generation 0 plays random worlds.
+Matches are 600 games at equal network evaluations a move per side, within 7%.
+
+| Match | Score |
+|---|---|
+| Full MAPLE against MAPLE-r | 0.578 ± 0.040 |
+| The same, full MAPLE at MAPLE-r's training budget (49.2M evaluations) | 0.555 ± 0.040 |
+| Full MAPLE against the best network (IS-MCTS) | 0.508 ± 0.040 |
+| MAPLE-r against the best network | 0.400 ± 0.039 |
+| Full MAPLE's network: learned worlds against random worlds | 0.493 ± 0.040 |
+| Full MAPLE's network: the true hand in every world against random worlds | 0.518 ± 0.040 |
+| The best network: the true hand in every world against random worlds | 0.508 ± 0.040 |
+
+- **The learned sampler works,** as in the paper: full MAPLE beats MAPLE-r,
+  also at equal training compute. On fresh positions it ranks the true hand at
+  0.159, against 0.201 for the per-turn table and 0.239 for the offline sampler.
+- **The gain comes from training, not from play.** At play time, full MAPLE's
+  network plays as well with random worlds, and even dealing it the opponent's
+  true hand doesn't help. Training on searches over likelier worlds made the
+  better network.
+- **Full MAPLE only ties IS-MCTS.** Knowing the hand doesn't help IS-MCTS at
+  160 simulations either: the search sees about 4 decisions ahead, and the
+  opponent rarely gets to use its hand in that span. Ognis, a red deck with few
+  instants, is a hard case for hidden information.
+- **MAPLE's small searches need batches of one leaf.** With larger batches,
+  the first simulations of a search choose before the network's priors arrive.
+  At 2 to 3 simulations a move, as in MAPLE's cheap training searches, the
+  agent then passed almost every move.
 
 ### More search at play time
 
@@ -377,11 +426,15 @@ $PY -m maplemagic.cli eval runs/ognis_s6e/latest.pt --vs heuristic --games 600 -
     --config configs/ognis.yaml --out runs/evals/s6e_vs_heur.json
 # Held-out value accuracy of two runs on the same fresh games:
 $PY -m maplemagic.cli yardstick runs/ognis_s6d/latest.pt runs/ognis_s6e/latest.pt --games 100 --seed 777777
+# Full MAPLE and MAPLE-r, then full MAPLE against the best network at equal evaluations a move:
+for c in ognis_m1r ognis_m1; do $PY -m maplemagic.cli train configs/$c.yaml --fresh; done
+$PY -m maplemagic.cli eval runs/ognis_m1/latest.pt --vs runs/ognis_s6e/latest.pt --games 600 --sims 42 --opp-sims 160 \
+    --leaves-per-step 2 --opp-leaves-per-step 8 --config configs/ognis.yaml --out runs/evals/m1_vs_s6e.json
 ```
 
 Each config pins the settings it trained with. A 20-generation run takes
 30–65 minutes of self-play and training on an RX 7900 XTX with a 32-thread
-CPU.
+CPU; the MAPLE runs take 60–110 minutes.
 
 Pauper:
 
