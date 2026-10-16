@@ -1,0 +1,27 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MapleMagic play</title>
+<style>
+body { font-family: sans-serif; margin: 8px; max-width: 960px; }
+pre { white-space: pre-wrap; }
+#choices button { display: block; width: 100%; text-align: left; margin: 2px 0; }
+table { border-collapse: collapse; }
+th, td { border: 1px solid #999; padding: 2px 6px; text-align: right; }
+th:nth-child(2), td:nth-child(2) { text-align: left; }
+</style></head><body>
+<form id="new">
+  agent <select name="agent"><option value="network">network</option><option value="heuristic">heuristic</option></select>
+  sims <input name="sims" value="400" size="5">
+  seat <select name="seat"><option>random</option><option>0</option><option>1</option></select>
+  seed <input name="seed" size="10" placeholder="random">
+  <button>New game</button>
+</form>
+<p><label><input type="checkbox" id="debug"> Show the agent's thinking (reveals its hand)</label></p>
+<p id="status"></p>
+<pre id="board"></pre>
+<div id="choices"></div>
+<div id="thinking" hidden></div>
+<h4>Log</h4>
+<pre id="log"></pre>
+<script type="module" src="app.js"></script>
+</body></html>

@@ -1,5 +1,6 @@
 @echo off
-rem Play Ognis against the best network: double-click, or run with options, e.g. play.cmd --seat 0 --sims 800
+rem Play Ognis against an agent in the browser: double-click, then use the page that opens.
+rem Add --host 0.0.0.0 to play from another device on your network.
 cd /d %~dp0..
 "C:\Users\manni\miniconda3\envs\rocm_env\python.exe" -m maplemagic.cli play %*
 pause
