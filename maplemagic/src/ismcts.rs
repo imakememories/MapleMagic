@@ -897,6 +897,32 @@ impl Search {
         if worlds > 0.0 { sum / worlds } else { 0.0 }
     }
 
+    /// (visits, mean value, prior before root noise) per root choice, for a
+    /// person reading the search. PIMC sums the worlds' values and averages
+    /// the priors of the worlds expanded; unvisited choices have no value.
+    pub fn root_stats(&self) -> Vec<(f32, Option<f32>, f32)> {
+        let n = self.root.choices().len();
+        let (mut visits, mut values, mut priors, mut expanded) = (vec![0.0f32; n], vec![0.0f32; n], vec![0.0f32; n], 0.0f32);
+        for r in self.roots().filter(|&r| !self.nodes[r].edges.is_empty()) {
+            let clean = self.clean_priors.get(r);
+            for (i, e) in self.root_edges(r).into_iter().enumerate() {
+                let key = self.root.choices()[i].key;
+                visits[i] += e.0;
+                values[i] += e.1;
+                priors[i] += clean.and_then(|c| c.iter().find(|p| p.0 == key)).map_or(e.2, |p| p.1);
+            }
+            expanded += 1.0;
+        }
+        let shown = self.root_visits();
+        (0..n).map(|i| (shown[i], (visits[i] > 0.0).then(|| values[i] / visits[i]), priors[i] / expanded.max(1.0))).collect()
+    }
+
+    /// The evaluator's own value of the root for the searching player (PIMC: mean over worlds).
+    pub fn root_eval(&self) -> Option<f32> {
+        let v: Vec<f32> = self.root_evals.iter().flatten().copied().collect();
+        (!v.is_empty()).then(|| v.iter().sum::<f32>() / v.len() as f32)
+    }
+
     /// The child through edge `e` where `actor` is to act, created on first use.
     fn child(&mut self, node: u32, e: usize, actor: PlayerId) -> u32 {
         let c = self.nodes[node as usize].edges[e].child[actor.index()];
@@ -1327,6 +1353,29 @@ mod tests {
             assert!((total - s.simulations as f32).abs() <= roots + 1e-3, "{cfg:?}: {total} vs {}", s.simulations);
             assert!(s.best() < g.choices().len());
             assert_eq!(s.stats.sims, s.simulations as u64);
+        }
+    }
+
+    #[test]
+    fn root_stats_match_the_search() {
+        for g in positions(5, 3) {
+            for cfg in configs() {
+                let mut s = Search::new(&g, cfg.clone(), 9);
+                assert!(s.root_eval().is_none());
+                s.run(120, 8, &mut HeuristicEval);
+                let stats = s.root_stats();
+                assert_eq!(stats.len(), g.choices().len());
+                assert_eq!(stats.iter().map(|x| x.0).collect::<Vec<_>>(), s.root_visits(), "{cfg:?}");
+                let prior: f32 = stats.iter().map(|x| x.2).sum();
+                assert!((prior - 1.0).abs() < 1e-4, "{cfg:?}: priors sum to {prior}");
+                assert!(stats.iter().filter_map(|x| x.1).all(|q| (-1.0..=1.0).contains(&q)), "{cfg:?}: {stats:?}");
+                let v = s.root_eval().unwrap();
+                assert!((-1.0..=1.0).contains(&v), "{cfg:?}: {v}");
+                if cfg.pimc_worlds == 0 {
+                    let (n, w) = stats.iter().fold((0.0, 0.0), |(n, w), x| (n + x.0, w + x.0 * x.1.unwrap_or(0.0)));
+                    assert!((w / n - s.root_value()).abs() < 1e-4, "{cfg:?}: {} vs {}", w / n, s.root_value());
+                }
+            }
         }
     }
 

@@ -504,11 +504,12 @@ impl Match {
         Ok(())
     }
 
-    /// The heuristic agent's choice: IS-MCTS over `sims` simulations.
-    fn heuristic_choice(&self, sims: u32, seed: u64) -> usize {
+    /// The heuristic agent's choice: IS-MCTS over `sims` simulations, kept for `root_stats`.
+    fn heuristic_choice(&mut self, sims: u32, seed: u64) -> usize {
         let mut s = Search::new(&self.game, Config::default(), seed);
         s.run(sims, 8, &mut HeuristicEval);
-        s.best()
+        self.leaves.clear();
+        self.search.insert(s).best()
     }
 
     /// Starts the agent's search at the current decision.
@@ -558,6 +559,23 @@ impl Match {
         let visits = s.root_visits();
         let total: f32 = visits.iter().sum::<f32>().max(1.0);
         Ok((s.best(), visits.iter().map(|v| v / total).collect(), s.root_value()))
+    }
+
+    /// The last search, per choice and overall, for a person reading it:
+    /// `visits`, `q` (None if unvisited) and `prior` per choice; `value` (the
+    /// search's) and `net_value` (the evaluator's own), for the player who searched.
+    fn root_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let s = self.search.as_ref().ok_or_else(|| PyValueError::new_err("start_search first"))?;
+        let stats = s.root_stats();
+        let d = PyDict::new(py);
+        d.set_item("visits", stats.iter().map(|x| x.0).collect::<Vec<_>>())?;
+        d.set_item("q", stats.iter().map(|x| x.1).collect::<Vec<_>>())?;
+        d.set_item("prior", stats.iter().map(|x| x.2).collect::<Vec<_>>())?;
+        d.set_item("value", s.root_value())?;
+        d.set_item("net_value", s.root_eval())?;
+        d.set_item("simulations", s.simulations)?;
+        d.set_item("best", s.best())?;
+        Ok(d)
     }
 }
 
