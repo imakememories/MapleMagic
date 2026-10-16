@@ -1,8 +1,9 @@
 # S6e with collisions: a simulation that reaches a node awaiting its evaluation stops and ends the batch.
+# 461 games a generation: its games run ~1.5x as long as S6e's (4,855 evaluations a game in generations 1-2 against 3,242), so this matches S6e's ~2.24M self-play evaluations a generation.
 name: ognis_s9
 pairings: [[Ognis, Ognis]]
 generations: 20
-games_per_gen: 690
+games_per_gen: 461
 parallel: 256
 sims: 64
 leaves_per_step: 8
