@@ -75,7 +75,7 @@ pub fn render(g: &Game, viewer: PlayerId) -> String {
             let o = st.objects.get(cmd);
             let at = if o.zone == Zone::Command { "in the command zone" } else { "out" };
             let _ = write!(line, ", commander {} {at} (cast {} times)", card(o.card_def), c.casts[p.index()]);
-            let taken = c.damage[p.opponent().index()][p.index()];
+            let taken = c.damage[p.index()][p.opponent().index()];
             if taken > 0 {
                 let _ = write!(line, ", {taken} commander damage taken");
             }
