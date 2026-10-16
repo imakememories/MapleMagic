@@ -649,6 +649,8 @@ def run(cfg: Config, resume: bool = True):
         kept = os.path.exists(replay_path) and replay.load(replay_path)
         print(f"resumed from {latest} at generation {start_gen}, replay buffer {replay.n if kept else 'empty'}")
     else:
+        # Seeded first, so a fresh start of the same config begins from the same network.
+        torch.manual_seed(cfg.seed)
         net = new_net(cfg, device)
         if os.path.exists(log_path):
             os.replace(log_path, os.path.join(out, f"log.{time.strftime('%Y%m%d-%H%M%S')}.jsonl"))
