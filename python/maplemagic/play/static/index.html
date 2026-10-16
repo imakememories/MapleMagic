@@ -4,24 +4,19 @@
 <link rel="stylesheet" href="style.css">
 </head><body>
 <header>
-  <form id="new">
-    agent <select name="agent"><option value="network">network</option><option value="heuristic">heuristic</option></select>
-    sims <input name="sims" value="400" size="4">
-    seat <select name="seat"><option>random</option><option>0</option><option>1</option></select>
-    seed <input name="seed" size="9" placeholder="random">
-    <button>New game</button>
-  </form>
+  <button id="setup-open">New game...</button>
+  <span id="opponent"></span>
   <label><input type="checkbox" id="debug"> Show the agent's thinking (reveals its hand)</label>
 </header>
 <main>
   <section id="table">
-    <div id="opponent" class="area"></div>
+    <div id="opponent-area" class="area"></div>
     <div id="middle">
       <div id="phase"></div>
       <div id="stack"></div>
       <div id="actions"></div>
     </div>
-    <div id="you" class="area"></div>
+    <div id="you-area" class="area"></div>
   </section>
   <aside id="side">
     <img id="preview" alt="" hidden>
@@ -31,5 +26,61 @@
   </aside>
 </main>
 <div id="popup" hidden></div>
+
+<dialog id="setup">
+  <form id="setup-form">
+    <h3>New game</h3>
+    <div class="setup-grid">
+      <section>
+        <fieldset>
+          <legend>Opponent</legend>
+          <label><input type="radio" name="agent" value="network" checked> A network</label>
+          <label><input type="radio" name="agent" value="heuristic"> The heuristic agent</label>
+          <label><input type="radio" name="agent" value="random"> The random agent</label>
+        </fieldset>
+        <div id="network-pick">
+          <label>Run <select id="run"></select></label>
+          <label>Checkpoint <select id="checkpoint"></select></label>
+          <div id="model-details"></div>
+        </div>
+      </section>
+      <section>
+        <fieldset>
+          <legend>Search</legend>
+          <label>Sims a move <input id="sims" type="number" min="1" max="20000" value="400"></label>
+          <div id="network-search">
+            <label>Method <select id="method">
+              <option value="ismcts">IS-MCTS</option><option value="maple">MAPLE</option><option value="pimc">PIMC</option>
+            </select></label>
+            <label>Worlds <input id="worlds" type="number" min="1" max="64" value="8"></label>
+            <label>MAPLE selection <select id="maple_select"><option>ref</option><option>union</option></select></label>
+            <label><input id="maple_resample" type="checkbox"> New MAPLE worlds every simulation</label>
+            <label><input id="collisions" type="checkbox"> Collisions (stop at nodes awaiting evaluation)</label>
+            <label><input id="perfect_obs" type="checkbox"> Perfect observation (sees each sampled world's hidden cards)</label>
+            <label>Worlds dealt <select id="world_sampler">
+              <option value="uniform">at random</option><option value="oracle">from the true hidden cards (cheats)</option>
+            </select></label>
+            <label>Value mix <input id="value_mix" type="number" min="0" max="1" step="0.1" value="1">
+              <span class="note">1: the network's leaf values; 0: the heuristic's</span></label>
+            <button type="button" id="as-trained">Reset to as trained</button>
+          </div>
+        </fieldset>
+        <fieldset>
+          <legend>Game</legend>
+          <label>Your deck <select id="deck-you"></select></label>
+          <label>The agent's deck <select id="deck-agent"></select></label>
+          <p id="deck-note" class="note"></p>
+          <label>Your seat <select id="seat"><option>random</option><option>0</option><option>1</option></select></label>
+          <label>Seed <input id="seed" size="10" placeholder="random"></label>
+        </fieldset>
+      </section>
+    </div>
+    <p id="setup-error" class="error"></p>
+    <div class="setup-buttons">
+      <button type="button" id="setup-cancel">Cancel</button>
+      <button type="submit">Start game</button>
+    </div>
+  </form>
+</dialog>
 <script type="module" src="app.js"></script>
 </body></html>

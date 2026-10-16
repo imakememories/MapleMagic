@@ -75,8 +75,8 @@ function area(box, p, key, actions, revealedHand) {
 const words = step => step.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
 
 export function renderTable(board, actions, agentHand) {
-  area(document.getElementById("opponent"), board.opponent, "opponent", actions, agentHand);
-  area(document.getElementById("you"), board.you, "you", actions);
+  area(document.getElementById("opponent-area"), board.opponent, "opponent", actions, agentHand);
+  area(document.getElementById("you-area"), board.you, "you", actions);
   const turn = board.mulligans ? "Mulligans" : `Turn ${board.turn}: ${board.active === "you" ? "your" : "the opponent's"} turn`;
   document.getElementById("phase").replaceChildren(text("turn", turn), text("step", words(board.step)));
   const stack = board.stack.map(item => {

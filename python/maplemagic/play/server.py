@@ -1,4 +1,4 @@
-"""The page's server: its static files, card art, and a small JSON API over one Session."""
+"""The page's server: its static files, card art, the models to choose from, and a small JSON API over one Session."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,9 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .. import DECK_PAIRS
 from .art import Art
+from .models import Catalog
 from .session import Session
 
 STATIC = Path(__file__).parent / "static"
@@ -16,33 +18,54 @@ STATIC = Path(__file__).parent / "static"
 TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8"}
 
 
+# What a bad request or an unloadable checkpoint raises; anything else is a bug and stays loud.
+BAD = (ValueError, KeyError, TypeError, OSError, RuntimeError)
+
+
 def api(session: Session, path: str, body: dict) -> tuple[int, dict]:
-    """One API call: (HTTP status, JSON reply)."""
+    """One game call: (HTTP status, JSON reply)."""
     try:
         if path == "/api/new":
-            seed = str(body.get("seed") or "").strip()
-            session.new(body.get("agent", "network"), int(body.get("sims") or 400), str(body.get("seat", "random")),
-                        int(seed) if seed else None)
+            session.new(body)
         elif path == "/api/choose":
             session.choose(int(body["i"]))
         elif path == "/api/ask":
             session.ask()
         elif path != "/api/state":
             return 404, {"error": f"no {path}"}
-    except (ValueError, KeyError, TypeError, OSError) as err:
+    except BAD as err:
         return 400, {"error": str(err)}
     return 200, session.state(bool(body.get("debug")))
 
 
-def serve(checkpoint: str, deck: str, host: str, port: int, open_browser: bool, art_dir: Path, device: str = "auto"):
-    session = Session(checkpoint, deck, device)
+def catalog_api(catalog: Catalog, deck: str, path: str, query: dict) -> tuple[int, dict]:
+    """The models to choose from (/api/models), and one checkpoint's details (/api/model?id=run/file)."""
+    try:
+        if path == "/api/models":
+            return 200, {"runs": catalog.runs(), "default": catalog.default_id(), "default_deck": deck,
+                         "pairs": [list(p) for p in DECK_PAIRS]}
+        if path == "/api/model":
+            return 200, catalog.details(query.get("id", [""])[0])
+    except BAD as err:
+        return 400, {"error": str(err)}
+    return 404, {"error": f"no {path}"}
+
+
+def serve(checkpoint: str, runs: Path, deck: str, host: str, port: int, open_browser: bool, art_dir: Path,
+          device: str = "auto"):
+    catalog = Catalog(runs, Path(checkpoint))
+    session = Session(catalog, device)
     art = Art(art_dir)
     # Match objects stay on the thread that made them, so every game call runs on this one.
     game = ThreadPoolExecutor(max_workers=1)
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            path = urllib.parse.urlsplit(self.path).path
+            url = urllib.parse.urlsplit(self.path)
+            path = url.path
+            if path.startswith("/api/"):
+                code, reply = game.submit(catalog_api, catalog, deck, path, urllib.parse.parse_qs(url.query)).result()
+                return self.reply(code, json.dumps(reply).encode(), "application/json")
             if path.startswith("/art/"):
                 data = art.get(urllib.parse.unquote(path[len("/art/"):]))
                 if data is None:

@@ -27,7 +27,7 @@ function table(t, priors) {
 }
 
 function summary(t, label) {
-  if (!t.sims) return "One choice, so no search.";
+  if (!t.sims) return t.note;
   return `${t.sims} sims in ${t.seconds.toFixed(2)} s. Search value ${num(t.value)}, ${label} ${num(t.net_value)} ` +
     "(for the side searching; +1 is a win).";
 }

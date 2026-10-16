@@ -79,8 +79,9 @@ def main(argv=None):
     sp_.add_argument("--shrink", type=float, required=True)
     sp_.add_argument("--perturb", type=float, required=True)
     pg = sub.add_parser("play", help="play against an agent in the browser")
-    pg.add_argument("checkpoint", nargs="?", default="runs/ognis_s6e/latest.pt", help="the network agent")
-    pg.add_argument("--deck", default="Ognis")
+    pg.add_argument("checkpoint", nargs="?", default="runs/ognis_s6e/latest.pt", help="the network chosen at first")
+    pg.add_argument("--runs", default="runs", help="the folder of runs whose checkpoints the page offers")
+    pg.add_argument("--deck", default="Ognis", help="the deck chosen at first for games against the heuristic or random agent")
     pg.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to play from another device on your network")
     pg.add_argument("--port", type=int, default=8765)
     pg.add_argument("--no-browser", action="store_true", help="don't open the page")
@@ -105,7 +106,7 @@ def main(argv=None):
 
         from .play import serve
         art = Path(a.art_dir) if a.art_dir else Path.home() / ".cache" / "maplemagic" / "art"
-        serve(a.checkpoint, a.deck, a.host, a.port, not a.no_browser, art, a.device)
+        serve(a.checkpoint, Path(a.runs), a.deck, a.host, a.port, not a.no_browser, art, a.device)
     elif a.cmd == "plasticity":
         from .train import plasticity
         plasticity(Config.from_yaml(a.config), a.start, a.out)
