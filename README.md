@@ -362,11 +362,14 @@ IS-MCTS with learned worlds 0.700 (each ± 0.04).
 **What the results say:**
 - **Every model now beats the heuristic agent,** which beat every model of the
   first benchmark below.
-- **Collisions help on Pauper.** At the same training budget, the baseline
-  with collisions beats IS-MCTS without (0.556), and it edges the IS-MCTS run
-  that trained on 22% more evaluations. Its network plays the same with or
-  without collisions, so the gain comes from training. On Ognis the same
-  change tied (see "Collisions on Ognis").
+- **Collisions help on Pauper, modestly.** At the same training budget, the
+  baseline with collisions beats IS-MCTS without (0.556). That match uses
+  IS-MCTS's generation 16, whose learning rate hadn't finished decaying, so it
+  may flatter collisions a little. Against the full IS-MCTS run, which trained
+  on 22% more evaluations, it is ahead, but the CI touches 0.5 (0.529 ± 0.030
+  over 1,080 games). Its network plays the same with or without collisions,
+  so the gain comes from training. On Ognis the same change tied (see
+  "Collisions on Ognis").
 - **Here knowing the hand helps IS-MCTS.** Dealing the opponent's true hand
   into every world beats random worlds (0.546, and 0.530 with the
   learned-worlds network), unlike on Ognis (0.508). Hidden hands matter more
@@ -581,9 +584,11 @@ Pauper, with the Ognis recipe:
 ```sh
 for c in pauper_p0 pauper_p0f pauper_m1r pauper_m1 pauper_m2 pauper_m3; do $PY -m maplemagic.cli train configs/$c.yaml --fresh; done
 # Full MAPLE against IS-MCTS with collisions at about 155 network evaluations a move each:
-$PY -m maplemagic.cli eval runs/pauper_m1/latest.pt --vs runs/pauper_p0f/latest.pt --sims 49 --opp-sims 160     --leaves-per-step 2 --opp-leaves-per-step 8 --games 540 --config configs/bench.yaml --out runs/evals/p1_vs_p0f.json
+$PY -m maplemagic.cli eval runs/pauper_m1/latest.pt --vs runs/pauper_p0f/latest.pt --sims 49 --opp-sims 160 \
+    --leaves-per-step 2 --opp-leaves-per-step 8 --games 540 --config configs/bench.yaml --out runs/evals/p1_vs_p0f.json
 # The true hand in every world against random worlds, one network on both sides:
-$PY -m maplemagic.cli eval runs/pauper_p0f/latest.pt --vs self --world-sampler oracle --sims 160     --games 540 --config configs/bench.yaml --out runs/evals/p0f_oracle_vs_uniform.json
+$PY -m maplemagic.cli eval runs/pauper_p0f/latest.pt --vs self --world-sampler oracle --sims 160 \
+    --games 540 --config configs/bench.yaml --out runs/evals/p0f_oracle_vs_uniform.json
 ```
 
 A run takes 0.9–1.6 hours. Training compute drifts with game length, so
