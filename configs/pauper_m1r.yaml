@@ -2,7 +2,7 @@
 name: pauper_m1r
 pairings: all
 generations: 20
-games_per_gen: 610
+games_per_gen: 480
 parallel: 128
 sims: 16
 cheap_sims: 3

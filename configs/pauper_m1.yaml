@@ -1,9 +1,10 @@
 # Full MAPLE (arXiv 2605.24139) on the Pauper decks: 5 worlds picked from 50 by a Siamese sampler trained with the network; the network sees each world's guessed hand.
-# P0f's search otherwise (collisions; two leaves a round, about IS-MCTS's eight one-evaluation leaves). 610 games a generation until calibrated against P0f's ~2.2M evaluations.
+# P0f's search otherwise (collisions; two leaves a round, about IS-MCTS's eight one-evaluation leaves).
+# 480 games a generation: 4,601 evaluations a game in generations 1-2 (26 a move, games of ~175 decisions), so this matches P0f's ~2.2M a generation.
 name: pauper_m1
 pairings: all
 generations: 20
-games_per_gen: 610
+games_per_gen: 480
 parallel: 128
 sims: 16
 cheap_sims: 3
