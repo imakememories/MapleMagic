@@ -84,6 +84,9 @@ def main(argv=None):
     pg.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to play from another device on your network")
     pg.add_argument("--port", type=int, default=8765)
     pg.add_argument("--no-browser", action="store_true", help="don't open the page")
+    pg.add_argument("--art-dir", default=None, help="where card images from Scryfall are kept (default ~/.cache/maplemagic/art)")
+    pg.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto",
+                    help="where the network runs; cpu leaves the GPU and its memory to a training run")
     y = sub.add_parser("yardstick", help="score value heads on fresh games their runs never trained on")
     y.add_argument("checkpoints", nargs="+")
     y.add_argument("--games", type=int, default=100)
@@ -98,8 +101,11 @@ def main(argv=None):
         from .train import pretrain
         pretrain(Config.from_yaml(a.config), a.games, a.sims, a.passes, a.shrink, a.perturb)
     elif a.cmd == "play":
+        from pathlib import Path
+
         from .play import serve
-        serve(a.checkpoint, a.deck, a.host, a.port, not a.no_browser)
+        art = Path(a.art_dir) if a.art_dir else Path.home() / ".cache" / "maplemagic" / "art"
+        serve(a.checkpoint, a.deck, a.host, a.port, not a.no_browser, art, a.device)
     elif a.cmd == "plasticity":
         from .train import plasticity
         plasticity(Config.from_yaml(a.config), a.start, a.out)

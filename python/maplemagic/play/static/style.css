@@ -1,0 +1,94 @@
+/* A dark table: the opponent's side on top, yours below, the turn, stack and
+   action bar between them; the card preview, thinking and log on the right. */
+:root {
+  color-scheme: dark;
+  --felt: #22332a;
+  --panel: #141c18;
+  --text: #e8e6e1;
+  --muted: #a9b0aa;
+  --can: #4fc3f7;
+  --attack: #e5533d;
+  --gold: #e0b84a;
+}
+body { margin: 0; font-family: system-ui, sans-serif; background: #1a211d; color: var(--text); }
+body.busy { cursor: progress; }
+header { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: center; padding: 6px 10px; background: var(--panel); font-size: 14px; }
+main { display: grid; grid-template-columns: 1fr 300px; gap: 8px; padding: 8px; }
+@media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+#table { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.area { display: grid; grid-template-columns: 140px 1fr; gap: 8px; padding: 6px; border-radius: 8px; background: var(--felt); }
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: center; min-height: 40px; }
+
+/* Player info: life (a target when a choice names the player), piles, commander. */
+.info { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.life { display: flex; align-items: baseline; gap: 6px; padding: 4px 6px; border-radius: 6px; background: var(--panel); color: var(--text); }
+.life .number { font-size: 28px; font-weight: 700; }
+.info.active .life { box-shadow: 0 0 0 2px var(--gold); }
+.piles { display: flex; gap: 6px; }
+.pile { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.pile .card { --w: 40px; }
+.pile.open { cursor: pointer; }
+.pile .count { font-size: 10px; text-align: center; }
+.command { display: flex; flex-direction: column; gap: 2px; }
+.command .card { --w: 64px; }
+
+/* Cards: 63 x 88 like the real thing; art over the name, which shows until it loads. */
+.card { --w: 84px; position: relative; flex: none; width: var(--w); height: calc(var(--w) * 1.397); border-radius: 5px;
+  background: linear-gradient(#555b57, #2f3331); border: 1px solid #000; box-sizing: border-box; overflow: hidden;
+  transition: transform .1s; }
+.card img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 4px; }
+.card .name { display: block; padding: 4px; font-size: 11px; font-weight: 600; text-align: center; overflow: hidden; overflow-wrap: anywhere; }
+.card.back { background: repeating-linear-gradient(45deg, #5a3a22 0 6px, #4a2e1a 6px 12px); border: 2px solid #2a1a0e; }
+.card.back.empty { opacity: .25; }
+.card.tapped { transform: rotate(90deg); margin: 0 calc(var(--w) * .2); }
+.card.attacking { box-shadow: 0 0 0 3px var(--attack); }
+.card.can { box-shadow: 0 0 0 3px var(--can), 0 0 12px var(--can); cursor: pointer; }
+.card:hover { z-index: 2; }
+.badge { position: absolute; z-index: 1; padding: 1px 4px; border-radius: 4px; font-size: 11px; background: rgba(0, 0, 0, .8); color: #fff; }
+.badge.pt { right: 3px; bottom: 3px; background: #f2efe6; color: #111; font-weight: 700; }
+.badge.damage { left: 3px; bottom: 3px; background: #b3261e; }
+.badge.counters { left: 3px; top: 3px; background: #2f6f3a; }
+.badge.attack { right: 3px; top: 3px; background: var(--attack); }
+.badge.blocking { right: 3px; top: 3px; background: #3d6fb3; }
+.badge.label { left: 3px; top: 3px; }
+
+.row.lands .card { --w: 66px; }
+.hand { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; min-height: 40px; }
+.you .hand .card { --w: 96px; }
+.you .hand .card:hover { transform: translateY(-8px); }
+.opponent .hand .card { --w: 46px; }
+.opponent .hand.revealed .card { --w: 76px; outline: 2px dashed var(--gold); }
+
+/* Between the sides: whose turn and which step, the stack, and what to do. */
+#middle { display: grid; grid-template-columns: 150px 1fr minmax(220px, 300px); gap: 8px; align-items: center;
+  min-height: 64px; padding: 6px; border-radius: 8px; background: var(--panel); }
+#phase .turn { font-weight: 700; }
+#phase .step { color: var(--muted); font-size: 13px; }
+#stack { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+#stack .card { --w: 62px; }
+#stack .card.opponent { border-color: var(--attack); }
+#actions { display: flex; flex-direction: column; gap: 4px; }
+#actions .prompt { font-weight: 700; }
+#actions .buttons { display: flex; flex-wrap: wrap; gap: 4px; }
+#actions .buttons button { padding: 6px 12px; border: 0; border-radius: 4px; background: var(--gold); color: #111; font-weight: 600; cursor: pointer; }
+#actions .hint, #actions details { font-size: 12px; color: var(--muted); }
+#actions details button { display: block; width: 100%; margin: 2px 0; text-align: left; }
+
+/* The right column. */
+#side { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 12px; }
+#side h4 { margin: 4px 0 0; }
+#preview { width: 100%; max-width: 300px; border-radius: 12px; }
+#log { max-height: 300px; overflow: auto; margin: 0; padding: 6px; white-space: pre-wrap; background: var(--panel); }
+#thinking table { border-collapse: collapse; }
+#thinking th, #thinking td { border: 1px solid #555; padding: 2px 4px; text-align: right; }
+#thinking th:nth-child(2), #thinking td:nth-child(2) { text-align: left; }
+
+/* Popups: a card's menu of choices, or a pile laid out. */
+#popup { position: fixed; z-index: 10; padding: 6px; border: 1px solid #555; border-radius: 6px; background: #1f2723;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .6); }
+#popup.menu button { display: block; width: 100%; margin: 2px 0; padding: 5px 8px; text-align: left; }
+#popup.zone { max-width: 90vw; max-height: 80vh; overflow: auto; }
+#popup.zone h4 { margin: 0 0 6px; }
+#popup.zone .card { --w: 110px; }

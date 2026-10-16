@@ -1,6 +1,7 @@
 """One game between a person and an agent, as the page shows it."""
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import asdict
 
@@ -15,8 +16,10 @@ KINDS = ("network", "heuristic")
 class Session:
     """One game at a time; each kind of agent loads on its first game."""
 
-    def __init__(self, checkpoint: str, deck: str):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    def __init__(self, checkpoint: str, deck: str, device: str = "auto"):
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device(device)
         self.checkpoint, self.deck = checkpoint, deck
         self.agents: dict[str, Agent] = {}
         self.kind, self.sims, self.human, self.seed = KINDS[0], 400, 0, 0
@@ -81,9 +84,9 @@ class Session:
             status = "The agent won."
         else:
             status = f"Game over: {self.m.outcome()}"
-        s = {"status": status, "board": self.m.render(self.human), "choices": [] if over else self.m.choices(self.human),
-             "log": self.log[-200:], "agent": self.kind}
+        s = {"status": status, "board": json.loads(self.m.board(self.human)),
+             "choices": [] if over else self.m.choices(self.human), "log": self.log[-200:], "agent": self.kind}
         if debug:
-            s["debug"] = {"agent_board": self.m.render(1 - self.human), "thoughts": [asdict(t) for t in self.thoughts],
-                          "advice": asdict(self.advice) if self.advice else None}
+            s["debug"] = {"agent_hand": json.loads(self.m.board(1 - self.human))["you"]["hand"],
+                          "thoughts": [asdict(t) for t in self.thoughts], "advice": asdict(self.advice) if self.advice else None}
         return s

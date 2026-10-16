@@ -1,4 +1,5 @@
-// The agent's thinking: what its search made of each decision, as plain tables.
+// The agent's thinking: what its search made of each decision, as plain
+// tables. (Its hand is shown face up on the table meanwhile.)
 
 const pct = x => x == null ? "" : (100 * x).toFixed(1) + "%";
 const num = x => x == null ? "" : (x >= 0 ? "+" : "") + x.toFixed(2);
@@ -45,6 +46,6 @@ export function showThinking(box, s, ask) {
   if (d.advice) parts.push(el("h4", "The agent on your decision"), el("p", summary(d.advice, label)), table(d.advice, priors));
   d.thoughts.forEach((t, i) => parts.push(
     el("h4", `Agent decision ${i + 1} since your last choice`), el("p", summary(t, label)), table(t, priors)));
-  parts.push(el("h4", "The agent's view of the board"), el("pre", d.agent_board));
+  if (!d.thoughts.length && !d.advice) parts.push(el("p", "The agent hasn't decided anything since your last choice."));
   box.replaceChildren(...parts);
 }
