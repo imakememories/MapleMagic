@@ -7,7 +7,7 @@ use maplemagic::features::{
 };
 use maplemagic::features::{choice_fields, observe_with};
 use maplemagic::game::{deck_names, deck_pairs, Game, Outcome};
-use maplemagic::ismcts::{HeuristicEval, Search};
+use maplemagic::ismcts::{heuristic_value, HeuristicEval, Search};
 use maplemagic::{board, play};
 use maplemagic::history::{hist_vocab, HIST_FIELDS, MAX_HIST};
 use maplemagic::ismcts::{Config, Eval, MapleSelect, WorldSampler, RETENTION_BUCKETS};
@@ -455,6 +455,9 @@ struct Match {
     game: Game,
     search: Option<Search>,
     leaves: Vec<Game>,
+    /// The current search's settings that act outside `Search`, as in self-play.
+    value_mix: f32,
+    perfect_obs: bool,
 }
 
 #[pymethods]
@@ -463,7 +466,7 @@ impl Match {
     #[pyo3(signature = (deck0="Ognis", deck1="Ognis", seed=0))]
     fn new(deck0: &str, deck1: &str, seed: u64) -> PyResult<Self> {
         let game = Game::new(deck0, deck1, seed).map_err(PyValueError::new_err)?;
-        Ok(Match { game, search: None, leaves: Vec::new() })
+        Ok(Match { game, search: None, leaves: Vec::new(), value_mix: 1.0, perfect_obs: false })
     }
 
     /// The seat (0 or 1) to act.
@@ -517,11 +520,43 @@ impl Match {
         self.search.insert(s).best()
     }
 
-    /// Starts the agent's search at the current decision.
-    #[pyo3(signature = (seed, collisions=false))]
-    fn start_search(&mut self, seed: u64, collisions: bool) {
-        self.search = Some(Search::new(&self.game, Config { collisions, ..Config::default() }, seed));
+    /// Starts the agent's search at the current decision, set up as a network
+    /// searches in self-play (see `SelfPlay`): MAPLE or PIMC worlds, perfect
+    /// observation, the world sampler (uniform or oracle; the others need a
+    /// sampler network), collisions, and the weight of the network's leaf values
+    /// against the heuristic's.
+    #[pyo3(signature = (seed, collisions=false, maple_worlds=0, maple_select="ref", maple_resample=false, pimc_worlds=0, perfect_obs=false, world_sampler="uniform", value_mix=1.0))]
+    #[allow(clippy::too_many_arguments)]
+    fn start_search(
+        &mut self,
+        seed: u64,
+        collisions: bool,
+        maple_worlds: u32,
+        maple_select: &str,
+        maple_resample: bool,
+        pimc_worlds: u32,
+        perfect_obs: bool,
+        world_sampler: &str,
+        value_mix: f32,
+    ) -> PyResult<()> {
+        if maple_worlds > 0 && pimc_worlds > 0 {
+            return Err(PyValueError::new_err("a search can't use both maple_worlds and pimc_worlds"));
+        }
+        let maple_select = match maple_select {
+            "ref" => MapleSelect::RefWorld,
+            "union" => MapleSelect::Union,
+            s => return Err(PyValueError::new_err(format!("maple_select must be \"ref\" or \"union\", not {s:?}"))),
+        };
+        let world_sampler = match world_sampler {
+            "uniform" => WorldSampler::Uniform,
+            "oracle" => WorldSampler::Oracle,
+            s => return Err(PyValueError::new_err(format!("world_sampler must be uniform or oracle here, not {s:?}"))),
+        };
+        let cfg = Config { collisions, maple_worlds, maple_select, maple_resample, pimc_worlds, perfect_obs, world_sampler, ..Config::default() };
+        self.search = Some(Search::new(&self.game, cfg, seed));
         self.leaves.clear();
+        (self.value_mix, self.perfect_obs) = (value_mix, perfect_obs);
+        Ok(())
     }
 
     fn simulations(&self) -> u32 {
@@ -536,7 +571,7 @@ impl Match {
         if self.leaves.is_empty() {
             return Ok(None);
         }
-        let toks: Vec<Vec<Tok>> = self.leaves.iter().map(|l| observe_with(l, l.to_act(), false)).collect();
+        let toks: Vec<Vec<Tok>> = self.leaves.iter().map(|l| observe_with(l, l.to_act(), self.perfect_obs)).collect();
         let acts: Vec<Vec<Act>> = self.leaves.iter().map(choice_fields).collect();
         let (tflat, tlen, tw) = pad(&toks.iter().collect::<Vec<_>>(), 1);
         let (aflat, alen, aw) = pad(&acts.iter().collect::<Vec<_>>(), 1);
@@ -552,7 +587,12 @@ impl Match {
         if p.shape()[0] != self.leaves.len() || v.len() != self.leaves.len() {
             return Err(PyValueError::new_err(format!("expected {} rows", self.leaves.len())));
         }
-        let evals = (0..self.leaves.len()).map(|i| Eval { priors: p.row(i).to_vec(), value: v[i] }).collect();
+        let mix = self.value_mix;
+        let value = |i: usize| {
+            let l = &self.leaves[i];
+            if mix == 1.0 { v[i] } else { mix * v[i] + (1.0 - mix) * heuristic_value(l, l.to_act()) }
+        };
+        let evals = (0..self.leaves.len()).map(|i| Eval { priors: p.row(i).to_vec(), value: value(i) }).collect();
         let leaves = std::mem::take(&mut self.leaves);
         search.feed(&leaves, evals);
         Ok(())
