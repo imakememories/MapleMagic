@@ -1,4 +1,4 @@
-# Step 2: S1c with completed-Q policy targets (Gumbel MuZero) instead of visit shares.
+# Step 2: the playout-cap settings with completed-Q policy targets (Gumbel MuZero) instead of visit shares.
 name: ognis_s2
 pairings: [[Ognis, Ognis]]
 generations: 20

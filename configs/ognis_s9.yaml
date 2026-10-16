@@ -1,4 +1,4 @@
-# S6e with collisions: a simulation that reaches a node awaiting its evaluation stops and ends the batch.
+# The best Ognis network's settings with collisions: a simulation that reaches a node awaiting its evaluation stops and ends the batch.
 name: ognis_s9
 pairings: [[Ognis, Ognis]]
 generations: 20

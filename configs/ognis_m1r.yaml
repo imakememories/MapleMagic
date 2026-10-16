@@ -1,5 +1,5 @@
 # MAPLE-r, seen hand: the control for ognis_m1, with 5 random worlds instead of learned ones; everything else the same.
-# 610 games a generation: MAPLE costs ~26.4 evaluations a move against S6e's ~23.4 (games are as long), so this matches S6e's ~2.34M self-play evaluations a generation.
+# 610 games a generation: MAPLE costs ~26.4 evaluations a move against the best Ognis network's ~23.4 (games are as long), so this matches its ~2.34M self-play evaluations a generation.
 name: ognis_m1r
 pairings: [[Ognis, Ognis]]
 generations: 20

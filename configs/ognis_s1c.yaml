@@ -1,4 +1,4 @@
-# Step 1c: S1b with playout-cap randomization at equal self-play network evaluations (690 games a generation).
+# Step 1c: the TD(lambda) settings plus playout-cap randomization at equal self-play network evaluations (690 games a generation).
 name: ognis_s1c
 pairings: [[Ognis, Ognis]]
 generations: 20

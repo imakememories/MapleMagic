@@ -1,4 +1,4 @@
-# Step 6d: S1c with the stable recipe: embedding init std 0.02, 500 warm-up steps, cosine decay over the run.
+# Step 6d: the playout-cap settings with the stable recipe: embedding init std 0.02, 500 warm-up steps, cosine decay over the run.
 name: ognis_s6d
 pairings: [[Ognis, Ognis]]
 generations: 20

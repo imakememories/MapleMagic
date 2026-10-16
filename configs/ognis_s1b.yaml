@@ -1,4 +1,4 @@
-# Step 1b: S1a with TD(lambda) value targets over search root values.
+# Step 1b: value on 16 positions a game, plus TD(lambda) value targets over search root values.
 name: ognis_s1b
 pairings: [[Ognis, Ognis]]
 generations: 20

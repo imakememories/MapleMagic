@@ -1,4 +1,4 @@
-# S8: S6e trained twice as long (40 generations; the cosine decay spans all 40).
+# The best Ognis network's settings trained twice as long (40 generations; the cosine decay spans all 40).
 name: ognis_s8
 pairings: [[Ognis, Ognis]]
 generations: 40

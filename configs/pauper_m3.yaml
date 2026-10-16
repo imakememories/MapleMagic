@@ -1,5 +1,5 @@
-# IS-MCTS with learned worlds on the Pauper decks: P0f with each simulation's world drawn from the 16 best of 50 uniform hands, scored by a Siamese sampler trained with the network.
-# 690 games a generation (P0f's) until calibrated.
+# IS-MCTS with learned worlds on the Pauper decks: IS-MCTS with collisions (the Pauper baseline) with each simulation's world drawn from the 16 best of 50 uniform hands, scored by a Siamese sampler trained with the network.
+# 690 games a generation, as the Pauper baseline: its search costs the same a move.
 name: pauper_m3
 pairings: all
 generations: 20

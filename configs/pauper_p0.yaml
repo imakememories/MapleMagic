@@ -1,4 +1,4 @@
-# Pauper baseline: IS-MCTS with S6e's recipe on every ordered pairing of the nine decks.
+# Pauper baseline: IS-MCTS with the best Ognis network's recipe on every ordered pairing of the nine decks.
 name: pauper_p0
 pairings: all
 generations: 20

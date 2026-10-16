@@ -1,6 +1,6 @@
 # Full MAPLE on the Pauper decks with a hidden-hand network: pauper_m1 with perfect_obs off; worlds that differ only in the opponent's hand merge when the observer acts.
 # Merged worlds halve its evaluations a simulation (1.97 against pauper_m1's ~4.0), so it searches twice the simulations, four leaves a round
-# (~8 evaluations a round, as pauper_m1 and P0f), and 630 games a generation for P0f's ~2.2M evaluations (1,795 a game at 16/3 sims in generations 1-2).
+# (~8 evaluations a round, as full MAPLE and the Pauper baseline), and 630 games a generation for the Pauper baseline's ~2.2M evaluations (1,795 a game at 16/3 sims in generations 1-2).
 name: pauper_m2
 pairings: all
 generations: 20

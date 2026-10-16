@@ -1,4 +1,4 @@
-# Step 6b: S1c with two transformer layers at d=192.
+# Step 6b: the playout-cap settings with two transformer layers at d=192.
 name: ognis_s6b
 pairings: [[Ognis, Ognis]]
 generations: 20

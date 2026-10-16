@@ -1,4 +1,4 @@
-# Step 5: S1c with card attributes (live types, colors, keywords; printed mana value, subtypes, ability lines).
+# Step 5: the playout-cap settings with card attributes (live types, colors, keywords; printed mana value, subtypes, ability lines).
 name: ognis_s5
 pairings: [[Ognis, Ognis]]
 generations: 20

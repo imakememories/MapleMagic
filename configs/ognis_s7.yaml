@@ -1,4 +1,4 @@
-# S7: S6e (1 layer, d=192, stable recipe) from a gen 0 trained on heuristic search, shrunk and perturbed.
+# The best Ognis network's settings (1 layer, d=192, stable recipe) from a gen 0 trained on heuristic search, shrunk and perturbed.
 name: ognis_s7
 pairings: [[Ognis, Ognis]]
 generations: 20

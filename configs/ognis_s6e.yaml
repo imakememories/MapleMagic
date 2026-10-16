@@ -1,4 +1,4 @@
-# Step 6e: one transformer layer at d=192 with the stable recipe (the cheapest tied architecture, checked against S6d).
+# Step 6e, the best Ognis network: one transformer layer at d=192 with the stable recipe (the cheapest tied architecture, checked against three layers with the recipe).
 name: ognis_s6e
 pairings: [[Ognis, Ognis]]
 generations: 20

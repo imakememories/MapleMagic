@@ -1,4 +1,4 @@
-# Step 1d: S1c with leaf values half the network, half the heuristic in self-play.
+# Step 1d: the playout-cap settings with leaf values half the network, half the heuristic in self-play.
 name: ognis_s1d
 pairings: [[Ognis, Ognis]]
 generations: 20

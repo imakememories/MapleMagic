@@ -1,5 +1,5 @@
-# Full MAPLE (arXiv 2605.24139): 5 worlds picked from 50 by a Siamese sampler trained with the network; the network sees each world's guessed hand. S6e's settings otherwise, at about its self-play evaluations.
-# 610 games a generation: MAPLE costs ~26.4 evaluations a move against S6e's ~23.4 (games are as long), so this matches S6e's ~2.34M self-play evaluations a generation.
+# Full MAPLE (arXiv 2605.24139): 5 worlds picked from 50 by a Siamese sampler trained with the network; the network sees each world's guessed hand. The best Ognis network's settings otherwise, at about its self-play evaluations.
+# 610 games a generation: MAPLE costs ~26.4 evaluations a move against the best Ognis network's ~23.4 (games are as long), so this matches its ~2.34M self-play evaluations a generation.
 name: ognis_m1
 pairings: [[Ognis, Ognis]]
 generations: 20
