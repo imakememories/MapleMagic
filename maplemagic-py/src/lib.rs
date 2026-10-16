@@ -8,7 +8,7 @@ use maplemagic::features::{
 use maplemagic::features::{choice_fields, observe_with};
 use maplemagic::game::{deck_names, deck_pairs, Game, Outcome};
 use maplemagic::ismcts::{HeuristicEval, Search};
-use maplemagic::play;
+use maplemagic::{board, play};
 use maplemagic::history::{hist_vocab, HIST_FIELDS, MAX_HIST};
 use maplemagic::ismcts::{Config, Eval, MapleSelect, WorldSampler, RETENTION_BUCKETS};
 use maplemagic::mtg_kernel::card_def::{CardType, CARD_DEFS};
@@ -487,6 +487,11 @@ impl Match {
     /// The board as seat `viewer` sees it.
     fn render(&self, viewer: u8) -> String {
         play::render(&self.game, seat(viewer))
+    }
+
+    /// The board as seat `viewer` sees it, as JSON (see `maplemagic::board`).
+    fn board(&self, viewer: u8) -> String {
+        board::board(&self.game, seat(viewer)).to_string()
     }
 
     /// Each choice of the player to act, as seat `viewer` may read it.

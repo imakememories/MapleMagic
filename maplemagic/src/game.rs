@@ -214,7 +214,7 @@ pub fn zone_code(z: Zone) -> u8 {
     }
 }
 
-fn obj_role(st: &GameState, id: ObjectId) -> u32 {
+pub fn obj_role(st: &GameState, id: ObjectId) -> u32 {
     let o = st.objects.get(id);
     if o.zone != Zone::Battlefield {
         return 0;
@@ -365,6 +365,41 @@ impl Game {
 
     pub fn choices(&self) -> &[Choice] {
         &self.choices
+    }
+
+    /// What choice `i` names, for a person clicking a board: the card it uses
+    /// and what it targets or blocks, each with whether any object that looks
+    /// the same would do (choices that look the same are merged). Attacks and
+    /// blockers are asked one object at a time, so those are exact.
+    pub fn choice_refs(&self, i: usize) -> Vec<(Target, bool)> {
+        let obj = |id: ObjectId| (Target::Object(id), true);
+        let of_action = |a: &Action| match *a {
+            Action::PlayLand(id)
+            | Action::CastSpell(id)
+            | Action::ActivateManaAbility(id)
+            | Action::ActivateAbility(id, _)
+            | Action::ChooseCostTarget(id)
+            | Action::PlotSpell(id)
+            | Action::Foretell(id)
+            | Action::ActivateManaAbilityChoice(id, _)
+            | Action::ActivateManaAbilityWithCostTarget(id, _, _)
+            | Action::ChooseCastFromExile(Some(id))
+            | Action::ChooseCopy(Some(id))
+            | Action::ChooseLegendToKeep(id) => vec![obj(id)],
+            Action::ChooseTarget(t) | Action::ChooseEffectTarget(t) => vec![(t, true)],
+            _ => Vec::new(),
+        };
+        match &self.choices[i].exec {
+            Exec::Engine(a) | Exec::Autopay { then: a, .. } => of_action(a),
+            Exec::Attack(id, _) => vec![(Target::Object(*id), false)],
+            Exec::Block(b, a) => std::iter::once((Target::Object(*b), false)).chain(a.map(obj)).collect(),
+            Exec::Discard(id) | Exec::Bottom(id) => vec![obj(*id)],
+            Exec::Order(k) => match &self.pending {
+                Pending::Order { sources, .. } => vec![obj(sources[*k])],
+                _ => Vec::new(),
+            },
+            Exec::Mulligan(_) => Vec::new(),
+        }
     }
 
     /// How many mulligans `p` took.
