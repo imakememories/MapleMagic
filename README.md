@@ -1,22 +1,20 @@
 # MapleMagic
 
 An AlphaZero-style agent for Magic: The Gathering, trained by self-play on a
-fast Rust rules engine. The current goal is the strongest bot for one
-Commander deck, Ognis, the Dragon's Lash, in two-player games. The best
-network beats a hand-written heuristic agent 0.828 ± 0.030, searching 160
-simulations a move to its 200, and 0.870 ± 0.027 at 400.
+fast Rust rules engine. The goal is the strongest bot for one Commander
+deck, Ognis, the Dragon's Lash, in two-player games. The best network beats
+a hand-written heuristic agent 0.828 ± 0.030, searching 160 simulations a
+move to its 200, and 0.870 ± 0.027 at 400.
 
-Two benchmarks on nine Pauper decks compare ways of searching a game with
-hidden cards: information-set MCTS, MAPLE
-([arXiv 2605.24139](https://arxiv.org/abs/2605.24139)), with and without its
+Along the way it compares ways of searching a game with hidden cards, on
+Ognis and on nine Pauper decks: information-set MCTS (IS-MCTS), MAPLE
+([arXiv 2605.24139](https://arxiv.org/abs/2605.24139)) with and without its
 learned world sampler, and AlphaZe\*\*, the paper's baseline. Nothing beats
-IS-MCTS in either.
+IS-MCTS.
 
-The engine is trimmed from [mtg-kernel](https://github.com/jackmaiorino/mtg-kernel)
-(MIT; see `LICENSE-mtg-kernel.txt`).
-
-- `engine/`: the rules engine, covering nine Pauper decks and the Ognis
-  Commander deck.
+- `engine/`: the rules engine, trimmed from
+  [mtg-kernel](https://github.com/jackmaiorino/mtg-kernel), covering nine
+  Pauper decks and the Ognis Commander deck.
 - `maplemagic/`: the game as a list of choices per decision, the searches,
   the network's input encoding, batched self-play, and the board as text.
 - `maplemagic-py/`: Python bindings, installed as `maplemagic._core`.
@@ -28,7 +26,7 @@ The engine is trimmed from [mtg-kernel](https://github.com/jackmaiorino/mtg-kern
 
 ## How the searches work
 
-All three share one idea: since the opponent's hand and both libraries are
+Every search shares one idea: since the opponent's hand and both libraries are
 hidden, the search plays out guessed **worlds**, in which every card the
 searching player can't see is dealt at random from the cards it could be.
 Each player sees its own hand, the board, the graveyards, the opponent's
@@ -49,17 +47,18 @@ at the hidden cards draws from exactly the cards that remain.
   leaf in every surviving world. A choice's prior is its mean over the worlds
   where it is legal, and the value is the mean over worlds. Worlds the
   network can't tell apart are evaluated once, so a simulation costs about
-  2.4 evaluations. "-r" means the worlds are random. The paper's **full MAPLE**
-  picks them with a learned network: each move it draws 50 candidate opponent
-  hands and keeps the 5 a Siamese network rates closest to what the player
-  has seen, and that network trains alongside the policy and value. Both are
-  tested on Ognis and on Pauper below. Where worlds disagree on who acts or
-  what is legal, MAPLE-r follows one random world. The **union** variant
-  offers every choice legal in any world, as the paper does, and lets the
-  majority's player act.
+  2.4 evaluations. "-r" means the worlds are random. Where worlds disagree on
+  who acts or what is legal, MAPLE-r follows one random world.
 - **MAPLE-r seen hand** also shows the network each world's guessed opponent
   hand, as the paper's networks see the guessed board. Every world then looks
   different, so a simulation costs about 3.8 evaluations.
+- **Full MAPLE**, the paper's method, picks the worlds with a learned
+  sampler: each move it draws 50 candidate opponent hands and keeps the 5 a
+  Siamese network rates closest to what the player has seen and the
+  opponent's moves so far. The sampler trains on the true hands from
+  self-play, alongside the policy and value; generation 0 plays random
+  worlds. **IS-MCTS with learned worlds** uses the same sampler, drawing each
+  simulation's world from its 16 best of 50 hands.
 - **AlphaZe\*\*** deals 5 worlds once per move and grows an independent tree in
   each, sharing the simulations. The move comes from the average of the five
   trees' visit distributions.
@@ -78,10 +77,6 @@ choose blind. It is off by default and on where a model below says so.
 
 Every game is the mirror match, Ognis against Ognis: two players at 40 life,
 with the London mulligan. The decklist is `configs/commander/ognis.txt`.
-
-| Deck | Colors | Plan | Key cards |
-|---|---|---|---|
-| Ognis | Red | Hasty attackers that make Treasure, big dragons, and stealing the opponent's creatures | Ognis, the Dragon's Lash, Goldspan Dragon, Hellkite Charger, Insurrection, Mob Rule |
 
 ### The best network
 
@@ -205,9 +200,6 @@ trains alongside the network, make a stronger bot?
 Two models train with MAPLE over 5 worlds, the network seeing each world's
 guessed opponent hand as the paper's networks do. They differ only in where
 the worlds come from: random (MAPLE-r) or the learned sampler (full MAPLE).
-Each move, the sampler draws 50 candidate hands and keeps the 5 it rates
-closest to the player's observation and the opponent's past moves. It trains
-on the true hands from self-play, and generation 0 plays random worlds.
 Matches are 600 games at equal network evaluations a move per side, within 7%.
 
 | Match | Score |
@@ -281,38 +273,14 @@ The best network, 600 games each:
 
 ## Pauper: comparing the searches
 
-Two benchmarks on the same nine decks. The second trains every model with the
-Ognis recipe and tests the paper's full method, MAPLE with a learned world
-sampler. The first came earlier, at commit `8488808`, with smaller budgets and
-an older recipe.
-
-### The decks
-
-Every match and every training run plays all nine decks against each other.
-
-| Deck | Colors | Plan | Key cards |
-|---|---|---|---|
-| Wildfire | Black-red-green | Ramp and removal off artifact lands | Cleansing Wildfire, Writhing Chrysalis, Krark-Clan Shaman, Cast Down |
-| Rally | Red | Goblin swarm and a big pump | Rally at the Hornburg, Goblin Bushwhacker, Burning-Tree Emissary, Lightning Bolt |
-| Affinity | Blue-black-red | Cheap artifacts | Myr Enforcer, Thoughtcast, Galvanic Blast, artifact lands |
-| Elves | Green | Mana elves into a wide board | Priest of Titania, Timberwatch Elf, Lead the Stampede, Avenging Hunter |
-| Spy | Green-black | Mill itself, then reanimate | Balustrade Spy, Dread Return, Lotleth Giant, Land Grant |
-| Burn | Red | Damage spells to the face | Lightning Bolt, Fireblast, Guttersnipe, Lava Dart |
-| Terror | Blue | Cheap cantrips and counters, then a big flyer | Tolarian Terror, Counterspell, Brainstorm, Ponder |
-| CawGates | White-blue | Gates, flyers and counters | Squadron Hawk, Basilisk Gate, Counterspell, Journey to Nowhere |
-| Faeries | Blue | Flash flyers, counters and ninjas | Spellstutter Sprite, Ninja of the Deep Hours, Counterspell |
-
-Decklists are in `data/runtime_decks_v1.json`.
-
-### With the Ognis recipe
-
-**Questions:** does the batch fix (collisions) help here, and does full MAPLE
-beat IS-MCTS on decks whose hidden hands matter: counterspells, instant-speed
-burn, 60-card decks with four copies of a card?
+**Questions:** do collisions help here, and does full MAPLE beat IS-MCTS on
+decks whose hidden hands matter: counterspells, instant-speed burn, 60-card
+decks with four copies of a card?
 
 Every model is the best Ognis network's architecture and recipe (one layer,
 192 wide; playout cap; 16 value positions a game; TD(λ); the stable recipe),
-trained for 20 generations on all 81 ordered deck pairings.
+trained for 20 generations on all 81 ordered pairings of nine Pauper decks.
+The decklists are in `data/runtime_decks_v1.json`.
 
 | Model | Config | Training search | Games a generation | Self-play network evaluations | Training time |
 |---|---|---|---|---|---|
@@ -363,8 +331,6 @@ full MAPLE 0.628, MAPLE-r 0.602, full MAPLE with a hidden hand 0.681, and
 IS-MCTS with learned worlds 0.700 (each ± 0.04).
 
 **What the results say:**
-- **Every model now beats the heuristic agent,** which beat every model of the
-  first benchmark below.
 - **Collisions tie on Pauper too.** Against IS-MCTS retrained at the same
   budget, the baseline with collisions scores 0.526 ± 0.042, and against the
   full IS-MCTS run, which trained on 22% more evaluations, 0.529 ± 0.030 over
@@ -412,153 +378,6 @@ and each deck's win rate in those matches' non-mirror games:
   Spy poorly: retrained at the baseline's budget, IS-MCTS scores 0.30 with Spy,
   against the baseline's 0.32.
 
-### The first benchmark
-
-At commit `8488808`, before the Ognis recipe.
-
-#### The models
-
-All five networks have the same size (1.4M parameters: 160 wide, 3 layers)
-and were trained the same way, from the same seed: 20 generations of 256
-self-play games over all 81 deck pairings, with a 200,000-position replay
-buffer. Only the search differs.
-
-| Model | Config | Simulations per move | Network evaluations per move | Training time |
-|---|---|---|---|---|
-| IS-MCTS | `configs/mid.yaml` | 64 | 64 | 1.9 h |
-| MAPLE-r | `configs/mid_b.yaml` | 64 | 152 | 4.3 h |
-| MAPLE-r union | `configs/mid_bu.yaml` | 64 | 139 | 3.6 h |
-| MAPLE-r seen hand | `configs/mid_c.yaml` | 64 | 233 | 4.6 h |
-| AlphaZe\*\* | `configs/mid_d.yaml` | 160 (5 × 32) | 158 | 5.1 h |
-
-#### Benchmark
-
-**Question:** with the same computing power per move, which model plays best?
-
-**How the comparison is kept fair:**
-- **Equal compute.** Network evaluations are the expensive part of a search,
-  so each model gets about 160 per move. That means 160 simulations for
-  IS-MCTS and AlphaZe\*\* (5 trees of 32), 68 for MAPLE-r and MAPLE-r union,
-  and 42 for MAPLE-r seen hand. The heuristic agent, a fixed reference,
-  runs IS-MCTS with a hand-written evaluation at 200 simulations.
-- **Duplicate deals.** Games come in pairs with the same shuffled decks and
-  the same seat going first; the two models swap decks between them. A strong
-  deck or a lucky draw helps both models equally.
-- **Every deck pairing.** A match plays each of the 45 pairings of the nine
-  decks, mirrors included, three times as a duplicate pair: 270 games. Every
-  match uses the same deals.
-- **Round robin.** Every model plays every other model and the heuristic
-  agent: 15 matches, 4,050 games.
-
-± is a 95% interval as above, which is conservative here: duplicate deals
-cancel some of the luck it allows for.
-
-#### Results
-
-| Model | Network evaluations per move | Score against the heuristic agent | Score against the other four models | Rating |
-|---|---|---|---|---|
-| IS-MCTS | 158 | 0.322 ± 0.056 | **0.537 ± 0.030** | −115 [−140, −93] |
-| MAPLE-r | 162 | 0.322 ± 0.056 | 0.489 ± 0.030 | −138 [−167, −116] |
-| MAPLE-r union | 153 | 0.300 ± 0.055 | 0.501 ± 0.030 | −135 [−163, −111] |
-| MAPLE-r seen hand | 162 | 0.296 ± 0.054 | 0.508 ± 0.030 | −132 [−158, −110] |
-| AlphaZe\*\* | 158 | 0.344 ± 0.057 | 0.465 ± 0.030 | −147 [−174, −122] |
-
-The rating is a Bradley–Terry fit over all 4,050 games on the Elo scale,
-with the heuristic agent at 0 and a 95% bootstrap interval.
-
-Head to head, score of the row's model against the column's:
-
-| | IS-MCTS | MAPLE-r | MAPLE-r union | MAPLE-r seen hand | AlphaZe\*\* | Heuristic |
-|---|---|---|---|---|---|---|
-| IS-MCTS | — | 0.526 | 0.507 | 0.533 | 0.581 | 0.322 |
-| MAPLE-r | 0.474 | — | 0.496 | 0.496 | 0.489 | 0.322 |
-| MAPLE-r union | 0.493 | 0.504 | — | 0.489 | 0.519 | 0.300 |
-| MAPLE-r seen hand | 0.467 | 0.504 | 0.511 | — | 0.552 | 0.296 |
-| AlphaZe\*\* | 0.419 | 0.511 | 0.481 | 0.448 | — | 0.344 |
-| Heuristic | 0.678 | 0.678 | 0.700 | 0.704 | 0.656 | — |
-
-Each cell is 270 games, ±0.060 at most.
-
-**What the results say:**
-- **IS-MCTS is the strongest model, by a small margin.** It is the only one
-  that scores above even against the others (0.537 ± 0.030). Its biggest
-  margin is over AlphaZe\*\*, 0.581 ± 0.059, the one significant head-to-head
-  result. No other match separates any two models.
-- **MAPLE-r is no better than AlphaZe\*\*.** They tie: MAPLE-r scores
-  0.489 ± 0.060. In the paper, MAPLE-r was ahead of AlphaZe\*\* on Phantom Go
-  and behind on Dark Hex; only the learned world sampler won on both. The
-  benchmark above tests it on these decks.
-- **The MAPLE-r variants make no difference.** The union rule ties the default
-  (0.496), and showing the network the guessed hand doesn't help either
-  (0.496 against MAPLE-r).
-- **AlphaZe\*\* does best against the heuristic agent and worst against the
-  networks:** 0.344 against the heuristic agent, but 0.465 ± 0.030 against
-  the other models. Its heuristic score is within noise of the others'.
-- **The heuristic agent beats every model:** they score 0.30–0.34 against
-  it. Twenty generations of 256 self-play games weren't enough for any
-  network to beat a hand-written evaluation searching 200 simulations.
-- A likely reason IS-MCTS leads: it deals a fresh guess at the hidden cards
-  every simulation, 160 per move, while MAPLE-r and AlphaZe\*\* commit to five
-  guesses for the whole move.
-
-#### Without a network
-
-The same searches with the heuristic agent's hand-written evaluation, at
-about 200 evaluations per move: 200 simulations for IS-MCTS and AlphaZe\*\*
-(5 trees of 40), 75 for MAPLE-r and 85 for MAPLE-r union. Each match is 500
-games, in duplicate pairs, 100 on each of Burn–Rally, Faeries–Elves,
-Terror–CawGates, Spy–Affinity and Wildfire–Faeries.
-
-| Match | Score |
-|---|---|
-| AlphaZe\*\* against IS-MCTS | 0.412 ± 0.043 |
-| MAPLE-r against IS-MCTS | 0.438 ± 0.043 |
-| MAPLE-r union against IS-MCTS | 0.418 ± 0.043 |
-| MAPLE-r against AlphaZe\*\* | 0.512 ± 0.044 |
-
-Without a network the ordering is clearer, and it matches the networks':
-IS-MCTS beats all three alternatives, and MAPLE-r ties AlphaZe\*\*.
-
-#### By deck
-
-Each model's score with each deck, over all its matches, and each deck's win
-rate in all non-mirror games:
-
-| Deck | All games | IS-MCTS | MAPLE-r | MAPLE-r union | MAPLE-r seen hand | AlphaZe\*\* | Heuristic |
-|---|---|---|---|---|---|---|---|
-| Rally | 0.725 | 0.67 | 0.63 | 0.74 | 0.50 | 0.59 | 0.95 |
-| Terror | 0.724 | 0.61 | 0.70 | 0.55 | 0.63 | 0.69 | 0.88 |
-| Faeries | 0.606 | 0.60 | 0.51 | 0.52 | 0.53 | 0.47 | 0.88 |
-| Elves | 0.562 | 0.56 | 0.52 | 0.50 | 0.52 | 0.51 | 0.69 |
-| Burn | 0.500 | 0.49 | 0.49 | 0.58 | 0.46 | 0.41 | 0.57 |
-| Affinity | 0.469 | 0.49 | 0.41 | 0.44 | 0.49 | 0.48 | 0.54 |
-| Wildfire | 0.411 | 0.39 | 0.43 | 0.25 | 0.43 | 0.45 | 0.63 |
-| CawGates | 0.294 | 0.35 | 0.19 | 0.39 | 0.28 | 0.25 | 0.56 |
-| Spy | 0.208 | 0.28 | 0.21 | 0.17 | 0.35 | 0.13 | 0.45 |
-
-- The deck matters more than the model. Rally and Terror win about 70% of
-  their games, Spy and CawGates under a third.
-- Each cell for a model is 150 games, ±0.08, so differences between models on
-  one deck are mostly noise. The heuristic agent is ahead with every deck.
-
-#### Caveats
-
-- **Scale.** One training run per model, 20 generations, with a small
-  network.
-- **Training compute wasn't equal.** IS-MCTS trained with 64 network
-  evaluations per move, the others with 139–233. The benchmark equalizes
-  compute only at play time.
-- **Bugs fixed after training.** IS-MCTS's training games used a search that
-  left some choices with too high a prior. The four models other than
-  AlphaZe\*\* also trained while two copies of a card that differed in damage
-  or combat counted as one choice. AlphaZe\*\* was trained after both fixes,
-  and the benchmark uses the fixed code.
-- **The value heads memorized their games.** Training value loss ended at
-  0.05–0.08 on win/loss targets, too low for honest prediction from early in
-  a game. AlphaZe\*\*, the only run that logged held-out losses, ended at a
-  held-out value loss of 0.85 against a training loss of 0.05; predicting a
-  draw everywhere scores 1.0. The Ognis runs fixed this.
-
 ## Reproduce
 
 Ognis, one job at a time:
@@ -582,7 +401,7 @@ Each config pins the settings it trained with. A 20-generation run takes
 30–65 minutes of self-play and training on an RX 7900 XTX with a 32-thread
 CPU; the MAPLE runs take 60–110 minutes.
 
-Pauper, with the Ognis recipe:
+Pauper:
 
 ```sh
 for c in pauper_p0 pauper_p0_567 pauper_p0f pauper_m1r pauper_m1 pauper_m2 pauper_m3; do $PY -m maplemagic.cli train configs/$c.yaml --fresh; done
@@ -597,33 +416,3 @@ $PY -m maplemagic.cli eval runs/pauper_p0f/latest.pt --vs self --world-sampler o
 A run takes 0.9–1.6 hours. Training compute drifts with game length, so
 compare totals in each run's `log.jsonl` and use a `genNNNN.pt` checkpoint at
 equal compute where they differ by more than 10%.
-
-The first Pauper benchmark:
-
-```sh
-for c in mid mid_b mid_bu mid_c mid_d; do $PY -m maplemagic.cli train configs/$c.yaml --fresh; done
-# One match: each side's simulations per move, as in the table above.
-$PY -m maplemagic.cli eval runs/mid_a/latest.pt --vs runs/mid_b/latest.pt --sims 160 --opp-sims 68 \
-    --games 270 --config configs/bench.yaml --out runs/bench/ismcts-maple.json
-$PY -m maplemagic.cli eval runs/mid_b/latest.pt --vs heuristic --sims 68 \
-    --games 270 --config configs/bench.yaml --out runs/bench/maple-heuristic.json
-# Without a network, at about 200 evaluations per move:
-cargo run --release -p maplemagic --example arena -- h75m5 h200 Burn Rally 100
-```
-
-The Pauper benchmark was run at commit `8488808`; AlphaZe\*\*'s training and
-its five matches ran later, on code with the same search. A MAPLE-r or
-AlphaZe\*\* training run takes 4–6 hours, and IS-MCTS about 2.
-
-## Engine fixes over upstream mtg-kernel
-
-- Ninjutsu no longer halts when a returned attacker re-enters combat: stale
-  combat entries are cleared.
-- A trigger with no legal targets is removed (rule 603.3d) instead of asking
-  for a target that doesn't exist.
-- Cast triggers (Writhing Chrysalis) resolve even if the spell was countered
-  (rule 113.7a).
-- Ward works when two stack items target the same permanent.
-
-`scripts/upstream_diff.sh <mtg-kernel clone>` compares `engine/` with
-upstream from the commit in `scripts/UPSTREAM_REV`.
