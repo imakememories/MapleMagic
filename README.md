@@ -317,6 +317,7 @@ trained for 20 generations on all 81 ordered deck pairings.
 | Model | Config | Training search | Games a generation | Self-play network evaluations | Training time |
 |---|---|---|---|---|---|
 | IS-MCTS | `configs/pauper_p0.yaml` | 64 / 10 simulations, batches of 8 | 690 | 53.6M | 0.9 h |
+| IS-MCTS at the baseline's budget | `configs/pauper_p0_567.yaml` | the same | 567 | 43.2M | 0.7 h |
 | **IS-MCTS with collisions: the baseline** | `configs/pauper_p0f.yaml` | the same, with collisions | 690 | 44.1M | 0.9 h |
 | MAPLE-r, seen hand | `configs/pauper_m1r.yaml` | MAPLE over 5 random worlds, 16 / 3 simulations, collisions | 480 | 37.7M | 0.9 h |
 | Full MAPLE | `configs/pauper_m1.yaml` | the same over 5 worlds from the learned sampler | 480 | 36.6M | 1.0 h |
@@ -326,7 +327,9 @@ trained for 20 generations on all 81 ordered deck pairings.
 Each training search costs about 23–25 network evaluations a move. The game
 counts aim at the baseline's self-play budget; games grow or shrink as a model
 learns, so where totals ended more than 10% apart, the larger run's checkpoint
-at the smaller one's budget plays too.
+at the smaller one's budget plays too. IS-MCTS without collisions was instead
+retrained at a game count matched to the baseline's total, since a mid-run
+checkpoint hasn't finished its learning-rate decay.
 
 **How the comparison is kept fair:**
 - **Equal search at play time:** about 155 network evaluations a move per
@@ -339,7 +342,7 @@ at the smaller one's budget plays too.
 | Match | Score |
 |---|---|
 | IS-MCTS with collisions against IS-MCTS (1,080 games) | 0.529 ± 0.030 |
-| The same, IS-MCTS at the same training budget | **0.556 ± 0.042** |
+| The same against IS-MCTS at the baseline's budget | 0.526 ± 0.042 |
 | IS-MCTS with collisions: the opponent's true hand in every world against random worlds | **0.546 ± 0.042** |
 | Full MAPLE against MAPLE-r | 0.509 ± 0.042 |
 | Full MAPLE against IS-MCTS with collisions | 0.407 ± 0.041 |
@@ -362,14 +365,13 @@ IS-MCTS with learned worlds 0.700 (each ± 0.04).
 **What the results say:**
 - **Every model now beats the heuristic agent,** which beat every model of the
   first benchmark below.
-- **Collisions help on Pauper, modestly.** At the same training budget, the
-  baseline with collisions beats IS-MCTS without (0.556). That match uses
-  IS-MCTS's generation 16, whose learning rate hadn't finished decaying, so it
-  may flatter collisions a little. Against the full IS-MCTS run, which trained
-  on 22% more evaluations, it is ahead, but the CI touches 0.5 (0.529 ± 0.030
-  over 1,080 games). Its network plays the same with or without collisions,
-  so the gain comes from training. On Ognis the same change tied (see
-  "Collisions on Ognis").
+- **Collisions tie on Pauper too.** Against IS-MCTS retrained at the same
+  budget, the baseline with collisions scores 0.526 ± 0.042, and against the
+  full IS-MCTS run, which trained on 22% more evaluations, 0.529 ± 0.030 over
+  1,080 games: ahead both times, never clearly. An earlier check against
+  IS-MCTS's generation 16 read 0.556, but that checkpoint's learning rate
+  hadn't finished decaying. Its network plays the same with or without
+  collisions. On Ognis the change tied as well (see "Collisions on Ognis").
 - **Here knowing the hand helps IS-MCTS.** Dealing the opponent's true hand
   into every world beats random worlds (0.546, and 0.530 with the
   learned-worlds network), unlike on Ognis (0.508). Hidden hands matter more
@@ -385,7 +387,8 @@ IS-MCTS with learned worlds 0.700 (each ± 0.04).
   the network shown each world's guessed hand it trails with every deck.
   Hiding the hand, so that worlds merge and the search goes deeper, brings it
   to a tie (0.465), as does IS-MCTS with learned worlds (0.487).
-- **IS-MCTS with collisions stays the baseline:** nothing beats it.
+- **IS-MCTS with collisions stays the baseline:** it is level with IS-MCTS
+  without, and nothing beats it.
 
 By deck, each model's score with each deck against IS-MCTS with collisions,
 and each deck's win rate in those matches' non-mirror games:
@@ -404,10 +407,10 @@ and each deck's win rate in those matches' non-mirror games:
 
 - A cell is 60 games (±0.12–0.13), 120 for IS-MCTS, and 360 for IS-MCTS with
   collisions over all five matches, so single cells are informative only.
-- IS-MCTS with collisions leads with most decks. Its clearest gain over
-  IS-MCTS is with Spy, the combo deck that must chain many actions in one
-  turn: in their 1,080 games each scored 0.50 and 0.12 with it, 120 games
-  apiece.
+- IS-MCTS with collisions leads with most decks. The IS-MCTS column is the
+  690-game run, and its Spy score (0.12) belongs to that run, which learned
+  Spy poorly: retrained at the baseline's budget, IS-MCTS scores 0.30 with Spy,
+  against the baseline's 0.32.
 
 ### The first benchmark
 
@@ -582,7 +585,7 @@ CPU; the MAPLE runs take 60–110 minutes.
 Pauper, with the Ognis recipe:
 
 ```sh
-for c in pauper_p0 pauper_p0f pauper_m1r pauper_m1 pauper_m2 pauper_m3; do $PY -m maplemagic.cli train configs/$c.yaml --fresh; done
+for c in pauper_p0 pauper_p0_567 pauper_p0f pauper_m1r pauper_m1 pauper_m2 pauper_m3; do $PY -m maplemagic.cli train configs/$c.yaml --fresh; done
 # Full MAPLE against IS-MCTS with collisions at about 155 network evaluations a move each:
 $PY -m maplemagic.cli eval runs/pauper_m1/latest.pt --vs runs/pauper_p0f/latest.pt --sims 49 --opp-sims 160 \
     --leaves-per-step 2 --opp-leaves-per-step 8 --games 540 --config configs/bench.yaml --out runs/evals/p1_vs_p0f.json
