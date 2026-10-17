@@ -8,7 +8,7 @@ use maplemagic::features::{
 use maplemagic::features::{choice_fields, observe_with};
 use maplemagic::game::{deck_names, deck_pairs, Game, Outcome};
 use maplemagic::ismcts::{heuristic_value, HeuristicEval, Search};
-use maplemagic::{board, play};
+use maplemagic::{board, events, play};
 use maplemagic::history::{hist_vocab, HIST_FIELDS, MAX_HIST};
 use maplemagic::ismcts::{Config, Eval, MapleSelect, WorldSampler, RETENTION_BUCKETS};
 use maplemagic::mtg_kernel::card_def::{CardType, CARD_DEFS};
@@ -458,6 +458,9 @@ struct Match {
     /// The current search's settings that act outside `Search`, as in self-play.
     value_mix: f32,
     perfect_obs: bool,
+    /// What happened since the last `take_events`, and where the game's event history was read up to.
+    watched: Vec<maplemagic::mtg_kernel::watch::StepEvents>,
+    cursor: u32,
 }
 
 #[pymethods]
@@ -466,7 +469,8 @@ impl Match {
     #[pyo3(signature = (deck0="Ognis", deck1="Ognis", seed=0))]
     fn new(deck0: &str, deck1: &str, seed: u64) -> PyResult<Self> {
         let game = Game::new(deck0, deck1, seed).map_err(PyValueError::new_err)?;
-        Ok(Match { game, search: None, leaves: Vec::new(), value_mix: 1.0, perfect_obs: false })
+        let cursor = game.state.next_history_index().unwrap_or(0);
+        Ok(Match { game, search: None, leaves: Vec::new(), value_mix: 1.0, perfect_obs: false, watched: Vec::new(), cursor })
     }
 
     /// The seat (0 or 1) to act.
@@ -508,16 +512,49 @@ impl Match {
         }
         self.search = None;
         self.leaves.clear();
+        use maplemagic::mtg_kernel::watch;
+        watch::start(self.cursor);
         self.game.apply(i);
+        let (steps, cursor) = watch::stop(&self.game.state);
+        self.watched.extend(steps);
+        self.cursor = cursor;
         Ok(())
     }
 
-    /// The heuristic agent's choice: IS-MCTS over `sims` simulations, kept for `root_stats`.
-    fn heuristic_choice(&mut self, sims: u32, seed: u64) -> usize {
-        let mut s = Search::new(&self.game, Config::default(), seed);
-        s.run(sims, 8, &mut HeuristicEval);
+    /// Each choice's kind: "Pass", "Cast", "Attack", "Block"... (see `maplemagic::board::kinds`).
+    fn kinds(&self) -> Vec<String> {
+        board::kinds(&self.game)
+    }
+
+    /// Whether the last attack or block declaration broke a rule, so the smallest legal one was declared instead.
+    fn declaration_fell_back(&self) -> bool {
+        self.game.declaration_fell_back
+    }
+
+    /// (turn, step, active seat, whether mulligans are being decided).
+    fn phase(&self) -> (u32, String, u8, bool) {
+        let st = &self.game.state;
+        (st.turn, format!("{:?}", st.step), st.active_player.index() as u8, self.game.mulligan_declarations(st.active_player).is_some())
+    }
+
+    /// What happened in each step since the last call, as seat `viewer` may
+    /// read it, as JSON (see `maplemagic::events`).
+    fn take_events(&mut self, viewer: u8) -> String {
+        let steps = std::mem::take(&mut self.watched);
+        events::describe(&self.game, &steps, seat(viewer)).to_string()
+    }
+
+    /// Starts the heuristic agent's search, IS-MCTS with uniform priors, kept for `root_stats`.
+    fn start_heuristic(&mut self, seed: u64) {
+        self.search = Some(Search::new(&self.game, Config::default(), seed));
         self.leaves.clear();
-        self.search.insert(s).best()
+    }
+
+    /// `sims` more simulations of the heuristic agent's search, in batches of 8.
+    fn run_heuristic(&mut self, sims: u32) -> PyResult<()> {
+        let s = self.search.as_mut().ok_or_else(|| PyValueError::new_err("start_heuristic first"))?;
+        s.run(sims, 8, &mut HeuristicEval);
+        Ok(())
     }
 
     /// Starts the agent's search at the current decision, set up as a network

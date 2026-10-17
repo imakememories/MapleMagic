@@ -2,7 +2,7 @@
 // if there is none), and its state: tapped, attacking, P/T, counters, damage.
 import { artUrl, preview } from "./art.js";
 
-function badge(cls, text) {
+export function badge(cls, text) {
   const b = document.createElement("span");
   b.className = "badge " + cls;
   b.textContent = text;

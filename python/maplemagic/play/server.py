@@ -25,17 +25,36 @@ BAD = (ValueError, KeyError, TypeError, OSError, RuntimeError)
 def api(session: Session, path: str, body: dict) -> tuple[int, dict]:
     """One game call: (HTTP status, JSON reply)."""
     try:
+        session.prefs(body)
         if path == "/api/new":
             session.new(body)
         elif path == "/api/choose":
             session.choose(int(body["i"]))
+        elif path == "/api/attack":
+            session.attack(list(body["attackers"]))
+        elif path == "/api/block":
+            session.block([list(p) for p in body["blocks"]])
+        elif path == "/api/pass_turn":
+            session.pass_turn()
         elif path == "/api/ask":
             session.ask()
         elif path != "/api/state":
             return 404, {"error": f"no {path}"}
     except BAD as err:
         return 400, {"error": str(err)}
-    return 200, session.state(bool(body.get("debug")))
+    finally:
+        session.progress = {"busy": False, "version": session.progress["version"]}
+    return 200, session.state(session.debug)
+
+
+def progress(session: Session, query: dict) -> dict:
+    """While a request runs: the agent's search so far, and the board after the latest move if newer than version v."""
+    p = session.progress
+    try:
+        seen = int((query.get("v") or ["0"])[0])
+    except ValueError:
+        seen = 0
+    return {k: v for k, v in p.items() if k != "snapshot" or p["version"] > seen}
 
 
 def catalog_api(catalog: Catalog, deck: str, path: str, query: dict) -> tuple[int, dict]:
@@ -63,6 +82,9 @@ def serve(checkpoint: str, runs: Path, deck: str, host: str, port: int, open_bro
         def do_GET(self):
             url = urllib.parse.urlsplit(self.path)
             path = url.path
+            if path == "/api/progress":
+                reply = progress(session, urllib.parse.parse_qs(url.query))
+                return self.reply(200, json.dumps(reply).encode(), "application/json")
             if path.startswith("/api/"):
                 code, reply = game.submit(catalog_api, catalog, deck, path, urllib.parse.parse_qs(url.query)).result()
                 return self.reply(code, json.dumps(reply).encode(), "application/json")

@@ -7,6 +7,10 @@
   <button id="setup-open">New game...</button>
   <span id="opponent"></span>
   <label><input type="checkbox" id="debug"> Show the agent's thinking (reveals its hand)</label>
+  <details id="stops-menu">
+    <summary>Auto-pass stops</summary>
+    <div id="stops"></div>
+  </details>
 </header>
 <main>
   <section id="table">
@@ -15,16 +19,19 @@
       <div id="phase"></div>
       <div id="stack"></div>
       <div id="actions"></div>
+      <div id="progress" hidden></div>
     </div>
     <div id="you-area" class="area"></div>
   </section>
   <aside id="side">
     <img id="preview" alt="" hidden>
+    <div id="recap" hidden></div>
     <div id="thinking" hidden></div>
     <h4>Log</h4>
-    <pre id="log"></pre>
+    <div id="log"></div>
   </aside>
 </main>
+<svg id="lines"></svg>
 <div id="popup" hidden></div>
 
 <dialog id="setup">

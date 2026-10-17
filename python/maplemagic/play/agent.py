@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
 
 import numpy as np
@@ -79,17 +80,23 @@ def unsearched(m: Match, chose: int, note: str) -> Thought:
                    [{"text": t, "prior": None, "share": None, "q": None} for t in texts], note)
 
 
+# Called during a search with the match, so a page can show how far it got.
+Report = Callable[[Match], None]
+# The heuristic searches in chunks of this many simulations, a multiple of its batch of 8, so the batches match one run.
+CHUNK = 64
+
+
 class Agent:
     """Searches the decision at hand, with the choices as the player to act reads them."""
 
-    def search(self, m: Match, search: Search, seed: int):
+    def search(self, m: Match, search: Search, seed: int, report: Report):
         raise NotImplementedError
 
-    def think(self, m: Match, search: Search, seed: int) -> Thought:
+    def think(self, m: Match, search: Search, seed: int, report: Report = lambda m: None) -> Thought:
         if len(m.choices(m.to_act())) == 1:
             return unsearched(m, 0, "One choice, so no search.")
         start = time.perf_counter()
-        self.search(m, search, seed)
+        self.search(m, search, seed, report)
         seconds = time.perf_counter() - start
         s = m.root_stats()
         total = sum(s["visits"]) or 1.0
@@ -103,7 +110,7 @@ class NetworkAgent(Agent):
         self.net = load(checkpoint, device).eval()
         self.device = device
 
-    def search(self, m: Match, search: Search, seed: int):
+    def search(self, m: Match, search: Search, seed: int, report: Report):
         m.start_search(seed, **search.options())
         while m.simulations() < search.sims:
             batch = m.gather(8)
@@ -112,15 +119,19 @@ class NetworkAgent(Agent):
             tok, tl, act, al = batch
             priors, values = evaluate(self.net, tok, tl, act, al, self.device)
             m.feed(priors.astype(np.float32), values.astype(np.float32))
+            report(m)
 
 
 class HeuristicAgent(Agent):
     """IS-MCTS with uniform priors and the hand-written board evaluation."""
 
-    def search(self, m: Match, search: Search, seed: int):
-        m.heuristic_choice(search.sims, seed)
+    def search(self, m: Match, search: Search, seed: int, report: Report):
+        m.start_heuristic(seed)
+        for done in range(0, search.sims, CHUNK):
+            m.run_heuristic(min(CHUNK, search.sims - done))
+            report(m)
 
 
 class RandomAgent(Agent):
-    def think(self, m: Match, search: Search, seed: int) -> Thought:
+    def think(self, m: Match, search: Search, seed: int, report: Report = lambda m: None) -> Thought:
         return unsearched(m, random.Random(seed).randrange(len(m.choices(m.to_act()))), "The random agent doesn't search.")

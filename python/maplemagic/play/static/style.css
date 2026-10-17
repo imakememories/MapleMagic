@@ -38,35 +38,76 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 8px; padding: 8px; 
 /* Cards: 63 x 88 like the real thing; art over the name, which shows until it loads. */
 .card { --w: 84px; position: relative; flex: none; width: var(--w); height: calc(var(--w) * 1.397); border-radius: 5px;
   background: linear-gradient(#555b57, #2f3331); border: 1px solid #000; box-sizing: border-box; overflow: hidden;
-  transition: transform .1s; }
+  transform: translate(var(--dx, 0px), var(--dy, 0px)) rotate(var(--rot, 0deg)); transition: transform .1s; }
 .card img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 4px; }
 .card .name { display: block; padding: 4px; font-size: 11px; font-weight: 600; text-align: center; overflow: hidden; overflow-wrap: anywhere; }
 .card.back { background: repeating-linear-gradient(45deg, #5a3a22 0 6px, #4a2e1a 6px 12px); border: 2px solid #2a1a0e; }
 .card.back.empty { opacity: .25; }
-.card.tapped { transform: rotate(90deg); margin: 0 calc(var(--w) * .2); }
+.card.tapped { --rot: 90deg; margin: 0 calc(var(--w) * .2); }
 .card.attacking { box-shadow: 0 0 0 3px var(--attack); }
 .card.can { box-shadow: 0 0 0 3px var(--can), 0 0 12px var(--can); cursor: pointer; }
 .card:hover { z-index: 2; }
-.badge { position: absolute; z-index: 1; padding: 1px 4px; border-radius: 4px; font-size: 11px; background: rgba(0, 0, 0, .8); color: #fff; }
+.badge { position: absolute; z-index: 1; max-width: calc(100% - 10px); padding: 1px 4px; border-radius: 4px; font-size: 11px;
+  background: rgba(0, 0, 0, .8); color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
 .badge.pt { right: 3px; bottom: 3px; background: #f2efe6; color: #111; font-weight: 700; }
 .badge.damage { left: 3px; bottom: 3px; background: #b3261e; }
 .badge.counters { left: 3px; top: 3px; background: #2f6f3a; }
 .badge.attack { right: 3px; top: 3px; background: var(--attack); }
 .badge.blocking { right: 3px; top: 3px; background: #3d6fb3; }
 .badge.label { left: 3px; top: 3px; }
+.badge.blocked { left: 3px; top: 3px; background: #3d6fb3; }
+.badge.tax { left: 50%; bottom: 3px; transform: translateX(-50%); background: #d9d4c7; color: #111; font-weight: 700; }
+
+/* Identical permanents stacked, each a sliver to the right of the last. */
+.group { position: relative; display: grid; padding-right: calc((var(--n) - 1) * 14px); }
+.group > .card { grid-area: 1 / 1; --dx: calc(var(--i) * 14px); }
+.group > .card:hover { z-index: 3; }
+.count-badge { position: absolute; z-index: 4; top: -6px; left: -6px; padding: 0 5px; border-radius: 8px;
+  background: var(--gold); color: #111; font-size: 11px; font-weight: 700; }
+
+/* Choosing attackers and blockers; a choice just sent flashes. */
+.card.picked-attack { --dy: -10px; box-shadow: 0 0 0 3px var(--attack), 0 0 14px var(--attack); }
+.card.picked-blocker { --dy: -10px; box-shadow: 0 0 0 3px var(--gold), 0 0 14px var(--gold); }
+.card.block-target { box-shadow: 0 0 0 3px #ff9800, 0 0 14px #ff9800; cursor: crosshair; }
+.sent { animation: sent .7s ease-out; }
+@keyframes sent { from { outline: 4px solid #7cfc9a; } to { outline: 4px solid transparent; } }
+#lines { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 5; }
+#lines line { stroke: var(--gold); stroke-width: 3; stroke-dasharray: 7 4; }
+
+/* Mana symbols: floating mana, and the commander tax. */
+.mana { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 50%;
+  border: 1px solid #000; color: #111; font-size: 11px; font-weight: 700; }
+.mana.W { background: #f8f6d8; } .mana.U { background: #aae0fa; } .mana.B { background: #cbc2bf; }
+.mana.R { background: #f9aa8f; } .mana.G { background: #9bd3ae; } .mana.C { background: #d6d0cc; }
+.line.pool { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; color: var(--text); }
+.floating { display: flex; flex-direction: column; gap: 4px; padding: 4px 8px; border: 1px solid var(--gold); border-radius: 6px;
+  background: #2b2a1d; color: var(--text); }
+.floating .symbols { display: flex; flex-wrap: wrap; gap: 3px; }
+.floating .mana { width: 24px; height: 24px; font-size: 13px; }
 
 .row.lands .card { --w: 66px; }
 .hand { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; min-height: 40px; }
 .you .hand .card { --w: 96px; }
-.you .hand .card:hover { transform: translateY(-8px); }
+.you .hand .card:hover { --dy: -8px; }
 .opponent .hand .card { --w: 46px; }
 .opponent .hand.revealed .card { --w: 76px; outline: 2px dashed var(--gold); }
 
 /* Between the sides: whose turn and which step, the stack, and what to do. */
-#middle { display: grid; grid-template-columns: 150px 1fr minmax(220px, 300px); gap: 8px; align-items: center;
+#middle { display: grid; grid-template-columns: 1fr minmax(240px, 360px); gap: 6px 8px; align-items: center;
   min-height: 64px; padding: 6px; border-radius: 8px; background: var(--panel); }
+#phase { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
 #phase .turn { font-weight: 700; }
 #phase .step { color: var(--muted); font-size: 13px; }
+/* The turn's steps: done, now, with something in it (a dot; hover for what), and your stops (red underline). */
+.steps { display: flex; flex-wrap: wrap; gap: 3px; }
+.pill { position: relative; padding: 2px 8px; border-radius: 10px; background: #2a3530; color: var(--muted); font-size: 11px; }
+.pill.past { opacity: .6; }
+.pill.now { background: var(--gold); color: #111; font-weight: 700; }
+.pill.happened::after { content: ""; position: absolute; top: 1px; right: 1px; width: 6px; height: 6px; border-radius: 50%; background: #7cc4ff; }
+.pill.stop { box-shadow: inset 0 -2px 0 #ff8a80; }
+#progress { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+#progress progress { width: 100%; height: 8px; }
+#progress .leaning { color: var(--gold); }
 #stack { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
 #stack .card { --w: 62px; }
 #stack .card.opponent { border-color: var(--attack); }
@@ -74,14 +115,44 @@ main { display: grid; grid-template-columns: 1fr 300px; gap: 8px; padding: 8px; 
 #actions .prompt { font-weight: 700; }
 #actions .buttons { display: flex; flex-wrap: wrap; gap: 4px; }
 #actions .buttons button { padding: 6px 12px; border: 0; border-radius: 4px; background: var(--gold); color: #111; font-weight: 600; cursor: pointer; }
+#actions .buttons button.secondary { background: #3b4640; color: var(--text); }
 #actions .hint, #actions details { font-size: 12px; color: var(--muted); }
+.made { color: #9be7a5; font-weight: 600; font-size: 13px; }
+.notice { color: #ffb74d; font-size: 13px; }
 #actions details button { display: block; width: 100%; margin: 2px 0; text-align: left; }
 
 /* The right column. */
 #side { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 12px; }
 #side h4 { margin: 4px 0 0; }
 #preview { width: 100%; max-width: 300px; border-radius: 12px; }
-#log { max-height: 300px; overflow: auto; margin: 0; padding: 6px; white-space: pre-wrap; background: var(--panel); }
+/* The log and the recap: turn headers, steps, and entries (yours blue, the opponent's red, new ones lit). */
+#log { max-height: 460px; overflow: auto; padding: 6px; background: var(--panel); }
+#log .intro { color: var(--muted); }
+#recap { max-height: 280px; overflow: auto; padding: 6px; border: 1px solid var(--gold); border-radius: 6px; background: #1f251d; }
+#recap h4 { margin: 0 0 4px; color: var(--gold); }
+.turn-head { margin: 8px 0 2px; font-weight: 700; border-bottom: 1px solid #444; }
+.turn-head.you { color: #9fd3ff; }
+.turn-head.opponent { color: #ffb3a7; }
+.step-block { margin: 2px 0 4px 4px; }
+.step-head { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+.entry { padding: 1px 4px; border-left: 3px solid transparent; }
+.entry.you { border-left-color: #4fa3e0; }
+.entry.opponent { border-left-color: var(--attack); }
+.entry.damage { color: #ffcc80; }
+.entry.new { background: rgba(224, 184, 74, .13); }
+.entry .life { display: inline-block; margin-left: 6px; padding: 0 4px; border-radius: 3px; background: #4a2323; color: #ffab91;
+  font-weight: 700; white-space: nowrap; }
+#recap .entry.new { background: none; }
+
+/* The auto-pass stops, a dropdown in the header. */
+#stops-menu { position: relative; margin-left: auto; }
+#stops-menu summary { cursor: pointer; }
+#stops { position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; width: 360px; padding: 8px; border: 1px solid #555;
+  border-radius: 6px; background: var(--panel); box-shadow: 0 6px 24px rgba(0, 0, 0, .6); }
+#stops table { border-collapse: collapse; }
+#stops th, #stops td { padding: 1px 10px; text-align: center; }
+#stops td:first-child, #stops th:first-child { text-align: left; }
+#stops label { display: block; margin: 6px 0; }
 #thinking table { border-collapse: collapse; }
 #thinking th, #thinking td { border: 1px solid #555; padding: 2px 4px; text-align: right; }
 #thinking th:nth-child(2), #thinking td:nth-child(2) { text-align: left; }
