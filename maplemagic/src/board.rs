@@ -3,7 +3,7 @@
 //! the page can put the choices on them. Keys: `o<object id>` for a card,
 //! `a<stack item id>` for an ability on the stack, `you` and `opponent`.
 
-use crate::game::{obj_role, obj_sig, Game};
+use crate::game::{obj_role, obj_sig, Game, Kind};
 use mtg_kernel::card_def::{CardType, CARD_DEFS};
 use mtg_kernel::engine::{effective_power, effective_toughness, object_has_type};
 use mtg_kernel::ids::{ObjectId, PlayerId};
@@ -96,6 +96,7 @@ fn side(g: &Game, p: PlayerId, viewer: PlayerId, seen: &mut Vec<ObjectId>) -> Va
         v["commander"] = json!({
             "name": CARD_DEFS[o.card_def as usize].name,
             "casts": c.casts[p.index()],
+            "tax": mtg_kernel::commander::tax(st, cmd),
             "damage_taken": c.damage[p.index()][p.opponent().index()],
             "in_command_zone": o.zone == Zone::Command,
         });
@@ -146,7 +147,22 @@ fn anchors(g: &Game, i: usize, viewer: PlayerId, seen: &[ObjectId]) -> Vec<Strin
     out
 }
 
-/// The board as `viewer` sees it, with each choice's keys while `viewer` is to act.
+fn key(id: ObjectId) -> String {
+    format!("o{}", id.0)
+}
+
+/// What kind of choice each is, for the page: `Kind`'s names, with "Decline"
+/// for not casting from exile (a pass that isn't priority's).
+pub fn kinds(g: &Game) -> Vec<String> {
+    g.choices()
+        .iter()
+        .map(|c| if c.feat.kind == Kind::Pass && c.feat.src != u16::MAX { "Decline".into() } else { format!("{:?}", c.feat.kind) })
+        .collect()
+}
+
+/// The board as `viewer` sees it, with each choice's keys and kind while
+/// `viewer` is to act, and while declaring attackers or blockers, the
+/// creatures still to be asked.
 pub fn board(g: &Game, viewer: PlayerId) -> Value {
     let st = &g.state;
     let mut seen = Vec::new();
@@ -155,7 +171,7 @@ pub fn board(g: &Game, viewer: PlayerId) -> Value {
     let stack = stack(st, viewer, &mut seen);
     let acting = !g.is_over() && g.to_act() == viewer;
     let anchors: Vec<Vec<String>> = if acting { (0..g.choices().len()).map(|i| anchors(g, i, viewer, &seen)).collect() } else { Vec::new() };
-    json!({
+    let mut v = json!({
         "turn": st.turn,
         "step": format!("{:?}", st.step),
         "active": who(st.active_player, viewer),
@@ -164,7 +180,20 @@ pub fn board(g: &Game, viewer: PlayerId) -> Value {
         "opponent": opponent,
         "stack": stack,
         "anchors": anchors,
-    })
+        "kinds": if acting { kinds(g) } else { Vec::new() },
+    });
+    if !acting {
+        return v;
+    }
+    if let Some((asking, chosen)) = g.attack_plan() {
+        v["attack"] = json!({ "asking": asking.iter().map(|&id| key(id)).collect::<Vec<_>>(), "chosen": chosen.iter().map(|&id| key(id)).collect::<Vec<_>>() });
+    }
+    if let Some((asking, pairs)) = g.block_plan() {
+        let asking: Vec<Value> = asking.iter().map(|(b, can)| json!({ "key": key(*b), "attackers": can.iter().map(|&a| key(a)).collect::<Vec<_>>() })).collect();
+        let pairs: Vec<Value> = pairs.iter().map(|&(b, a)| json!([key(b), key(a)])).collect();
+        v["block"] = json!({ "asking": asking, "pairs": pairs });
+    }
+    v
 }
 
 #[cfg(test)]

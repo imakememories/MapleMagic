@@ -2,6 +2,7 @@ pub use mtg_kernel;
 
 pub mod board;
 pub mod commander;
+pub mod events;
 pub mod game;
 pub mod history;
 pub mod play;

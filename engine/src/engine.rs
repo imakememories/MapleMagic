@@ -11196,6 +11196,7 @@ fn resolve_top_of_stack(state: &mut GameState) -> ResolutionProgress {
 /// obviously-combat-shaped divergence. See `Decision::DeclareAttackers`'s
 /// doc and the replay comparator's handling of an empty `eligible`.
 fn advance_step(state: &mut GameState) {
+    crate::watch::step_ending(state);
     let cur_idx = STEP_ORDER
         .iter()
         .position(|&s| s == state.step)

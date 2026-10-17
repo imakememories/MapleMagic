@@ -151,6 +151,10 @@ pub struct Game {
     pub abort_reason: Option<String>,
     /// Mulligans each player took.
     mulligans: [u8; 2],
+    /// Whether the last attack or block declaration broke a rule its
+    /// one-creature-at-a-time questions can't see (menace, blocking limits),
+    /// so the smallest legal one was declared instead.
+    pub declaration_fell_back: bool,
 }
 
 /// Runtime decks, then every Commander deck whose cards the engine can all play.
@@ -345,6 +349,7 @@ impl Game {
             decisions: 0,
             abort_reason: None,
             mulligans: [0; 2],
+            declaration_fell_back: false,
         };
         g.settle();
         g
@@ -399,6 +404,24 @@ impl Game {
                 _ => Vec::new(),
             },
             Exec::Mulligan(_) => Vec::new(),
+        }
+    }
+
+    /// While attackers are asked one creature at a time: those still to be
+    /// asked, in order, and those already attacking.
+    pub fn attack_plan(&self) -> Option<(&[ObjectId], &[ObjectId])> {
+        match &self.pending {
+            Pending::Attack { eligible, next, chosen } => Some((&eligible[*next..], chosen)),
+            _ => None,
+        }
+    }
+
+    /// While blockers are asked one creature at a time: those still to be
+    /// asked with the attackers each can block, in order, and the blocks so far.
+    pub fn block_plan(&self) -> Option<(&[(ObjectId, Vec<ObjectId>)], &[(ObjectId, ObjectId)])> {
+        match &self.pending {
+            Pending::Block { blockers, next, pairs, .. } => Some((&blockers[*next..], pairs)),
+            _ => None,
         }
     }
 
@@ -899,6 +922,7 @@ impl Game {
                 if let Err(e) = engine::step(&mut self.state, action.clone()) {
                     // The per-creature split can't see menace or blocking limits.
                     let ok = fallback.is_some_and(|f| engine::step(&mut self.state, f).is_ok());
+                    self.declaration_fell_back = ok;
                     if !ok {
                         self.abort(format!("submit {action:?}: {e}"));
                     }
@@ -1134,6 +1158,7 @@ impl Game {
             }
             Decision::DeclareAttackers { player, eligible } => {
                 self.actor = player;
+                self.declaration_fell_back = false;
                 // Goaded creatures must attack: pre-commit them.
                 let chosen = engine::required_attackers(st, &eligible);
                 let eligible = eligible.into_iter().filter(|id| !chosen.contains(id)).collect();
@@ -1141,6 +1166,7 @@ impl Game {
             }
             Decision::DeclareBlockers { player, legal_blockers, must_be_blocked, .. } => {
                 self.actor = player;
+                self.declaration_fell_back = false;
                 // Invert (attacker -> blockers) into (blocker -> attackers).
                 let mut inv: Vec<(ObjectId, Vec<ObjectId>)> = Vec::new();
                 for (a, bs) in legal_blockers {
