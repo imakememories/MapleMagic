@@ -2001,3 +2001,34 @@ fn jurin_must_be_blocked_only_by_a_creature_able_to_block_it() {
         assert_eq!(unblocked.is_ok(), restriction != "none", "{restriction}: {unblocked:?}");
     }
 }
+
+#[test]
+fn laelia_gets_a_counter_per_batch_exiled_from_the_library_or_graveyard_not_from_the_hand_or_stack() {
+    // Reckless Impulse, Light Up the Stage and Embrace the Unknown exile two
+    // cards from the library at once: one counter. A foretold card leaves the
+    // hand, and a flashback spell the stack: none.
+    for source in ["Reckless Impulse", "Light Up the Stage", "Embrace the Unknown", "Delayed Blast Fireball", "Flashback"] {
+        let mut state = game();
+        let laelia = put(&mut state, P0, "Laelia, the Blade Reforged");
+        lands(&mut state, P0, 3);
+        match source {
+            "Delayed Blast Fireball" => {
+                let fireball = put_in(&mut state, P0, source, Zone::Hand);
+                advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+                engine::step(&mut state, Action::Foretell(fireball)).unwrap();
+                assert_eq!(zone(&state, fireball), Zone::Exile);
+            }
+            "Flashback" => {
+                let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+                cast(&mut state, source, Some(Target::Object(bolt)), 0);
+                cast_from_graveyard(&mut state, bolt, None);
+                assert_eq!(zone(&state, bolt), Zone::Exile);
+            }
+            _ => {
+                cast(&mut state, source, None, 0);
+            }
+        }
+        let expected = i16::from(!["Delayed Blast Fireball", "Flashback"].contains(&source));
+        assert_eq!(state.objects.get(laelia).counters.plus1_plus1, expected, "{source}");
+    }
+}
