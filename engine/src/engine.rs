@@ -11253,6 +11253,10 @@ fn resolve_top_of_stack(state: &mut GameState) -> ResolutionProgress {
 /// doc and the replay comparator's handling of an empty `eligible`.
 fn advance_step(state: &mut GameState) {
     crate::watch::step_ending(state);
+    // 511.3: creatures leave combat as the end of combat step ends.
+    if state.step == Step::EndCombat {
+        state.engine.combat = CombatState::default();
+    }
     let cur_idx = STEP_ORDER
         .iter()
         .position(|&s| s == state.step)

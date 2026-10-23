@@ -216,3 +216,17 @@ fn call_for_aids_sacrifice_ban_binds_only_its_caster() {
         _ => unreachable!(),
     }
 }
+#[test]
+fn creatures_stop_attacking_when_combat_ends() {
+    // 511.3: Gornog's bonus for attacking Warriors is gone in main phase 2.
+    let mut state = game();
+    let gornog = put(&mut state, P0, "Gornog, the Red Reaper");
+    put(&mut state, P1, "Zealous Conscripts");
+    let base = mtg_kernel::engine::effective_power(&state, gornog);
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    engine::step(&mut state, Action::DeclareAttackers(vec![gornog])).unwrap();
+    advance(&mut state, |s, _| s.step == Step::CombatDamage);
+    assert_eq!(mtg_kernel::engine::effective_power(&state, gornog), base + 1, "attacking, one Coward");
+    advance(&mut state, |s, _| s.step == Step::Main2);
+    assert_eq!(mtg_kernel::engine::effective_power(&state, gornog), base);
+}
