@@ -1923,3 +1923,28 @@ fn screaming_nemesis_returns_damage_from_each_kind_of_source() {
         assert_eq!(40 - state.players[0].life, damage, "{source}");
     }
 }
+
+#[test]
+fn hobgoblin_grows_for_the_card_each_discard_source_discards() {
+    // Demand Answers' additional cost, Vision of Love's optional discard and
+    // Embrace the Unknown's retrace each discard one card: +2/+0.
+    use mtg_kernel::state::CastMethodV4;
+    for source in ["Demand Answers", "Vision of Love", "Embrace the Unknown"] {
+        let mut state = game();
+        let hobgoblin = put(&mut state, P0, "Hobgoblin, Mantled Marauder");
+        let base = engine::effective_power(&state, hobgoblin);
+        put_in(&mut state, P0, "Mountain", Zone::Hand);
+        lands(&mut state, P0, 3);
+        let card = put_in(&mut state, P0, source, if source == "Embrace the Unknown" { Zone::Graveyard } else { Zone::Hand });
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::CastSpell(card)).unwrap();
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseCastMethod { .. } => Some(Action::ChooseCastMethod(CastMethodV4::Retrace)),
+            Decision::ChooseOptionalCost { .. } => Some(Action::ChooseOptionalCost(engine::OptionalCostChoice::Discard)),
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        assert_eq!(state.players[0].graveyard.iter().filter(|&&o| state.objects.get(o).name == "Mountain").count(), 1, "{source}: discarded");
+        assert_eq!(engine::effective_power(&state, hobgoblin), base + 2, "{source}");
+    }
+}
