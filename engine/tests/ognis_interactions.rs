@@ -2032,3 +2032,38 @@ fn laelia_gets_a_counter_per_batch_exiled_from_the_library_or_graveyard_not_from
         assert_eq!(state.objects.get(laelia).counters.plus1_plus1, expected, "{source}");
     }
 }
+
+#[test]
+fn a_treasure_feeds_dragonspark_idol_lannery_and_coin_of_mastery() {
+    // Captain Lannery Storm's attack makes a Treasure: an artifact entering
+    // (Dragonspark Reactor), a token created this turn (Idol of Oblivion),
+    // sacrificed (Lannery's +1/+0), and artifact mana spent on a creature
+    // spell (Coin of Mastery).
+    let mut state = game();
+    let lannery = put(&mut state, P0, "Captain Lannery Storm");
+    let reactor = put(&mut state, P0, "Dragonspark Reactor");
+    let idol = put(&mut state, P0, "Idol of Oblivion");
+    put(&mut state, P0, "Coin of Mastery");
+    lands(&mut state, P0, 1);
+    attack_with(&mut state, vec![lannery]);
+    advance(&mut state, |s, d| s.step == Step::Main2 && matches!(d, Decision::CastSpellOrPass { .. }));
+    let treasure = named(&state, P0, "Treasure Token")[0];
+    assert_eq!(state.objects.get(reactor).counters.charge, 1, "an artifact entered");
+    assert!(offered_ability(&mut state, idol, 0), "a token was created this turn");
+    let base = engine::effective_power(&state, lannery);
+    engine::step(&mut state, Action::ActivateManaAbilityChoice(treasure, ManaColor::R)).unwrap();
+    // Lannery's trigger resolves; the red stays floating in this step.
+    drive(&mut state, |s, d| match d {
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => None,
+    });
+    assert_eq!(engine::effective_power(&state, lannery), base + 1, "a Treasure was sacrificed");
+    assert_eq!(state.artifact_mana[0][ManaColor::R.pool_index()], 1);
+    let show_off = put_in(&mut state, P0, "Slickshot Show-Off", Zone::Hand);
+    engine::step(&mut state, Action::CastSpell(show_off)).unwrap();
+    drive(&mut state, |s, d| match d {
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => first_choice(s, d),
+    });
+    assert_eq!(state.objects.get(show_off).counters.plus1_plus1, 1, "one Treasure mana spent");
+}
