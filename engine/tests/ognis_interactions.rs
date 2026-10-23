@@ -328,3 +328,42 @@ fn the_opposing_hideous_taskmaster_taken_by_yours_has_annihilator_twice() {
     assert_eq!(sacrifices, 2);
     assert_eq!(lands_of_1.iter().filter(|&&m| zone(&state, m) == Zone::Graveyard).count(), 2);
 }
+
+#[test]
+fn treasure_mana_floated_while_hellkite_chargers_trigger_waits_pays_for_the_extra_combat() {
+    // Five lands and two Treasures pay {5}{R}{R}: the Treasures are sacrificed
+    // for mana with the trigger on the stack, and it stays in the pool.
+    let mut state = game();
+    lands(&mut state, P0, 5);
+    let hellkite = put(&mut state, P0, "Hellkite Charger");
+    let treasures = [put(&mut state, P0, "Treasure Token"), put(&mut state, P0, "Treasure Token")];
+    let (mut combats, mut floated, mut paid) = (0, false, None);
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::DeclareAttackers { .. } if combats < 2 => {
+                combats += 1;
+                Action::DeclareAttackers(if combats == 1 { vec![hellkite] } else { vec![] })
+            }
+            Decision::DeclareAttackers { .. } => Action::DeclareAttackers(vec![]),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() && !floated => {
+                floated = true;
+                for t in treasures {
+                    engine::step(&mut state, Action::ActivateManaAbilityChoice(t, ManaColor::R)).unwrap();
+                }
+                Action::Pass
+            }
+            Decision::ChooseEffectBoolean { .. } => {
+                paid = Some(true);
+                Action::ChooseEffectBoolean(true)
+            }
+            Decision::CastSpellOrPass { .. } if state.step == Step::Main2 => break,
+            Decision::CastSpellOrPass { .. } => Action::Pass,
+            Decision::DeclareBlockers { .. } => Action::DeclareBlockers(vec![]),
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(paid, Some(true), "the payment was offered");
+    assert_eq!(combats, 2, "an additional combat");
+    assert!(named(&state, P0, "Treasure Token").is_empty());
+}
