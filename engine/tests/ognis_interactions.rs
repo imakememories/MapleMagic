@@ -938,3 +938,68 @@ fn ruby_medallion_and_the_fire_crystal_take_one_generic_each_off_red_spells_only
         }
     }
 }
+
+/// Starts casting `spell` from player 0's hand (mode `mode` if modal, its
+/// normal cost) and returns the targets its first target choice offers.
+fn targets_offered(state: &mut GameState, spell: &str, mode: u8) -> Vec<Target> {
+    let card = put_in(state, P0, spell, Zone::Hand);
+    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(state, Action::CastSpell(card)).unwrap();
+    loop {
+        let a = match engine::advance_until_decision(state) {
+            Decision::ChooseSpellMode { .. } => Action::ChooseSpellMode(mode),
+            Decision::ChooseCastMode { .. } => Action::ChooseCastMode(engine::CastMode::Normal),
+            Decision::ChooseTargets { legal_targets, .. } => return legal_targets,
+            other => panic!("{spell}: unhandled decision {other:?}"),
+        };
+        engine::step(state, a).unwrap();
+    }
+}
+
+#[test]
+fn each_kind_of_artifact_is_a_target_for_the_artifact_spells_and_lowers_cavern_hoards_cost() {
+    // An artifact card, a Treasure token and a creature Liquimetal Torque
+    // made an artifact (layer 4) are artifacts; a plain creature isn't.
+    // Player 1 controls each one.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Kind {
+        Card,
+        Token,
+        Torqued,
+        Plain,
+    }
+    let setup = |state: &mut GameState, kind: Kind| match kind {
+        Kind::Card => put(state, P1, "Sol Ring"),
+        Kind::Token => put(state, P1, "Treasure Token"),
+        Kind::Torqued | Kind::Plain => {
+            let g = put(state, P1, "Guttersnipe");
+            if kind == Kind::Torqued {
+                let torque = put(state, P0, "Liquimetal Torque");
+                activate(state, torque, 0, Some(Target::Object(g)));
+            }
+            g
+        }
+    };
+    for kind in [Kind::Card, Kind::Token, Kind::Torqued, Kind::Plain] {
+        let artifact = kind != Kind::Plain;
+        for (spell, mode) in [("Shattering Spree", 0), ("Vandalblast", 0), ("Untimely Malfunction", 0)] {
+            let mut state = game();
+            let o = setup(&mut state, kind);
+            // So each spell has some legal target.
+            let ring = put(&mut state, P1, "Sol Ring");
+            lands(&mut state, P0, 2);
+            let offered = targets_offered(&mut state, spell, mode);
+            assert!(offered.contains(&Target::Object(ring)));
+            assert_eq!(offered.contains(&Target::Object(o)), artifact, "{spell} at {kind:?}: {offered:?}");
+        }
+        // {7}{R}{R}, {X} less for each artifact the opponent controls.
+        let need = 9 - usize::from(artifact);
+        for (lands_count, ok) in [(need, true), (need - 1, false)] {
+            let mut state = game();
+            setup(&mut state, kind);
+            lands(&mut state, P0, lands_count);
+            let dragon = put_in(&mut state, P0, "Cavern-Hoard Dragon", Zone::Hand);
+            assert_eq!(castable(&mut state, dragon), ok, "{kind:?} with {lands_count} lands");
+        }
+    }
+}
