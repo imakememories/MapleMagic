@@ -1748,3 +1748,48 @@ fn a_celebrating_goddric_pumps_each_dragon_in_the_deck_and_no_other_creature() {
         ["Cavern-Hoard Dragon", "Goldspan Dragon", "Hellkite Charger", "Shivan Devastator", "Smaug the Magnificent"]
     );
 }
+
+#[test]
+fn attack_triggers_fire_again_in_hellkite_chargers_extra_combat() {
+    // 500.8, 508.3a: Hellkite Charger, Captain Lannery Storm and Goldspan
+    // Dragon attack in both combats; Ognis makes a tapped Treasure for each
+    // hasty attacker each time, Lannery and Goldspan an untapped one each.
+    // The extra combat is paid with floating Mountain mana.
+    let mut state = game();
+    put(&mut state, P0, "Ognis, the Dragon's Lash");
+    let attackers = vec![
+        put(&mut state, P0, "Hellkite Charger"),
+        put(&mut state, P0, "Captain Lannery Storm"),
+        put(&mut state, P0, "Goldspan Dragon"),
+    ];
+    let mountains: Vec<ObjectId> = (0..7).map(|_| put(&mut state, P0, "Mountain")).collect();
+    let (mut combats, mut paid) = (0, false);
+    drive(&mut state, |s, d| match d {
+        Decision::DeclareAttackers { .. } if combats < 2 => {
+            combats += 1;
+            Some(Action::DeclareAttackers(attackers.clone()))
+        }
+        // Float every Mountain while the first combat's triggers wait.
+        Decision::CastSpellOrPass { player: P0, .. } if s.step == Step::DeclareAttackers && !s.stack.is_empty() && !paid => {
+            match mountains.iter().copied().find(|&m| !s.objects.get(m).tapped) {
+                Some(m) => Some(Action::ActivateManaAbility(m)),
+                None => Some(Action::Pass),
+            }
+        }
+        Decision::ChooseEffectBoolean { .. } => {
+            let pay = !paid;
+            paid = true;
+            Some(Action::ChooseEffectBoolean(pay))
+        }
+        Decision::ChooseTargets { legal_targets, .. } => Some(Action::ChooseTarget(legal_targets[0])),
+        Decision::DeclareBlockers { .. } => Some(Action::DeclareBlockers(vec![])),
+        Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
+        Decision::CastSpellOrPass { .. } if s.step == Step::Main2 => None,
+        Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+        _ => None,
+    });
+    assert_eq!(combats, 2);
+    let treasures = named(&state, P0, "Treasure Token");
+    let tapped = treasures.iter().filter(|&&t| state.objects.get(t).tapped).count();
+    assert_eq!((tapped, treasures.len() - tapped), (6, 4), "Ognis's, then Lannery's and Goldspan's, twice");
+}
