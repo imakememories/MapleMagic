@@ -2068,3 +2068,29 @@ fn a_treasure_feeds_dragonspark_idol_lannery_and_coin_of_mastery() {
     });
     assert_eq!(state.objects.get(show_off).counters.plus1_plus1, 1, "one Treasure mana spent");
 }
+
+#[test]
+fn urabrask_replaces_only_the_opponents_next_draw_even_outside_the_draw_step() {
+    // 614.5: player 1 casts Demand Answers in its upkeep after Urabrask's
+    // trigger: the first of its two draws becomes an exile, the second and
+    // the draw step's draw are normal.
+    let mut state = game();
+    put(&mut state, P0, "Urabrask, Heretic Praetor");
+    lands(&mut state, P1, 2);
+    let answers = put_in(&mut state, P1, "Demand Answers", Zone::Hand);
+    put_in(&mut state, P1, "Mountain", Zone::Hand);
+    advance(&mut state, |s, d| {
+        s.active_player == P1 && s.step == Step::Upkeep && s.stack.is_empty() && matches!(d, Decision::CastSpellOrPass { player: P1, .. })
+    });
+    let exiled_before = state.exile.len();
+    engine::step(&mut state, Action::CastSpell(answers)).unwrap();
+    drive(&mut state, |s, d| match d {
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => first_choice(s, d),
+    });
+    assert_eq!(state.exile.len(), exiled_before + 1, "the first draw was exiled");
+    assert_eq!(state.players[1].hand.len(), 1, "the second draw is normal");
+    advance(&mut state, |s, _| s.step == Step::Main1);
+    assert_eq!(state.players[1].hand.len(), 2, "the draw step's draw is normal");
+    assert_eq!(state.exile.len(), exiled_before + 1);
+}
