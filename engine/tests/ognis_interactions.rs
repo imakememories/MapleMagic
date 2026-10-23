@@ -1356,3 +1356,74 @@ fn throne_of_eldraine_red_mana_casts_exactly_the_monocolored_red_spells() {
         assert_eq!(castable(&mut state, card), mono_red, "{name}");
     }
 }
+
+#[test]
+fn redirect_lightning_answers_exactly_the_single_target_spells_and_deflecting_swat_any_spell() {
+    // 115.9a: "target spell ... with a single target"; Deflecting Swat targets
+    // any spell. Player 0 casts each instant and sorcery in the deck, aiming
+    // at player 1's things; player 1 holds both answers.
+    use mtg_kernel::card_def::{CardType, CARD_DEFS};
+    let single_target = [
+        "Chaos Warp",
+        "Shattering Spree",
+        "Untimely Malfunction",
+        "Vandalblast",
+        "Wild Magic Surge",
+        "Call for Aid",
+        "Mass Mutiny",
+        "Flashback",
+    ];
+    // These need a spell or ability on the stack to target.
+    let skipped = ["Deflecting Swat", "Redirect Lightning"];
+    let spells: Vec<&str> = ognis_deck_spells()
+        .into_iter()
+        .filter(|&n| {
+            let types = CARD_DEFS[id(n) as usize].types;
+            (types.contains(&CardType::Instant) || types.contains(&CardType::Sorcery)) && !skipped.contains(&n)
+        })
+        .collect();
+    assert_eq!(spells.len(), 19, "{spells:?}");
+    for name in spells {
+        let mut state = game();
+        let ring = put(&mut state, P1, "Sol Ring");
+        put(&mut state, P1, "Guttersnipe");
+        put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+        put_in(&mut state, P0, "Mountain", Zone::Hand);
+        lands(&mut state, P0, 8);
+        lands(&mut state, P1, 5);
+        let redirect = put_in(&mut state, P1, "Redirect Lightning", Zone::Hand);
+        let swat = put_in(&mut state, P1, "Deflecting Swat", Zone::Hand);
+        let spell = put_in(&mut state, P0, name, Zone::Hand);
+        let mut offered = None;
+        drive(&mut state, |s, d| match d {
+            Decision::CastSpellOrPass { player: P0, .. } if s.stack.is_empty() && zone(s, spell) == Zone::Hand => {
+                Some(Action::CastSpell(spell))
+            }
+            Decision::CastSpellOrPass { player: P1, castable_spells, .. } if zone(s, spell) == Zone::Stack => {
+                offered = Some((castable_spells.contains(&redirect), castable_spells.contains(&swat)));
+                None
+            }
+            Decision::CastSpellOrPass { .. } if offered.is_none() && zone(s, spell) == Zone::Stack => Some(Action::Pass),
+            Decision::ChooseTargets { legal_targets, .. } | Decision::ChooseEffectTargets { legal_targets, .. } => {
+                let theirs = |t: &&Target| match **t {
+                    Target::Player(p) => p == P1,
+                    Target::Object(o) => o == ring || (s.objects.get(o).controller == P1 && s.objects.get(o).zone == Zone::Battlefield),
+                    _ => false,
+                };
+                let t = *legal_targets.iter().find(theirs).unwrap_or(&legal_targets[0]);
+                Some(if matches!(d, Decision::ChooseTargets { .. }) { Action::ChooseTarget(t) } else { Action::ChooseEffectTarget(t) })
+            }
+            Decision::ChooseSpellMode { .. } => Some(Action::ChooseSpellMode(0)),
+            Decision::ChooseEffectOption { .. } => Some(Action::ChooseEffectOption(0)),
+            Decision::ChooseCastMode { .. } => Some(Action::ChooseCastMode(engine::CastMode::Normal)),
+            Decision::ChooseCostTargets { candidates, .. } => Some(Action::ChooseCostTarget(candidates[0])),
+            Decision::Discard { choices, .. } => Some(Action::Discard(vec![choices[0]])),
+            Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
+            Decision::CastSpellOrPass { .. } => None,
+            other => panic!("{name}: unhandled decision {other:?}"),
+        });
+        let (redirect_offered, swat_offered) = offered.unwrap_or_else(|| panic!("{name}: player 1 got priority with it on the stack"));
+        assert_eq!(redirect_offered, single_target.contains(&name), "{name}: Redirect Lightning");
+        assert!(swat_offered, "{name}: Deflecting Swat");
+    }
+}
