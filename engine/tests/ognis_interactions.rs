@@ -367,3 +367,48 @@ fn treasure_mana_floated_while_hellkite_chargers_trigger_waits_pays_for_the_extr
     assert_eq!(combats, 2, "an additional combat");
     assert!(named(&state, P0, "Treasure Token").is_empty());
 }
+
+#[test]
+fn expend_counts_the_mana_a_flashback_cast_actually_spent() {
+    // 702.170: Ruby Medallion makes Reckless Impulse's flashback {1}{R} cost
+    // {R}, so it adds 1 to the mana spent on spells, not 2.
+    let mut state = game();
+    put(&mut state, P0, "Ruby Medallion");
+    lands(&mut state, P0, 2);
+    let impulse = put_in(&mut state, P0, "Reckless Impulse", Zone::Graveyard);
+    cast(&mut state, "Flashback", Some(Target::Object(impulse)), 0);
+    assert_eq!(state.spell_mana_this_turn[0], 1, "Flashback costs one red");
+    cast_from_graveyard(&mut state, impulse, None);
+    assert_eq!(state.spell_mana_this_turn[0], 2);
+}
+
+/// Puts `id` into its owner's graveyard and back: a new object (400.7).
+fn bounce_through_graveyard(state: &mut GameState, id: ObjectId) {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    propose_and_commit(state, ProposedEvent::zone_change(id, Zone::Graveyard));
+    propose_and_commit(state, ProposedEvent::zone_change(id, Zone::Battlefield));
+}
+
+/// Casts `card` from player 0's hand with `target`; once a trigger waits
+/// above it, `respond` runs; then everything resolves.
+fn cast_and_respond(state: &mut GameState, card: &str, target: Option<Target>, mut respond: impl FnMut(&mut GameState)) {
+    let spell = put_in(state, P0, card, Zone::Hand);
+    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(state, Action::CastSpell(spell)).unwrap();
+    let mut responded = false;
+    loop {
+        let a = match engine::advance_until_decision(state) {
+            Decision::ChooseTargets { .. } => Action::ChooseTarget(target.expect("a target")),
+            Decision::CastSpellOrPass { .. } if state.stack.len() >= 2 && !responded => {
+                responded = true;
+                respond(state);
+                Action::Pass
+            }
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(state, a).unwrap();
+    }
+    assert!(responded, "a trigger waited above {card}");
+}

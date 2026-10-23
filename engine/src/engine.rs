@@ -15348,18 +15348,12 @@ fn finalize_owned_cast(
         CastMethodV4::Flashback => {
             let cost = flashback_cost(state, pending.spell, pending_origin_generation(&pending))
                 .expect("validated Flashback cast has a flashback cost");
-            if !pay_cost_components_with_x(
-                state,
-                pending.controller,
-                pending.spell,
-                &components_reduced(components_plus_generic(cost, additional_generic), reduction),
-                base_object_cost_chosen,
-                x_value,
-            ) {
+            let paid = components_reduced(components_plus_generic(cost, additional_generic), reduction);
+            if !pay_cost_components_with_x(state, pending.controller, pending.spell, &paid, base_object_cost_chosen, x_value) {
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             }
-            record_spell_mana(state, pending.controller, components_mana(cost));
+            record_spell_mana(state, pending.controller, components_mana(&paid, x_value));
             let replicate = replicate_parts(def, &pending);
             if !replicate.is_empty() {
                 let parts: Vec<&Cost> = replicate.iter().collect();
@@ -15375,17 +15369,12 @@ fn finalize_owned_cast(
                 .escape
                 .as_ref()
                 .expect("validated Escape cast has a definition-owned cost");
-            if !pay_cost_components(
-                state,
-                pending.controller,
-                pending.spell,
-                &components_reduced(components_plus_generic(escape.cost, additional_generic), reduction),
-                base_object_cost_chosen,
-            ) {
+            let paid = components_reduced(components_plus_generic(escape.cost, additional_generic), reduction);
+            if !pay_cost_components(state, pending.controller, pending.spell, &paid, base_object_cost_chosen) {
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             }
-            record_spell_mana(state, pending.controller, components_mana(escape.cost));
+            record_spell_mana(state, pending.controller, components_mana(&paid, 0));
         }
         CastMethodV4::Normal => {
             let kicked = pending.kicked == Some(true);
@@ -15420,17 +15409,12 @@ fn finalize_owned_cast(
             let alt = def
                 .alt_cost
                 .expect("validated alternative cast has a definition-owned cost");
-            if !pay_cost_components(
-                state,
-                pending.controller,
-                pending.spell,
-                &components_reduced(components_plus_generic(alt, additional_generic), reduction),
-                base_object_cost_chosen,
-            ) {
+            let paid = components_reduced(components_plus_generic(alt, additional_generic), reduction);
+            if !pay_cost_components(state, pending.controller, pending.spell, &paid, base_object_cost_chosen) {
                 abort_cast(state, pending, cast_method);
                 return Ok(());
             }
-            record_spell_mana(state, pending.controller, components_mana(alt));
+            record_spell_mana(state, pending.controller, components_mana(&paid, 0));
         }
         CastMethodV4::Omen => {
             let omen = supported_omen(def)
@@ -15981,12 +15965,14 @@ fn pay_spell_plan(state: &mut GameState, player: PlayerId, plan: &mana::PaymentP
     record_spell_mana(state, player, spent);
 }
 
-/// Mana in a spell's cost components, all of which was just paid.
-fn components_mana(components: &[CostComponent]) -> u16 {
+/// Mana in a spell's cost components as paid, with X (expend, 702.170).
+fn components_mana(components: &[CostComponent], x: u8) -> u16 {
     components
         .iter()
         .map(|c| match c {
-            CostComponent::Mana(cost) => u16::from(cost.generic) + cost.pips.len() as u16,
+            CostComponent::Mana(cost) => {
+                u16::from(cost.generic) + cost.pips.len() as u16 + u16::from(cost.x_count) * u16::from(x)
+            }
             _ => 0,
         })
         .sum()
