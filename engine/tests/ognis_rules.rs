@@ -80,6 +80,7 @@ fn drive_until(state: &mut GameState, mut stop: impl FnMut(&Decision) -> bool) -
                 }
             }
             Decision::ChooseEffectBoolean { .. } => Action::ChooseEffectBoolean(false),
+            Decision::ChooseEffectOption { .. } => Action::ChooseEffectOption(0),
             other => panic!("unhandled decision {other:?}"),
         };
         engine::step(state, a).unwrap();
@@ -110,6 +111,25 @@ fn each_hasty_creature_can_attack_the_turn_it_arrives() {
             }
             _ => unreachable!(),
         }
+    }
+}
+
+#[test]
+fn ognis_makes_one_tapped_treasure_for_each_creature_with_haste_that_attacks_the_turn_it_arrives() {
+    // Printed haste, or haste from The Fire Crystal for Gogo and Spider-Punk.
+    for &(card, printed) in PRINTED {
+        let mut state = game();
+        let ognis = put(&mut state, P0, "Ognis, the Dragon's Lash");
+        let o = if card == "Ognis, the Dragon's Lash" { ognis } else { creature(&mut state, card) };
+        if !has(printed, Keywords::HASTE) {
+            put(&mut state, P0, "The Fire Crystal");
+        }
+        state.objects.get_mut(o).summoning_sick = true;
+        drive_until(&mut state, |d| matches!(d, Decision::DeclareAttackers { .. }));
+        engine::step(&mut state, Action::DeclareAttackers(vec![o])).unwrap();
+        drive_until(&mut state, |d| matches!(d, Decision::DeclareBlockers { .. }));
+        let tapped: Vec<_> = named(&state, P0, "Treasure Token").into_iter().filter(|&t| state.objects.get(t).tapped).collect();
+        assert_eq!(tapped.len(), 1, "{card}");
     }
 }
 
