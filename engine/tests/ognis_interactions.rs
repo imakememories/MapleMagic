@@ -1140,3 +1140,73 @@ fn two_until_end_of_turn_steals_of_one_creature_both_end_at_cleanup() {
     assert_eq!(state.objects.get(theirs).controller, P1);
     assert!(state.players[1].battlefield.contains(&theirs));
 }
+
+#[test]
+fn granted_haste_lets_a_creature_attack_the_turn_it_arrives_and_ognis_makes_its_treasure() {
+    // Each source of haste besides printed haste and The Fire Crystal's.
+    let sources = ["threaten", "riot", "Gogo", "Cursed Mirror", "Depthshaker Titan"];
+    for source in sources {
+        let mut state = game();
+        put(&mut state, P0, "Ognis, the Dragon's Lash");
+        let attackers: Vec<ObjectId> = match source {
+            "threaten" => {
+                let theirs = put(&mut state, P1, "Spider-Punk");
+                lands(&mut state, P0, 5);
+                cast(&mut state, "Zealous Conscripts", Some(Target::Object(theirs)), 0);
+                vec![theirs]
+            }
+            "riot" => {
+                lands(&mut state, P0, 2);
+                vec![cast_with_riot(&mut state, "Spider-Punk", true)]
+            }
+            "Gogo" => {
+                let gogo = put(&mut state, P0, "Gogo, Mysterious Mime");
+                let punk = put(&mut state, P0, "Spider-Punk");
+                vec![gogo, punk]
+            }
+            "Cursed Mirror" => {
+                let theirs = put(&mut state, P1, "Spider-Punk");
+                lands(&mut state, P0, 3);
+                let mirror = put_in(&mut state, P0, "Cursed Mirror", Zone::Hand);
+                advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+                engine::step(&mut state, Action::CastSpell(mirror)).unwrap();
+                drive(&mut state, |s, d| match d {
+                    Decision::ChooseCopy { .. } => Some(Action::ChooseCopy(Some(theirs))),
+                    Decision::ChooseRiot { .. } => Some(Action::ChooseRiot(false)),
+                    Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+                    _ => None,
+                });
+                vec![mirror]
+            }
+            _ => {
+                put(&mut state, P0, "Depthshaker Titan");
+                let ring = put(&mut state, P0, "Sol Ring");
+                animate(&mut state, ring);
+                vec![ring]
+            }
+        };
+        for &a in &attackers {
+            state.objects.get_mut(a).summoning_sick = true;
+        }
+        let mut declared = false;
+        drive(&mut state, |_, d| match d {
+            Decision::DeclareAttackers { .. } if !declared => {
+                declared = true;
+                Some(Action::DeclareAttackers(attackers.clone()))
+            }
+            Decision::ChooseTargets { legal_targets, .. } => {
+                // Gogo copies Spider-Punk; attack triggers aim at player 1.
+                let punk = attackers.last().map(|&p| Target::Object(p)).filter(|t| legal_targets.contains(t));
+                Some(Action::ChooseTarget(punk.unwrap_or(Target::Player(P1))))
+            }
+            Decision::ChooseEffectOption { .. } => Some(Action::ChooseEffectOption(1)),
+            Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
+            Decision::DeclareBlockers { .. } => None,
+            Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+            _ => None,
+        });
+        assert!(declared, "{source}");
+        let tapped = named(&state, P0, "Treasure Token").into_iter().filter(|&t| state.objects.get(t).tapped).count();
+        assert_eq!(tapped, attackers.len(), "{source}");
+    }
+}
