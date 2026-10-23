@@ -1588,3 +1588,78 @@ fn slickshot_show_off_grows_for_each_noncreature_spell_in_the_deck_and_no_creatu
         assert_eq!(power, base + if noncreature { 2 } else { 0 }, "{name}");
     }
 }
+
+/// Answers a cast's and its resolution's choices with the first option,
+/// aiming at player 1's things where it can; `None` at priority.
+fn first_choice(s: &GameState, d: &Decision) -> Option<Action> {
+    Some(match d {
+        Decision::ChooseTargets { legal_targets, .. } | Decision::ChooseEffectTargets { legal_targets, .. } => {
+            let theirs = |t: &&Target| match **t {
+                Target::Player(p) => p == P1,
+                Target::Object(o) => s.objects.get(o).controller == P1 && s.objects.get(o).zone == Zone::Battlefield,
+                _ => false,
+            };
+            match legal_targets.iter().find(theirs).or(legal_targets.first()) {
+                Some(&t) if matches!(d, Decision::ChooseTargets { .. }) => Action::ChooseTarget(t),
+                Some(&t) => Action::ChooseEffectTarget(t),
+                None => Action::FinishEffectSelection,
+            }
+        }
+        Decision::ChooseSpellMode { .. } => Action::ChooseSpellMode(0),
+        Decision::ChooseEffectOption { .. } => Action::ChooseEffectOption(0),
+        Decision::ChooseCastMode { .. } => Action::ChooseCastMode(engine::CastMode::Normal),
+        Decision::ChooseCostTargets { candidates, .. } => Action::ChooseCostTarget(candidates[0]),
+        Decision::Discard { choices, .. } => Action::Discard(vec![choices[0]]),
+        Decision::ChooseRiot { .. } => Action::ChooseRiot(true),
+        Decision::ChooseCopy { .. } => Action::ChooseCopy(None),
+        Decision::ChooseColor { .. } => Action::ChooseColor(ManaColor::R),
+        Decision::ChooseEffectBoolean { .. } => Action::ChooseEffectBoolean(false),
+        Decision::ChooseOptionalCost { .. } => Action::ChooseOptionalCost(engine::OptionalCostChoice::Decline),
+        Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
+        Decision::CastSpellOrPass { .. } => return None,
+        other => panic!("unhandled decision {other:?}"),
+    })
+}
+
+#[test]
+fn flashback_lets_each_instant_and_sorcery_be_cast_from_the_graveyard_for_its_mana_cost_then_exiled() {
+    // Flashback's granted cost equals the card's mana cost (X is 0); the card
+    // is exiled as it leaves the stack.
+    use mtg_kernel::card_def::{CardType, CARD_DEFS};
+    use mtg_kernel::state::CastMethodV4;
+    let skipped = ["Deflecting Swat", "Redirect Lightning"];
+    let spells: Vec<&str> = ognis_deck_spells()
+        .into_iter()
+        .filter(|&n| {
+            let types = CARD_DEFS[id(n) as usize].types;
+            (types.contains(&CardType::Instant) || types.contains(&CardType::Sorcery)) && !skipped.contains(&n)
+        })
+        .collect();
+    for name in spells {
+        let def = &CARD_DEFS[id(name) as usize];
+        let cost = usize::from(def.cost.generic) + def.cost.pips.len();
+        for lands_count in [cost, cost - 1] {
+            let mut state = game();
+            put(&mut state, P1, "Sol Ring");
+            put(&mut state, P1, "Guttersnipe");
+            put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+            put_in(&mut state, P0, "Mountain", Zone::Hand);
+            let card = put_in(&mut state, P0, name, Zone::Graveyard);
+            lands(&mut state, P0, 1);
+            cast(&mut state, "Flashback", Some(Target::Object(card)), 0);
+            lands(&mut state, P0, lands_count);
+            let ok = castable(&mut state, card);
+            assert_eq!(ok, lands_count == cost, "{name} with {lands_count} lands");
+            if !ok {
+                continue;
+            }
+            engine::step(&mut state, Action::CastSpell(card)).unwrap();
+            drive(&mut state, |s, d| match d {
+                Decision::ChooseCastMethod { .. } => Some(Action::ChooseCastMethod(CastMethodV4::Flashback)),
+                Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+                _ => first_choice(s, d),
+            });
+            assert_eq!(zone(&state, card), Zone::Exile, "{name}");
+        }
+    }
+}
