@@ -1039,3 +1039,89 @@ fn a_stolen_permanents_you_text_serves_the_thief() {
     assert!(engine::has_effective_keyword(&state, mine, Keywords::HASTE));
     assert!(!engine::has_effective_keyword(&state, theirs, Keywords::HASTE));
 }
+
+#[test]
+fn each_trampler_assigns_lethal_to_its_blocker_and_the_rest_to_the_player() {
+    // 702.19b-c: lethal counts damage already marked, so Knuckles's second
+    // strike has 1 left over; Depthshaker Titan gives its artifact creatures
+    // trample and melee (+1/+1 for the one opponent attacked). Each attacker
+    // is blocked by a 3/3 (the flying Dragon by a 4/4 flyer) and gives the
+    // player all it may.
+    let rows: [(&str, &str, i32); 5] = [
+        ("Knuckles the Echidna", "Zealous Conscripts", 1),
+        ("Cavern-Hoard Dragon", "Pyreswipe Hawk", 2),
+        ("Hideous Taskmaster", "Zealous Conscripts", 4),
+        ("Depthshaker Titan", "Zealous Conscripts", 3),
+        ("Sol Ring", "Zealous Conscripts", 1),
+    ];
+    for (card, blocker, to_player) in rows {
+        let mut state = game();
+        let attacker = put(&mut state, P0, card);
+        if card == "Sol Ring" {
+            // Animated by a Depthshaker Titan's enters trigger, paid with
+            // floating land mana so the Sol Ring stays untapped.
+            let mountains: Vec<ObjectId> = (0..7).map(|_| put(&mut state, P0, "Mountain")).collect();
+            let titan = put_in(&mut state, P0, "Depthshaker Titan", Zone::Hand);
+            advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+            for m in mountains {
+                engine::step(&mut state, Action::ActivateManaAbility(m)).unwrap();
+            }
+            engine::step(&mut state, Action::CastSpell(titan)).unwrap();
+            let mut picked = false;
+            drive(&mut state, |s, d| match d {
+                Decision::ChooseTargets { .. } if !picked => {
+                    picked = true;
+                    Some(Action::ChooseTarget(Target::Object(attacker)))
+                }
+                Decision::ChooseTargets { .. } => Some(Action::FinishEffectSelection),
+                Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+                _ => None,
+            });
+        }
+        let blocker = put(&mut state, P1, blocker);
+        lands(&mut state, P1, 2);
+        let life = state.players[1].life;
+        advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+        engine::step(&mut state, Action::DeclareAttackers(vec![attacker])).unwrap();
+        let mut blocked = false;
+        drive(&mut state, |s, d| match d {
+            Decision::DeclareBlockers { .. } => {
+                blocked = true;
+                Some(Action::DeclareBlockers(vec![(blocker, attacker)]))
+            }
+            Decision::AssignCombatDamage { options, .. } => Some(Action::AssignCombatDamage(*options.iter().max().unwrap())),
+            // Annihilator: player 1 sacrifices a land, not its blocker.
+            Decision::ChooseEffectTargets { legal_targets, .. } => {
+                Some(Action::ChooseEffectTarget(*legal_targets.iter().find(|&&t| t != Target::Object(blocker)).unwrap()))
+            }
+            Decision::ChooseTargets { legal_targets, .. } => Some(Action::ChooseTarget(legal_targets[0])),
+            Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
+            Decision::CastSpellOrPass { .. } if matches!(s.step, Step::EndCombat | Step::Main2) => None,
+            Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+            _ => None,
+        });
+        assert!(blocked, "{card}");
+        assert_eq!(life - state.players[1].life, to_player, "{card}");
+        assert_eq!(zone(&state, blocker), Zone::Graveyard, "{card}");
+    }
+}
+
+#[test]
+fn a_blocked_trampler_whose_blockers_all_left_deals_its_damage_to_the_player() {
+    // 702.19d; without trample a blocked creature stays blocked and deals
+    // none (509.1h, 510.1c). The blocker dies before damage.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    for (card, to_player) in [("Knuckles the Echidna", 4), ("Depthshaker Titan", 6), ("Molten Primordial", 0)] {
+        let mut state = game();
+        let attacker = put(&mut state, P0, card);
+        let blocker = put(&mut state, P1, "Zealous Conscripts");
+        advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+        engine::step(&mut state, Action::DeclareAttackers(vec![attacker])).unwrap();
+        advance(&mut state, |_, d| matches!(d, Decision::DeclareBlockers { .. }));
+        engine::step(&mut state, Action::DeclareBlockers(vec![(blocker, attacker)])).unwrap();
+        propose_and_commit(&mut state, ProposedEvent::zone_change(blocker, Zone::Graveyard));
+        let life = state.players[1].life;
+        advance(&mut state, |s, _| matches!(s.step, Step::EndCombat | Step::Main2));
+        assert_eq!(life - state.players[1].life, to_player, "{card}");
+    }
+}
