@@ -1210,3 +1210,69 @@ fn granted_haste_lets_a_creature_attack_the_turn_it_arrives_and_ognis_makes_its_
         assert_eq!(tapped, attackers.len(), "{source}");
     }
 }
+
+#[test]
+fn more_stolen_permanents_read_the_thief_as_you() {
+    // 109.5, 613.1b: each is taken from player 1 with Zealous Conscripts.
+    use mtg_kernel::card_def::{Keywords, Subtype};
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let steal = |state: &mut GameState, card: &str| {
+        let theirs = put(state, P1, card);
+        lands(state, P0, 5);
+        cast(state, "Zealous Conscripts", Some(Target::Object(theirs)), 0);
+        assert_eq!(state.objects.get(theirs).controller, P0, "{card}");
+        theirs
+    };
+    let r = ManaColor::R.pool_index();
+
+    // Goldspan Dragon: the thief's Treasures make two mana.
+    let mut state = game();
+    steal(&mut state, "Goldspan Dragon");
+    let treasure = put(&mut state, P0, "Treasure Token");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::ActivateManaAbilityChoice(treasure, ManaColor::R)).unwrap();
+    assert_eq!(state.players[0].mana_pool[r], 2);
+
+    // Goblin War Drums: the thief's creatures have menace, the owner's don't.
+    let mut state = game();
+    let theirs = put(&mut state, P1, "Spider-Punk");
+    steal(&mut state, "Goblin War Drums");
+    let conscripts = named(&state, P0, "Zealous Conscripts")[0];
+    assert!(engine::has_effective_keyword(&state, conscripts, Keywords::MENACE));
+    assert!(!engine::has_effective_keyword(&state, theirs, Keywords::MENACE));
+
+    // Slickshot Show-Off: the thief's noncreature spells pump it.
+    let mut state = game();
+    let show_off = steal(&mut state, "Slickshot Show-Off");
+    let base = engine::effective_power(&state, show_off);
+    lands(&mut state, P0, 1);
+    cast(&mut state, "Lightning Bolt", Some(Target::Player(P1)), 0);
+    assert_eq!(engine::effective_power(&state, show_off), base + 2);
+
+    // Idol of Oblivion: the thief's token this turn lets it draw.
+    let mut state = game();
+    let idol = steal(&mut state, "Idol of Oblivion");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert!(!offered_ability(&mut state, idol, 0), "no token yet");
+    propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P0));
+    assert!(offered_ability(&mut state, idol, 0));
+
+    // Dragonspark Reactor: artifacts entering under the thief add counters.
+    let mut state = game();
+    let reactor = steal(&mut state, "Dragonspark Reactor");
+    let before = state.objects.get(reactor).counters.charge;
+    for p in [P1, P0] {
+        propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), p));
+        advance(&mut state, |s, d| s.stack.is_empty() && matches!(d, Decision::CastSpellOrPass { .. }));
+    }
+    assert_eq!(state.objects.get(reactor).counters.charge, before + 1, "only the thief's Treasure");
+
+    // Goddric: celebration counts what entered under the thief.
+    let mut state = game();
+    let goddric = steal(&mut state, "Goddric, Cloaked Reveler");
+    assert!(!engine::has_effective_subtype(&state, goddric, Subtype::Dragon), "only Conscripts entered");
+    propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P1));
+    assert!(!engine::has_effective_subtype(&state, goddric, Subtype::Dragon), "not the owner's Treasure");
+    propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P0));
+    assert!(engine::has_effective_subtype(&state, goddric, Subtype::Dragon));
+}
