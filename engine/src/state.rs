@@ -51,6 +51,8 @@ pub struct CopyEffectV1 {
     pub object: ObjectLinkV4,
     /// The object's own card (a token's own copied card).
     pub printed: u16,
+    /// The copied card.
+    pub card_def: u16,
     /// The card whose name it has (Gogo keeps its own, 707.9b).
     pub name: u16,
     /// Haste gained as part of the copy (Cursed Mirror).

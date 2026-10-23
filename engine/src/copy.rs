@@ -25,7 +25,7 @@ fn live_effect(state: &GameState, id: ObjectId) -> Option<&CopyEffectV1> {
     state
         .copy_effects
         .iter()
-        .find(|c| c.object.object == id && c.object.zone_change_count == generation)
+        .rfind(|c| c.object.object == id && c.object.zone_change_count == generation)
 }
 
 pub fn copiable_values(state: &GameState, id: ObjectId) -> CopiableValues {
@@ -75,15 +75,16 @@ fn set_card(state: &mut GameState, id: ObjectId, card_def: u16, name: u16) {
 }
 
 /// Permanent `id` becomes a copy of `values` (layer 1), until end of turn or
-/// for as long as it stays on the battlefield.
+/// for as long as it stays on the battlefield. Earlier copy effects stay and
+/// apply again once it ends (613.2a: newest last).
 pub fn become_copy(state: &mut GameState, id: ObjectId, values: CopiableValues, until_end_of_turn: bool) {
     let o = state.objects.get(id);
     let link = ObjectLinkV4 { object: id, zone_change_count: o.zone_change_count };
     let printed = live_effect(state, id).map_or(o.card_def, |c| c.printed);
-    state.copy_effects.retain(|c| c.object != link);
     state.copy_effects.push(CopyEffectV1 {
         object: link,
         printed,
+        card_def: values.card_def,
         name: values.name,
         haste: values.haste,
         until_end_of_turn,
@@ -101,6 +102,7 @@ pub fn token_created(state: &mut GameState, token: ObjectId, values: CopiableVal
         state.copy_effects.push(CopyEffectV1 {
             object: link,
             printed: values.card_def,
+            card_def: values.card_def,
             name: values.name,
             haste: values.haste,
             until_end_of_turn: false,
@@ -117,9 +119,11 @@ pub fn end_until_end_of_turn(state: &mut GameState) {
     let ending: Vec<CopyEffectV1> = state.copy_effects.iter().copied().filter(|c| c.until_end_of_turn).collect();
     state.copy_effects.retain(|c| !c.until_end_of_turn);
     for c in ending {
-        let o = state.objects.get(c.object.object);
+        let id = c.object.object;
+        let o = state.objects.get(id);
         if o.zone == Zone::Battlefield && o.zone_change_count == c.object.zone_change_count {
-            set_card(state, c.object.object, c.printed, c.printed);
+            let (card_def, name) = live_effect(state, id).map_or((c.printed, c.printed), |e| (e.card_def, e.name));
+            set_card(state, id, card_def, name);
         }
     }
 }
@@ -130,15 +134,10 @@ pub fn leave_battlefield(state: &mut GameState, id: ObjectId) {
     if state.copy_effects.is_empty() {
         return;
     }
-    let generation = state.objects.get(id).zone_change_count;
-    let Some(i) = state
-        .copy_effects
-        .iter()
-        .position(|c| c.object.object == id && c.object.zone_change_count == generation)
-    else {
+    let Some(c) = live_effect(state, id).copied() else {
         return;
     };
-    let c = state.copy_effects.remove(i);
+    state.copy_effects.retain(|e| e.object != c.object);
     let current = state.objects.get(id).card_def;
     if current != c.printed {
         state.last_known_defs.push((c.object, current));

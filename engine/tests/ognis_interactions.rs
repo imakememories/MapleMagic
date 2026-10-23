@@ -612,3 +612,56 @@ fn the_blockers_and_damage_steps_happen_after_the_only_attacker_died() {
         }
     }
 }
+
+#[test]
+fn a_copy_effect_ending_uncovers_the_earlier_copy_effect() {
+    // 707.9b, 613.2a: a Fire Crystal token of a Cursed Mirror copying Gogo is
+    // a Gogo with haste; Gogo's trigger makes it a Goldspan Dragon until end
+    // of turn, and then it's a hasty Gogo again. The token is normally
+    // sacrificed at the end step first, so the copy is ended directly.
+    use mtg_kernel::card_def::Keywords;
+    let mut state = game();
+    lands(&mut state, P0, 9);
+    let gogo = put(&mut state, P1, "Gogo, Mysterious Mime");
+    let dragon = put(&mut state, P0, "Goldspan Dragon");
+    let crystal = put(&mut state, P0, "The Fire Crystal");
+    let mirror = put_in(&mut state, P0, "Cursed Mirror", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(mirror)).unwrap();
+    drive(&mut state, |s, d| match d {
+        Decision::ChooseCopy { .. } => Some(Action::ChooseCopy(Some(gogo))),
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => None,
+    });
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { activatable_abilities, .. } if activatable_abilities.contains(&(crystal, 0))));
+    engine::step(&mut state, Action::ActivateAbility(crystal, 0)).unwrap();
+    let mut token = None;
+    drive(&mut state, |s, d| match d {
+        Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Object(mirror))),
+        Decision::ChooseLegendToKeep { legends, .. } => {
+            token = legends.iter().copied().find(|&l| l != mirror);
+            Some(Action::ChooseLegendToKeep(token.unwrap()))
+        }
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => None,
+    });
+    let token = token.expect("the token and the Mirror are both Gogo");
+    let gogo_values = mtg_kernel::copy::copiable_values(&state, token);
+    assert_eq!((gogo_values.card_def, gogo_values.haste), (id("Gogo, Mysterious Mime"), true));
+
+    advance(&mut state, |s, d| s.step == Step::BeginCombat && matches!(d, Decision::ChooseTargets { .. }));
+    engine::step(&mut state, Action::ChooseTarget(Target::Object(dragon))).unwrap();
+    drive(&mut state, |s, d| match d {
+        Decision::ChooseEffectOption { option_count: 2, .. } => Some(Action::ChooseEffectOption(1)),
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => None,
+    });
+    assert_eq!(state.objects.get(token).card_def, id("Goldspan Dragon"));
+
+    mtg_kernel::copy::end_until_end_of_turn(&mut state);
+    assert_eq!(mtg_kernel::copy::copiable_values(&state, token), gogo_values);
+    assert_eq!(state.objects.get(token).name, "Gogo, Mysterious Mime");
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    propose_and_commit(&mut state, ProposedEvent::zone_change(crystal, Zone::Graveyard));
+    assert!(engine::has_effective_keyword(&state, token, Keywords::HASTE), "its own copiable haste");
+}
