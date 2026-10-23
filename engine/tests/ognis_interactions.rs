@@ -1462,3 +1462,65 @@ fn goldspan_dragon_makes_a_treasure_when_any_spell_targets_it_but_not_an_ability
     assert!(state.objects.get(dragon).tapped);
     assert!(named(&state, P1, "Treasure Token").is_empty(), "an ability isn't a spell");
 }
+
+#[test]
+fn a_permanent_put_onto_the_battlefield_by_chaos_warp_isnt_cast_but_enters() {
+    // Player 0 Chaos Warps its own Treasure; the top card of its library is
+    // put onto the battlefield under its control. X is 0, "as enters" choices
+    // and enters triggers happen, Sagas get their first lore counter, and
+    // Coin of Mastery adds nothing (no mana was spent to cast it).
+    for card in ["Shivan Devastator", "Spider-Punk", "Cursed Mirror", "Throne of Eldraine", "Summon: Esper Valigarmanda", "Zealous Conscripts", "Laelia, the Blade Reforged"] {
+        let mut state = game();
+        put(&mut state, P0, "Coin of Mastery");
+        put(&mut state, P1, "Guttersnipe");
+        let treasure = put(&mut state, P0, "Treasure Token");
+        for i in 0..10 {
+            library_card(&mut state, P0, i, card);
+        }
+        lands(&mut state, P0, 3);
+        let warp = put_in(&mut state, P0, "Chaos Warp", Zone::Hand);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::CastSpell(warp)).unwrap();
+        let mut asked = Vec::new();
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseTargets { legal_targets, .. } if zone(s, warp) == Zone::Stack && s.stack.len() == 1 && !legal_targets.is_empty() && asked.is_empty() && legal_targets.contains(&Target::Object(treasure)) => {
+                Some(Action::ChooseTarget(Target::Object(treasure)))
+            }
+            Decision::ChooseTargets { legal_targets, .. } => {
+                asked.push("enters trigger target");
+                Some(Action::ChooseTarget(legal_targets[0]))
+            }
+            Decision::ChooseRiot { .. } => {
+                asked.push("riot");
+                Some(Action::ChooseRiot(true))
+            }
+            Decision::ChooseCopy { .. } => {
+                asked.push("copy");
+                Some(Action::ChooseCopy(None))
+            }
+            Decision::ChooseColor { .. } => {
+                asked.push("color");
+                Some(Action::ChooseColor(ManaColor::R))
+            }
+            Decision::ChooseEffectTargets { can_finish: true, .. } => Some(Action::FinishEffectSelection),
+            Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+            _ => None,
+        });
+        let entered = state.players[0].battlefield.iter().copied().find(|&o| state.objects.get(o).name == card);
+        let graveyard = state.players[0].graveyard.iter().any(|&o| state.objects.get(o).name == card);
+        match card {
+            "Shivan Devastator" => assert!(entered.is_none() && graveyard, "X is 0: a 0/0"),
+            "Spider-Punk" => assert_eq!(asked, ["riot"]),
+            "Cursed Mirror" => assert_eq!(asked, ["copy"]),
+            "Throne of Eldraine" => assert_eq!(asked, ["color"]),
+            "Summon: Esper Valigarmanda" => assert_eq!(state.objects.get(entered.unwrap()).counters.lore, 1),
+            "Zealous Conscripts" => assert_eq!(asked, ["enters trigger target"]),
+            _ => {
+                let laelia = entered.unwrap();
+                assert_eq!(state.objects.get(laelia).counters.plus1_plus1, 0, "Coin counts only mana spent to cast it");
+                assert_eq!(state.objects.get(laelia).controller, P0);
+            }
+        }
+    }
+}
