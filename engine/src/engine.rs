@@ -10070,16 +10070,11 @@ fn push_trigger_onto_stack(state: &mut GameState, t: PendingTrigger) -> Result<(
             return Err(error);
         }
     }
-    // Same `priority_passes`/`priority_player` reset as `reset_priority`
-    // (117.5: priority passes to the active player once a triggered
-    // ability is put on the stack), but deliberately inlined instead of
-    // calling that shared helper: a trigger firing mid-cascade off another
-    // action (e.g. Guttersnipe off a cast) is not a rules-level "everyone's
-    // pass streak clears" boundary in the same sense `advance_step`/a
-    // resolution/declare-attackers-or-blockers are, so it must not bump
+    // 117.5: the player who would receive priority (the caster after a
+    // cast, 117.3c; the active player after a resolution or a new step)
+    // still gets it. Not a `reset_priority`: it must not bump
     // `EngineState::priority_round` -- see that field's doc.
     state.engine.priority_passes = [false, false];
-    state.priority_player = state.active_player;
     Ok(())
 }
 

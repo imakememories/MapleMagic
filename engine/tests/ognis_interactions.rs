@@ -665,3 +665,18 @@ fn a_copy_effect_ending_uncovers_the_earlier_copy_effect() {
     propose_and_commit(&mut state, ProposedEvent::zone_change(crystal, Zone::Graveyard));
     assert!(engine::has_effective_keyword(&state, token, Keywords::HASTE), "its own copiable haste");
 }
+
+#[test]
+fn the_caster_gets_priority_first_with_its_trigger_on_the_stack() {
+    // 117.3c, 117.5: player 1 casts on player 0's turn with its Slickshot
+    // Show-Off out; the trigger goes on the stack and player 1 acts first.
+    let mut state = game();
+    put(&mut state, P1, "Slickshot Show-Off");
+    lands(&mut state, P1, 1);
+    let bolt = put_in(&mut state, P1, "Lightning Bolt", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { player: P1, .. }));
+    engine::step(&mut state, Action::CastSpell(bolt)).unwrap();
+    let next = advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert_eq!(state.stack.len(), 2, "the Bolt and the trigger");
+    assert!(matches!(next, Decision::CastSpellOrPass { player: P1, .. }), "{next:?}");
+}
