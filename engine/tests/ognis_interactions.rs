@@ -1793,3 +1793,36 @@ fn attack_triggers_fire_again_in_hellkite_chargers_extra_combat() {
     let tapped = treasures.iter().filter(|&&t| state.objects.get(t).tapped).count();
     assert_eq!((tapped, treasures.len() - tapped), (6, 4), "Ognis's, then Lannery's and Goldspan's, twice");
 }
+
+#[test]
+fn light_up_the_stages_spectacle_follows_the_opponents_life_loss_from_each_source_not_your_own() {
+    // 702.137a: Delayed Blast Fireball's and Dragonspark Reactor's damage to
+    // player 1 enable it; paying War Room's life yourself doesn't. Spectacle
+    // {R} is castable with the one Mountain left.
+    for source in ["Delayed Blast Fireball", "Dragonspark Reactor", "War Room"] {
+        let mut state = game();
+        match source {
+            "Delayed Blast Fireball" => {
+                lands(&mut state, P0, 3);
+                cast(&mut state, source, None, 0);
+            }
+            "Dragonspark Reactor" => {
+                let reactor = put(&mut state, P0, source);
+                state.objects.get_mut(reactor).counters.charge = 1;
+                lands(&mut state, P0, 4);
+                activate(&mut state, reactor, 0, Some(Target::Player(P1)));
+            }
+            _ => {
+                let room = put(&mut state, P0, source);
+                lands(&mut state, P0, 3);
+                activate(&mut state, room, 0, None);
+                assert_eq!(state.players[0].life, 37);
+            }
+        }
+        let lost = state.players[1].life < 40;
+        assert_eq!(lost, source != "War Room", "{source}");
+        lands(&mut state, P0, 1);
+        let stage = put_in(&mut state, P0, "Light Up the Stage", Zone::Hand);
+        assert_eq!(castable(&mut state, stage), lost, "{source}");
+    }
+}
