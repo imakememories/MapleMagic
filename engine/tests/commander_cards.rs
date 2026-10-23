@@ -1248,49 +1248,63 @@ fn fomori_vault_without_artifacts_looks_at_nothing() {
 
 #[test]
 fn chaos_warp_shuffles_the_permanent_in_and_reveals_the_top_card() {
-    let mut state = game();
-    lands(&mut state, P0, 3);
-    let snipe = put(&mut state, P1, "Guttersnipe");
-    for i in 0..10 {
-        library_card(&mut state, P1, i, "Lightning Bolt");
-    }
-    cast(&mut state, "Chaos Warp", Some(Target::Object(snipe)), 0);
-    let lib = state.players[1].library.clone();
-    if zone(&state, snipe) == Zone::Battlefield {
-        // The Guttersnipe itself was revealed on top: a permanent card.
-        assert_eq!(lib.len(), 10);
-    } else {
-        assert_eq!((lib.len(), zone(&state, snipe)), (11, Zone::Library));
-        assert_ne!(lib[0], snipe);
-        // A revealed Bolt stays on top, and both players know it.
-        for p in [P0, P1] {
-            assert!(state.known_library_cards(p, P1).iter().any(|e| e.position == 0 && e.object == lib[0]));
+    // Over seeds, the Guttersnipe is sometimes shuffled to the top.
+    let mut branches = [false; 2];
+    for seed in 0..64u64 {
+        let mut state = game();
+        state.reseed_shuffles(seed);
+        lands(&mut state, P0, 3);
+        let snipe = put(&mut state, P1, "Guttersnipe");
+        for i in 0..10 {
+            library_card(&mut state, P1, i, "Lightning Bolt");
+        }
+        cast(&mut state, "Chaos Warp", Some(Target::Object(snipe)), 0);
+        let lib = state.players[1].library.clone();
+        if zone(&state, snipe) == Zone::Battlefield {
+            // The Guttersnipe itself was revealed on top: a permanent card.
+            branches[0] = true;
+            assert_eq!(lib.len(), 10, "seed {seed}");
+        } else {
+            branches[1] = true;
+            assert_eq!((lib.len(), zone(&state, snipe)), (11, Zone::Library), "seed {seed}");
+            assert_ne!(lib[0], snipe);
+            // A revealed Bolt stays on top, and both players know it.
+            for p in [P0, P1] {
+                assert!(state.known_library_cards(p, P1).iter().any(|e| e.position == 0 && e.object == lib[0]), "seed {seed}");
+            }
         }
     }
+    assert_eq!(branches, [true, true], "both outcomes over the seeds");
 }
 
 #[test]
 fn after_chaos_warp_both_players_know_the_card_is_in_that_library_until_a_draw() {
-    let mut state = game();
-    lands(&mut state, P0, 3);
-    let snipe = put(&mut state, P1, "Guttersnipe");
-    for i in 0..10 {
-        library_card(&mut state, P1, i, "Lightning Bolt");
+    let mut checked = 0;
+    for seed in 0..16u64 {
+        let mut state = game();
+        state.reseed_shuffles(seed);
+        lands(&mut state, P0, 3);
+        let snipe = put(&mut state, P1, "Guttersnipe");
+        for i in 0..10 {
+            library_card(&mut state, P1, i, "Lightning Bolt");
+        }
+        cast(&mut state, "Chaos Warp", Some(Target::Object(snipe)), 0);
+        if zone(&state, snipe) != Zone::Library {
+            continue; // revealed on top and put onto the battlefield
+        }
+        checked += 1;
+        for p in [P0, P1] {
+            let known: Vec<u16> = state.known_library_contents(p, P1).flat_map(|c| c.cards.clone()).collect();
+            assert!(known.contains(&id("Guttersnipe")), "seed {seed}, {p:?}: {known:?}");
+            assert!(state.known_library_contents(p, P1).all(|c| c.left.is_empty()));
+        }
+        // A draw from that library may have taken it.
+        let drawn = state.draw_card(P1).unwrap();
+        for p in [P0, P1] {
+            assert!(state.known_library_contents(p, P1).all(|c| c.left.iter().any(|l| l.object == drawn)), "seed {seed}");
+        }
     }
-    cast(&mut state, "Chaos Warp", Some(Target::Object(snipe)), 0);
-    if zone(&state, snipe) != Zone::Library {
-        return; // revealed on top and put onto the battlefield
-    }
-    for p in [P0, P1] {
-        let known: Vec<u16> = state.known_library_contents(p, P1).flat_map(|c| c.cards.clone()).collect();
-        assert!(known.contains(&id("Guttersnipe")), "{p:?}: {known:?}");
-        assert!(state.known_library_contents(p, P1).all(|c| c.left.is_empty()));
-    }
-    // A draw from that library may have taken it.
-    let drawn = state.draw_card(P1).unwrap();
-    for p in [P0, P1] {
-        assert!(state.known_library_contents(p, P1).all(|c| c.left.iter().any(|l| l.object == drawn)));
-    }
+    assert!(checked > 0);
 }
 
 #[test]
