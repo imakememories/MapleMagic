@@ -1330,3 +1330,29 @@ fn the_legend_rule_applies_to_each_legend_in_the_deck_per_controller() {
     assert!(asked, "the stolen Laelia makes two under player 0");
     assert_eq!(named(&state, P0, "Laelia, the Blade Reforged"), vec![theirs]);
 }
+
+#[test]
+fn throne_of_eldraine_red_mana_casts_exactly_the_monocolored_red_spells() {
+    // 106.6: four floating red from a red Throne, plus Mountains for anything
+    // past four; only a monocolored red spell can use the Throne's mana.
+    use mtg_kernel::card_def::CARD_DEFS;
+    let skipped = ["Deflecting Swat", "Redirect Lightning"];
+    for name in ognis_deck_spells().into_iter().filter(|n| !skipped.contains(n)) {
+        let def = &CARD_DEFS[id(name) as usize];
+        let mono_red = def.colors == [ManaColor::R];
+        let cost = usize::from(def.cost.generic) + def.cost.pips.len();
+        let mut state = game();
+        put(&mut state, P1, "Guttersnipe");
+        put(&mut state, P1, "Sol Ring");
+        put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+        put_in(&mut state, P0, "Mountain", Zone::Hand);
+        tapped_throne(&mut state, ManaColor::R);
+        lands(&mut state, P0, cost.saturating_sub(4));
+        let card = if name == "Ognis, the Dragon's Lash" {
+            state.command.iter().copied().find(|&o| state.objects.get(o).owner == P0).unwrap()
+        } else {
+            put_in(&mut state, P0, name, Zone::Hand)
+        };
+        assert_eq!(castable(&mut state, card), mono_red, "{name}");
+    }
+}
