@@ -12454,7 +12454,9 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 ));
                 return;
             };
-            state.objects.get_mut(ctx.source).counters.plus1_plus1 = amount;
+            // Adds to other "enters with" counters already placed (Coin of Mastery, 614.1c).
+            let counters = &mut state.objects.get_mut(ctx.source).counters;
+            counters.plus1_plus1 = counters.plus1_plus1.saturating_add(amount);
         }
         EffectOp::PutSourceOntoBattlefieldAttachedToTargetWithXPlusOneCounters { target } => {
             let ObjectRef::Target(target_index) = target else {
@@ -12490,7 +12492,9 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 ));
                 return;
             };
-            state.objects.get_mut(ctx.source).counters.plus1_plus1 = amount;
+            // Adds to other "enters with" counters already placed (Coin of Mastery, 614.1c).
+            let counters = &mut state.objects.get_mut(ctx.source).counters;
+            counters.plus1_plus1 = counters.plus1_plus1.saturating_add(amount);
             let link = ObjectLinkV4 {
                 object: target,
                 zone_change_count: state.objects.get(target).zone_change_count,
