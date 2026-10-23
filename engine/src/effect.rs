@@ -11697,6 +11697,14 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                     continue;
                 };
                 let o = state.objects.get(id);
+                // 608.2b: still a noncreature artifact you control.
+                if o.zone != Zone::Battlefield
+                    || o.controller != ctx.controller
+                    || !crate::engine::object_has_type(state, id, CardType::Artifact)
+                    || crate::engine::object_has_type(state, id, CardType::Creature)
+                {
+                    continue;
+                }
                 let link = crate::state::ObjectLinkV4 { object: id, zone_change_count: o.zone_change_count };
                 state.type_additions.push(crate::state::TypeAdditionV1 {
                     object: link,

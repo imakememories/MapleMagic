@@ -230,3 +230,38 @@ fn creatures_stop_attacking_when_combat_ends() {
     advance(&mut state, |s, _| s.step == Step::Main2);
     assert_eq!(mtg_kernel::engine::effective_power(&state, gornog), base);
 }
+#[test]
+fn depthshaker_titan_skips_a_target_that_is_no_longer_a_noncreature_artifact_you_control() {
+    // 608.2b: Sol Ring changes control while the enters trigger waits; only
+    // the Treasure, still legal, is animated.
+    let mut state = game();
+    lands(&mut state, P0, 7);
+    let ring = put(&mut state, P0, "Sol Ring");
+    let treasure = put(&mut state, P0, "Treasure Token");
+    let titan = put_in(&mut state, P0, "Depthshaker Titan", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(titan)).unwrap();
+    let mut picks = [ring, treasure].into_iter();
+    let mut moved = false;
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseTargets { .. } => picks.next().map_or(Action::FinishEffectSelection, |o| Action::ChooseTarget(Target::Object(o))),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => {
+                if zone(&state, titan) == Zone::Battlefield && !moved {
+                    moved = true;
+                    state.players[0].battlefield.retain(|&o| o != ring);
+                    state.players[1].battlefield.push(ring);
+                    state.objects.get_mut(ring).controller = P1;
+                }
+                Action::Pass
+            }
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    use mtg_kernel::card_def::CardType;
+    assert!(moved);
+    assert!(engine::object_has_type(&state, treasure, CardType::Creature));
+    assert!(!engine::object_has_type(&state, ring, CardType::Creature), "an illegal target is left alone");
+}
