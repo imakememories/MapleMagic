@@ -494,4 +494,3 @@ fn chaos_warp_on_a_token_reveals_the_top_card_not_the_token() {
         }
     }
 }
-
