@@ -707,3 +707,76 @@ fn the_legend_rule_choice_includes_a_legend_with_lethal_damage() {
         assert_eq!(zone(&state, other), if keep_damaged { Zone::Graveyard } else { Zone::Battlefield });
     }
 }
+
+/// Player 1 casts `card` from its hand in its first main phase, choosing
+/// `target` for every target, and passes until the stack is empty.
+fn cast_as_player_1(state: &mut GameState, card: &str, target: Target) {
+    let spell = put_in(state, P1, card, Zone::Hand);
+    advance(state, |s, d| s.step == Step::Main1 && matches!(d, Decision::CastSpellOrPass { player: P1, .. }));
+    engine::step(state, Action::CastSpell(spell)).unwrap();
+    drive(state, |s, d| match d {
+        Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(target)),
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => None,
+    });
+}
+
+#[test]
+fn control_comes_from_the_control_effects_still_in_force_newest_first() {
+    // 613.1b, 613.7, 611.2b: Zealous Conscripts (until end of turn) and
+    // Pyreswipe Hawk (as long as you control it) on one Sol Ring.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let controller = |state: &GameState, o: ObjectId| state.objects.get(o).controller;
+
+    // Conscripts, then the Hawk: still player 0's after cleanup; its owner's
+    // once the Hawk dies.
+    let mut state = game();
+    let hawk = put(&mut state, P0, "Pyreswipe Hawk");
+    let ring = put(&mut state, P1, "Sol Ring");
+    lands(&mut state, P0, 8);
+    cast(&mut state, "Zealous Conscripts", Some(Target::Object(ring)), 0);
+    cast(&mut state, "Guttersnipe", Some(Target::Object(ring)), 0);
+    assert_eq!(controller(&state, ring), P0);
+    end_turn(&mut state);
+    assert_eq!(controller(&state, ring), P0, "the Hawk's effect outlasts the Conscripts'");
+    propose_and_commit(&mut state, ProposedEvent::zone_change(hawk, Zone::Graveyard));
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert_eq!(controller(&state, ring), P1, "no effect left: its owner's");
+
+    // The Hawk takes it; on player 1's turn, Conscripts takes it back and the
+    // Hawk dies: player 1's after cleanup.
+    let mut state = game();
+    let hawk = put(&mut state, P0, "Pyreswipe Hawk");
+    let ring = put(&mut state, P1, "Sol Ring");
+    lands(&mut state, P0, 6);
+    cast(&mut state, "Guttersnipe", None, 0);
+    cast(&mut state, "Guttersnipe", Some(Target::Object(ring)), 0);
+    assert_eq!(controller(&state, ring), P0);
+    end_turn(&mut state);
+    lands(&mut state, P1, 5);
+    cast_as_player_1(&mut state, "Zealous Conscripts", Target::Object(ring));
+    assert_eq!(controller(&state, ring), P1);
+    propose_and_commit(&mut state, ProposedEvent::zone_change(hawk, Zone::Graveyard));
+    end_turn(&mut state);
+    assert_eq!(controller(&state, ring), P1);
+}
+
+#[test]
+fn an_artifact_taken_by_a_stolen_pyreswipe_hawk_goes_home_at_cleanup_and_untaps() {
+    // 611.2b, 514.2, 502.3: the Hawk returns at cleanup, so control of what it
+    // took ends then, before its owner's untap step.
+    let mut state = game();
+    let hawk = put(&mut state, P1, "Pyreswipe Hawk");
+    let ring = put(&mut state, P1, "Sol Ring");
+    lands(&mut state, P0, 8);
+    cast(&mut state, "Zealous Conscripts", Some(Target::Object(hawk)), 0);
+    cast(&mut state, "Guttersnipe", Some(Target::Object(ring)), 0);
+    assert_eq!(state.objects.get(ring).controller, P0);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::ActivateManaAbility(ring)).unwrap();
+    assert!(state.objects.get(ring).tapped);
+    end_turn(&mut state);
+    advance(&mut state, |s, d| s.step == Step::Upkeep && matches!(d, Decision::CastSpellOrPass { .. }));
+    assert_eq!(state.objects.get(ring).controller, P1);
+    assert!(!state.objects.get(ring).tapped, "untapped in its owner's untap step");
+}

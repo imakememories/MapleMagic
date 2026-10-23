@@ -416,13 +416,6 @@ pub enum UntilEndOfTurnEffect {
         subtype: card_def::Subtype,
         timestamp: u64,
     },
-    /// Control of one battlefield incarnation changed until end of turn;
-    /// cleanup returns it to `previous_controller`.
-    ControlChange {
-        object_id: ObjectId,
-        object_zone_change_count: u32,
-        previous_controller: PlayerId,
-    },
 }
 
 /// `id` becomes `subtype` in addition to its other types until end of turn.
@@ -517,6 +510,65 @@ pub(crate) fn remove_from_combat(state: &mut GameState, id: ObjectId) {
     combat.first_strikers.retain(|&f| f != id);
 }
 
+/// A new control effect on battlefield permanent `id` for `controller`.
+pub(crate) fn add_control_effect(
+    state: &mut GameState,
+    id: ObjectId,
+    controller: PlayerId,
+    duration: crate::state::ControlDurationV1,
+) {
+    let o = state.objects.get(id);
+    let object = ObjectLinkV4 { object: id, zone_change_count: o.zone_change_count };
+    let base = state.control_effects.iter().find(|e| e.object == object).map_or(o.controller, |e| e.base);
+    state.control_effects.push(crate::state::ControlEffectV1 { object, controller, duration, base });
+    refresh_control(state, false);
+}
+
+/// 613.1b, 613.7, 611.2b: sets each permanent's controller from the control
+/// effects still in force, newest first. An effect ends when its permanent
+/// leaves, when "as long as" stops being true, or at cleanup
+/// (`end_of_turn`). Returns whether any controller changed.
+pub(crate) fn refresh_control(state: &mut GameState, end_of_turn: bool) -> bool {
+    let mut any = false;
+    loop {
+        if state.control_effects.is_empty() {
+            return any;
+        }
+        let mut objects: Vec<(ObjectLinkV4, PlayerId)> = Vec::new();
+        for e in std::mem::take(&mut state.control_effects) {
+            let o = state.objects.get(e.object.object);
+            if o.zone != Zone::Battlefield || o.zone_change_count != e.object.zone_change_count {
+                continue;
+            }
+            if !objects.iter().any(|(l, _)| *l == e.object) {
+                objects.push((e.object, e.base));
+            }
+            let holds = match e.duration {
+                crate::state::ControlDurationV1::EndOfTurn => !end_of_turn,
+                crate::state::ControlDurationV1::WhileControls { source, controller } => {
+                    let s = state.objects.get(source.object);
+                    s.zone == Zone::Battlefield && s.zone_change_count == source.zone_change_count && s.controller == controller
+                }
+            };
+            if holds {
+                state.control_effects.push(e);
+            }
+        }
+        let mut changed = false;
+        for (link, base) in objects {
+            let to = state.control_effects.iter().rev().find(|e| e.object == link).map_or(base, |e| e.controller);
+            if state.objects.get(link.object).controller != to {
+                set_controller(state, link.object, to);
+                changed = true;
+            }
+        }
+        if !changed {
+            return any;
+        }
+        any = true;
+    }
+}
+
 /// Gains control of `id` for `player` until end of turn, untaps it, and gives
 /// it haste until end of turn (the "threaten" effects).
 pub(crate) fn threaten(state: &mut GameState, id: ObjectId, player: PlayerId) {
@@ -524,15 +576,8 @@ pub(crate) fn threaten(state: &mut GameState, id: ObjectId, player: PlayerId) {
     if object.zone != Zone::Battlefield {
         return;
     }
-    let (previous, generation) = (object.controller, object.zone_change_count);
-    if previous != player {
-        set_controller(state, id, player);
-        state.engine.until_end_of_turn.push(UntilEndOfTurnEffect::ControlChange {
-            object_id: id,
-            object_zone_change_count: generation,
-            previous_controller: previous,
-        });
-    }
+    let generation = object.zone_change_count;
+    add_control_effect(state, id, player, crate::state::ControlDurationV1::EndOfTurn);
     state.objects.get_mut(id).tapped = false;
     let timestamp = next_timestamp(state);
     state.engine.until_end_of_turn.push(UntilEndOfTurnEffect::ResolvedObjectKeywordEffect {
@@ -11567,27 +11612,7 @@ fn end_turn_effects(state: &mut GameState) {
     state.must_attack.clear();
     state.extra_combats = 0;
     state.granted_flashback.clear();
-    let returns: Vec<(ObjectId, u32, PlayerId)> = state
-        .engine
-        .until_end_of_turn
-        .iter()
-        .rev()
-        .filter_map(|effect| match *effect {
-            UntilEndOfTurnEffect::ControlChange {
-                object_id,
-                object_zone_change_count,
-                previous_controller,
-            } => Some((object_id, object_zone_change_count, previous_controller)),
-            _ => None,
-        })
-        .collect();
-    for (id, generation, previous) in returns {
-        if state.objects.try_get(id).is_some_and(|o| {
-            o.zone == Zone::Battlefield && o.zone_change_count == generation
-        }) {
-            set_controller(state, id, previous);
-        }
-    }
+    refresh_control(state, true);
     state.engine.until_end_of_turn.clear();
     state.engine.active_replacements.retain(|replacement| {
         !matches!(
@@ -11937,7 +11962,6 @@ pub fn has_effective_keyword(state: &GameState, id: ObjectId, kw: Keywords) -> b
                 UntilEndOfTurnEffect::ResolvedObjectKeywordEffect { .. } => false,
                 UntilEndOfTurnEffect::SyntheticMarker(_) => false,
                 UntilEndOfTurnEffect::DamageCannotBePrevented { .. } => false,
-                UntilEndOfTurnEffect::ControlChange { .. } => false,
                 UntilEndOfTurnEffect::CantBlock { .. }
                 | UntilEndOfTurnEffect::AddSubtype { .. }
                 | UntilEndOfTurnEffect::CantAttackPlayer { .. }

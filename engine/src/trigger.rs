@@ -1682,33 +1682,6 @@ fn creature_dies_to_state_based_actions(
             && !indestructible)
 }
 
-/// Control "for as long as you control" a source (Pyreswipe Hawk) ends when
-/// that stops being true; returns whether anything changed.
-fn release_ended_control(state: &mut GameState) -> bool {
-    if state.control_while.is_empty() {
-        return false;
-    }
-    let mut changed = false;
-    for entry in std::mem::take(&mut state.control_while) {
-        let object = state.objects.get(entry.object.object);
-        if object.zone != Zone::Battlefield || object.zone_change_count != entry.object.zone_change_count {
-            changed = true;
-            continue;
-        }
-        let source = state.objects.get(entry.source.object);
-        if source.zone == Zone::Battlefield
-            && source.zone_change_count == entry.source.zone_change_count
-            && source.controller == entry.controller
-        {
-            state.control_while.push(entry);
-        } else {
-            crate::engine::set_controller(state, entry.object.object, entry.previous_controller);
-            changed = true;
-        }
-    }
-    changed
-}
-
 /// Runs state-based actions to a fixed point: repeat the full SBA sweep
 /// until one pass makes no change (704.3).
 pub fn sba_fixed_point(state: &mut GameState) {
@@ -1883,7 +1856,7 @@ fn sba_fixed_point_with_protected_triggers(
         if crate::commander::state_based_actions(state) {
             changed = true;
         }
-        if release_ended_control(state) {
+        if crate::engine::refresh_control(state, false) {
             changed = true;
         }
 

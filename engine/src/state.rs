@@ -139,14 +139,24 @@ pub struct LibraryContentsV1 {
     pub left: Vec<ObjectLinkV4>,
 }
 
-/// Control of `object` while `controller` controls `source` (Pyreswipe
-/// Hawk); it reverts to `previous_controller` when that stops.
+/// How long a control-changing effect lasts (611.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ControlWhileV1 {
+pub enum ControlDurationV1 {
+    /// Until cleanup (the threaten effects).
+    EndOfTurn,
+    /// For as long as `controller` controls `source` (Pyreswipe Hawk).
+    WhileControls { source: ObjectLinkV4, controller: PlayerId },
+}
+
+/// A layer-2 effect giving `controller` control of one permanent
+/// incarnation (613.1b). Kept in timestamp order: the newest one in force
+/// decides; with none, `base`, the player it entered under, controls it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ControlEffectV1 {
     pub object: ObjectLinkV4,
-    pub source: ObjectLinkV4,
     pub controller: PlayerId,
-    pub previous_controller: PlayerId,
+    pub duration: ControlDurationV1,
+    pub base: PlayerId,
 }
 
 /// A card exiled face down (406.3), hidden from every player not in
@@ -1676,9 +1686,9 @@ pub struct GameState {
     /// Additional combat phases still to come this turn (Hellkite Charger).
     #[serde(default, skip_serializing_if = "u8_is_zero")]
     pub extra_combats: u8,
-    /// See [`ControlWhileV1`].
+    /// See [`ControlEffectV1`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub control_while: Vec<ControlWhileV1>,
+    pub control_effects: Vec<ControlEffectV1>,
     /// Events dropped from the front of `engine.event_history` at turn
     /// starts. History indices stay absolute; see [`GameState::history_event`].
     #[serde(default, skip_serializing_if = "u32_is_zero")]
@@ -1840,8 +1850,8 @@ impl Hash for GameState {
         if self.extra_combats != 0 {
             self.extra_combats.hash(state);
         }
-        if !self.control_while.is_empty() {
-            self.control_while.hash(state);
+        if !self.control_effects.is_empty() {
+            self.control_effects.hash(state);
         }
         if self.event_history_base != 0 {
             self.event_history_base.hash(state);
@@ -2076,7 +2086,7 @@ impl GameState {
             delayed_sacrifices: Vec::new(),
             spell_mana_this_turn: [0; 2],
             extra_combats: 0,
-            control_while: Vec::new(),
+            control_effects: Vec::new(),
             event_history_base: 0,
             library_groups: Vec::new(),
             library_contents: Vec::new(),

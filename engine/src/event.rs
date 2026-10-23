@@ -769,6 +769,11 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
                 z.battlefield_face_index,
                 z.battlefield_controller,
             );
+            // 611.2b: control for as long as you control a permanent that
+            // just left ends at once.
+            if from == Zone::Battlefield {
+                crate::engine::refresh_control(state, false);
+            }
             CommittedEvent::ZoneChange {
                 object: z.object,
                 from,

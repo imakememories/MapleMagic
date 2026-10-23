@@ -11686,18 +11686,9 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 && ctx.ability_source_contract.is_none_or(|c| c.zone_change_count == source.zone_change_count);
             if source_ok && !ctx.targets.is_empty() && ctx.target_incarnation_matches(0, state) {
                 let id = ctx.resolve_object(ObjectRef::Target(0));
-                let target = state.objects.get(id);
-                let previous_controller = target.controller;
-                let link = crate::state::ObjectLinkV4 { object: id, zone_change_count: target.zone_change_count };
-                let source_link = crate::state::ObjectLinkV4 { object: ctx.source, zone_change_count: source.zone_change_count };
-                crate::engine::set_controller(state, id, ctx.controller);
-                let link = crate::state::ObjectLinkV4 { zone_change_count: state.objects.get(id).zone_change_count, ..link };
-                state.control_while.push(crate::state::ControlWhileV1 {
-                    object: link,
-                    source: source_link,
-                    controller: ctx.controller,
-                    previous_controller,
-                });
+                let source = crate::state::ObjectLinkV4 { object: ctx.source, zone_change_count: source.zone_change_count };
+                let duration = crate::state::ControlDurationV1::WhileControls { source, controller: ctx.controller };
+                crate::engine::add_control_effect(state, id, ctx.controller, duration);
             }
         }
         EffectOp::AnimateTargetArtifacts => {
