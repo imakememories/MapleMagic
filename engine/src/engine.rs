@@ -397,10 +397,11 @@ pub enum UntilEndOfTurnEffect {
         attacker: PlayerId,
         defender: PlayerId,
     },
-    /// One battlefield incarnation can't be sacrificed this turn.
+    /// One battlefield incarnation can't be sacrificed this turn by `player`.
     CantBeSacrificed {
         object_id: ObjectId,
         object_zone_change_count: u32,
+        player: PlayerId,
     },
     /// One battlefield incarnation can't block this turn.
     CantBlock {
@@ -449,12 +450,13 @@ fn subtypes_added_this_turn(state: &GameState, id: ObjectId) -> impl Iterator<It
     })
 }
 
-/// Whether `id` may be sacrificed: not if an effect forbids it this turn.
+/// Whether `id`'s controller may sacrifice it: not if an effect forbids that
+/// player this turn (only its controller can sacrifice it).
 pub(crate) fn can_be_sacrificed(state: &GameState, id: ObjectId) -> bool {
-    let generation = state.objects.get(id).zone_change_count;
+    let o = state.objects.get(id);
     !state.engine.until_end_of_turn.iter().any(|e| {
-        matches!(*e, UntilEndOfTurnEffect::CantBeSacrificed { object_id, object_zone_change_count }
-            if object_id == id && object_zone_change_count == generation)
+        matches!(*e, UntilEndOfTurnEffect::CantBeSacrificed { object_id, object_zone_change_count, player }
+            if object_id == id && object_zone_change_count == o.zone_change_count && player == o.controller)
     })
 }
 
@@ -4952,7 +4954,7 @@ fn cast_tap_permanent_filter_needed(
 /// been picked this same `Decision::ChooseCostTargets` sequence -- the
 /// candidate pool for the next pick (see that decision's doc for why a
 /// picked land disappears from the next ask's candidates).
-fn sacrificeable_lands(
+pub(crate) fn sacrificeable_lands(
     player: PlayerId,
     state: &GameState,
     already_chosen: &[ObjectId],
@@ -4983,7 +4985,7 @@ fn permanent_matches_filter(state: &GameState, id: ObjectId, filter: PermanentFi
 /// permanent-sacrifice cost. A permanent matching multiple listed types is
 /// still one candidate, while opponent-controlled objects never enter the
 /// pool.
-fn sacrificeable_controlled_permanents(
+pub(crate) fn sacrificeable_controlled_permanents(
     player: PlayerId,
     filter: PermanentFilter,
     state: &GameState,

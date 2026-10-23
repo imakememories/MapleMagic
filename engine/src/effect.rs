@@ -11648,6 +11648,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 state.engine.until_end_of_turn.push(crate::engine::UntilEndOfTurnEffect::CantBeSacrificed {
                     object_id: id,
                     object_zone_change_count: generation,
+                    player: ctx.controller,
                 });
             }
             state.engine.until_end_of_turn.push(crate::engine::UntilEndOfTurnEffect::CantAttackPlayer {
@@ -11850,11 +11851,19 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
         } => {
             let discard_payable = *discard > 0
                 && state.players[ctx.controller.index()].hand.len() >= *discard as usize;
+            // Only permanents that may be sacrificed count (Call for Aid).
             let sacrifice_payable = (*sacrifice_lands > 0
-                && crate::engine::count_controlled_lands(ctx.controller, state)
-                    >= *sacrifice_lands as u32)
+                && crate::engine::sacrificeable_lands(ctx.controller, state, &[]).len()
+                    >= usize::from(*sacrifice_lands))
                 || (*sacrifice_artifacts > 0
-                    && crate::effect::controlled_artifact_count(state, ctx.controller) >= *sacrifice_artifacts as usize);
+                    && crate::engine::sacrificeable_controlled_permanents(
+                        ctx.controller,
+                        crate::card_def::PermanentFilter::Artifact,
+                        state,
+                        &[],
+                    )
+                    .len()
+                        >= usize::from(*sacrifice_artifacts));
             if !discard_payable && !sacrifice_payable {
                 // Nothing payable: DoIfCostPaid's own `cost.canPay(...)`
                 // gate is false too, so the reference never even offers the

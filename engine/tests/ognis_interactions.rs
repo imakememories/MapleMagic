@@ -181,3 +181,38 @@ fn lethal_damage_from_a_chosen_split_ends_the_game_at_once() {
     engine::step(&mut state, Action::AssignCombatDamage(1)).unwrap();
     assert!(matches!(engine::advance_until_decision(&mut state), Decision::GameOver { winner: Some(P0) }));
 }
+#[test]
+fn vision_of_love_doesnt_offer_sacrificing_an_artifact_call_for_aid_forbids() {
+    // Depthshaker Titan is an artifact creature: taken by Call for Aid, it
+    // can't be sacrificed, so only the discard is offered.
+    let mut state = game();
+    lands(&mut state, P0, 7);
+    put(&mut state, P1, "Depthshaker Titan");
+    cast(&mut state, "Call for Aid", Some(Target::Player(P1)), 0);
+    put_in(&mut state, P0, "Mountain", Zone::Hand);
+    let vision = put_in(&mut state, P0, "Vision of Love", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(vision)).unwrap();
+    let offer = advance(&mut state, |_, d| matches!(d, Decision::ChooseOptionalCost { .. }));
+    assert!(matches!(offer, Decision::ChooseOptionalCost { discard_payable: true, sacrifice_payable: false, .. }), "{offer:?}");
+}
+#[test]
+fn call_for_aids_sacrifice_ban_binds_only_its_caster() {
+    // "You can't sacrifice those creatures": once its owner has it back (here
+    // set directly; in play, Pyreswipe Hawk's expend), the owner may
+    // sacrifice it, here as Demand Answers's additional cost.
+    let mut state = game();
+    lands(&mut state, P0, 5);
+    lands(&mut state, P1, 2);
+    let titan = put(&mut state, P1, "Depthshaker Titan");
+    let answers = put_in(&mut state, P1, "Demand Answers", Zone::Hand);
+    cast(&mut state, "Call for Aid", Some(Target::Player(P1)), 0);
+    assert_eq!(state.objects.get(titan).controller, P0);
+    state.players[0].battlefield.retain(|&o| o != titan);
+    state.players[1].battlefield.push(titan);
+    state.objects.get_mut(titan).controller = P1;
+    match advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { player: P1, .. })) {
+        Decision::CastSpellOrPass { castable_spells, .. } => assert!(castable_spells.contains(&answers)),
+        _ => unreachable!(),
+    }
+}
