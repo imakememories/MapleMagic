@@ -1856,3 +1856,23 @@ fn mob_rule_reads_each_creatures_power_with_counters_and_base_changes() {
         }
     }
 }
+
+#[test]
+fn pyreswipe_hawk_gets_the_greatest_mana_value_among_your_artifacts() {
+    // A Treasure is 0, Sol Ring 1, Coin of Mastery 4, Throne of Eldraine 5;
+    // Zealous Conscripts made an artifact by Liquimetal Torque is 5 (the
+    // Torque itself is 2); the opponent's artifacts don't count.
+    for (artifact, x) in [("Treasure Token", 0), ("Sol Ring", 1), ("Coin of Mastery", 4), ("Throne of Eldraine", 5), ("Zealous Conscripts", 5)] {
+        let mut state = game();
+        let hawk = put(&mut state, P0, "Pyreswipe Hawk");
+        let o = put(&mut state, P0, artifact);
+        put(&mut state, P1, "Throne of Eldraine");
+        if artifact == "Zealous Conscripts" {
+            let torque = put(&mut state, P0, "Liquimetal Torque");
+            activate(&mut state, torque, 0, Some(Target::Object(o)));
+        }
+        let base = engine::effective_power(&state, hawk);
+        attack_with(&mut state, vec![hawk]);
+        assert_eq!(engine::effective_power(&state, hawk), base + x, "{artifact}");
+    }
+}
