@@ -1710,3 +1710,41 @@ fn gornog_pumps_each_attacking_warrior_in_the_deck_and_no_other_attacker() {
     }
     assert_eq!(warriors, 4, "Ognis, Knuckles, Laelia, Zealous Conscripts");
 }
+
+#[test]
+fn a_celebrating_goddric_pumps_each_dragon_in_the_deck_and_no_other_creature() {
+    // Two Treasures entered, so Goddric is a Dragon with "{R}: Dragons you
+    // control get +1/+0 until end of turn".
+    use mtg_kernel::card_def::{CardType, Subtype, CARD_DEFS};
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let creatures: Vec<&str> = ognis_deck_spells()
+        .into_iter()
+        .filter(|&n| CARD_DEFS[id(n) as usize].types.contains(&CardType::Creature) && n != "Goddric, Cloaked Reveler")
+        .collect();
+    let mut dragons = Vec::new();
+    for name in creatures {
+        let mut state = game();
+        let goddric = put(&mut state, P0, "Goddric, Cloaked Reveler");
+        let other = put(&mut state, P0, name);
+        if name == "Shivan Devastator" {
+            state.objects.get_mut(other).counters.plus1_plus1 = 1;
+        }
+        lands(&mut state, P0, 1);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        for _ in 0..2 {
+            propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P0));
+        }
+        let (goddric_base, base) = (engine::effective_power(&state, goddric), engine::effective_power(&state, other));
+        let dragon = engine::has_effective_subtype(&state, other, Subtype::Dragon);
+        activate(&mut state, goddric, 0, None);
+        assert_eq!(engine::effective_power(&state, goddric), goddric_base + 1, "{name}: Goddric is a Dragon");
+        assert_eq!(engine::effective_power(&state, other), base + i32::from(dragon), "{name}");
+        if dragon {
+            dragons.push(name);
+        }
+    }
+    assert_eq!(
+        dragons,
+        ["Cavern-Hoard Dragon", "Goldspan Dragon", "Hellkite Charger", "Shivan Devastator", "Smaug the Magnificent"]
+    );
+}
