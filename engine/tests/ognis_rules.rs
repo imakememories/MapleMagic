@@ -134,3 +134,41 @@ fn each_flyer_can_be_blocked_only_by_creatures_with_flying_or_reach() {
         assert_eq!(blockers.contains(&ground), !has(printed, Keywords::FLYING), "{card}: {blockers:?}");
     }
 }
+
+#[test]
+fn a_trigger_from_the_cleanup_discard_gets_priority_and_another_cleanup_ends_its_effect() {
+    use mtg_kernel::engine::effective_power;
+    use mtg_kernel::state::{Step, Zone};
+    // 514.1 then 514.3a: Hobgoblin's +2/+0 for each card discarded to hand size
+    // lasts while players have priority in cleanup, and ends in the next cleanup step.
+    let mut state = game();
+    let hob = put(&mut state, P0, "Hobgoblin, Mantled Marauder");
+    let base = effective_power(&state, hob);
+    while state.players[0].hand.len() < 9 {
+        put_in(&mut state, P0, "Mountain", Zone::Hand);
+    }
+    let mut discarded = 0;
+    let mut cleanup_power = Vec::new();
+    while state.active_player == P0 {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::Discard { count, choices, .. } => {
+                discarded += count;
+                Action::Discard(choices[..count as usize].to_vec())
+            }
+            Decision::CastSpellOrPass { .. } => {
+                if state.step == Step::Cleanup && state.stack.is_empty() {
+                    cleanup_power.push(effective_power(&state, hob));
+                }
+                Action::Pass
+            }
+            Decision::DeclareAttackers { .. } => Action::DeclareAttackers(vec![]),
+            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(discarded, 2);
+    assert_eq!(state.players[0].hand.len(), 7);
+    assert!(!cleanup_power.is_empty() && cleanup_power.iter().all(|&p| p == base + 4), "{cleanup_power:?}");
+    assert_eq!(effective_power(&state, hob), base, "the second cleanup step ended it");
+}

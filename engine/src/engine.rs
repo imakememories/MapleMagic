@@ -70,6 +70,10 @@ pub struct EngineState {
     /// Whether [P0, P1] has passed priority since the last time priority
     /// was reset (new step, a cast/activation/land-drop, or a resolution).
     pub priority_passes: [bool; 2],
+    /// 514.3a: this cleanup step performed state-based actions or had
+    /// triggers, so players get priority and another cleanup step follows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cleanup_again: bool,
     /// Bumped by `reset_priority` alone -- i.e. only on the two rules-level
     /// "everyone's pass streak clears and the active player is asked
     /// first" boundaries (a new step via `advance_step`, or a stack
@@ -939,9 +943,11 @@ pub struct PendingLandPlay {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DiscardResume {
-    /// Nothing further to do once the discard lands (cleanup's
-    /// discard-to-7).
+    /// Nothing further to do once the discard lands.
     None,
+    /// Cleanup's discard to hand size (514.1); the rest of cleanup (514.2)
+    /// follows it.
+    CleanupEnd,
     /// Write the discarded cards back into `EngineState::pending_cast`'s
     /// `additional_cost_discarded` and let the cast staging continue.
     FinishCast {
@@ -6899,7 +6905,8 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
         // from *this* turn's cleanup discard is still sitting, unresolved,
         // on the stack underneath -- a genuine active-player/turn
         // desync, not merely a missed decision.
-        if !step_grants_priority(state.step) && state.stack.is_empty() {
+        let cleanup_again = state.step == Step::Cleanup && state.engine.cleanup_again;
+        if !step_grants_priority(state.step) && state.stack.is_empty() && !cleanup_again {
             advance_step(state);
             continue;
         }
@@ -6956,6 +6963,10 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
                     }
                     reset_priority(state);
                 }
+            } else if cleanup_again {
+                // 514.3a: a new cleanup step.
+                run_step_entry_action(state, Step::Cleanup);
+                reset_priority(state);
             } else {
                 advance_step(state);
             }
@@ -7004,7 +7015,12 @@ fn collect_and_queue_triggers(state: &mut GameState) {
     if !state.pending_copy_entry.is_empty() {
         return;
     }
+    let history = state.engine.event_history.len();
     let triggers = trigger::collect_and_process(state);
+    // 514.3a: state-based actions or triggers during cleanup give priority, then another cleanup step.
+    if state.step == Step::Cleanup && (!triggers.is_empty() || state.engine.event_history.len() > history) {
+        state.engine.cleanup_again = true;
+    }
     state.engine.pending_triggers.extend(triggers);
 }
 
@@ -7184,6 +7200,7 @@ pub(crate) fn validate_pending_discard_binding(
             Ok(())
         }
         DiscardResume::None
+        | DiscardResume::CleanupEnd
         | DiscardResume::FinishSpellResolution { .. }
         | DiscardResume::FinishOptionalCost { .. } => Ok(()),
     }
@@ -7319,6 +7336,10 @@ fn apply_discard(state: &mut GameState, chosen: Vec<ObjectId>, pending_discard: 
     }
     match pending_discard.resume {
         DiscardResume::None => collect_and_queue_triggers(state),
+        DiscardResume::CleanupEnd => {
+            end_turn_effects(state);
+            collect_and_queue_triggers(state);
+        }
         DiscardResume::FinishCast { .. } => {
             let (pending, cast_method) =
                 owned_cast.expect("validated FinishCast owns its removed pending cast");
@@ -11478,76 +11499,83 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             }
         }
         Step::Cleanup => {
-            // 514.1/514.2: reset damage, "until end of turn" effects end,
-            // then discard down to the maximum hand size, then reset the
-            // land-drop counter for the player whose turn just ended.
-            for (_, obj) in state.objects.iter_mut() {
-                obj.damage = 0;
-                obj.v4.deathtouch_damage = false;
-            }
-            state.last_known_charge.clear();
-            state.last_known_lore.clear();
-            state.type_additions.retain(|a| !a.until_end_of_turn);
-            crate::copy::end_until_end_of_turn(state);
-            state.must_attack.clear();
-            state.extra_combats = 0;
-            state.granted_flashback.clear();
-            let returns: Vec<(ObjectId, u32, PlayerId)> = state
-                .engine
-                .until_end_of_turn
-                .iter()
-                .rev()
-                .filter_map(|effect| match *effect {
-                    UntilEndOfTurnEffect::ControlChange {
-                        object_id,
-                        object_zone_change_count,
-                        previous_controller,
-                    } => Some((object_id, object_zone_change_count, previous_controller)),
-                    _ => None,
-                })
-                .collect();
-            for (id, generation, previous) in returns {
-                if state.objects.try_get(id).is_some_and(|o| {
-                    o.zone == Zone::Battlefield && o.zone_change_count == generation
-                }) {
-                    set_controller(state, id, previous);
-                }
-            }
-            state.engine.until_end_of_turn.clear();
-            state.engine.active_replacements.retain(|replacement| {
-                !matches!(
-                    replacement.kind,
-                    event::ReplacementEffectKind::PreventDamageFromColorUntilEndOfTurn { .. }
-                )
-            });
+            // 514.1: the active player discards down to the maximum hand size;
+            // then (514.2) damage is removed and "until end of turn" effects end.
+            state.engine.cleanup_again = false;
             let p = state.active_player;
             state.players[p.index()].lands_played_this_turn = 0;
-            // `EndOfTurn` permissions expire at the very next Cleanup,
-            // whoever's; `UntilHoldersNextTurn` only once it's the
-            // *holder's* own Cleanup, and only after their own Untap has
-            // already opened this "next turn" -- see
-            // `PlayPermissionExpiry`'s doc.
-            state
-                .engine
-                .exile_play_permissions
-                .retain(|perm| match perm.expiry {
-                    PlayPermissionExpiry::EndOfTurn => false,
-                    PlayPermissionExpiry::UntilHoldersNextTurn {
-                        holder_turn_started,
-                    } => !(perm.holder == p && holder_turn_started),
-                });
             let hand_size = state.players[p.index()].hand.len();
             if hand_size > 7 {
                 state.engine.pending_discard = Some(PendingDiscard {
                     land_only: false,
                     player: p,
                     count: (hand_size - 7) as u32,
-                    resume: DiscardResume::None,
+                    resume: DiscardResume::CleanupEnd,
                 });
+            } else {
+                end_turn_effects(state);
             }
         }
         _ => {}
     }
+}
+
+/// 514.2: damage is removed and "until end of turn" and "this turn" effects end.
+fn end_turn_effects(state: &mut GameState) {
+    for (_, obj) in state.objects.iter_mut() {
+        obj.damage = 0;
+        obj.v4.deathtouch_damage = false;
+    }
+    state.last_known_charge.clear();
+    state.last_known_lore.clear();
+    state.type_additions.retain(|a| !a.until_end_of_turn);
+    crate::copy::end_until_end_of_turn(state);
+    state.must_attack.clear();
+    state.extra_combats = 0;
+    state.granted_flashback.clear();
+    let returns: Vec<(ObjectId, u32, PlayerId)> = state
+        .engine
+        .until_end_of_turn
+        .iter()
+        .rev()
+        .filter_map(|effect| match *effect {
+            UntilEndOfTurnEffect::ControlChange {
+                object_id,
+                object_zone_change_count,
+                previous_controller,
+            } => Some((object_id, object_zone_change_count, previous_controller)),
+            _ => None,
+        })
+        .collect();
+    for (id, generation, previous) in returns {
+        if state.objects.try_get(id).is_some_and(|o| {
+            o.zone == Zone::Battlefield && o.zone_change_count == generation
+        }) {
+            set_controller(state, id, previous);
+        }
+    }
+    state.engine.until_end_of_turn.clear();
+    state.engine.active_replacements.retain(|replacement| {
+        !matches!(
+            replacement.kind,
+            event::ReplacementEffectKind::PreventDamageFromColorUntilEndOfTurn { .. }
+        )
+    });
+    let p = state.active_player;
+    // `EndOfTurn` permissions expire at the very next Cleanup,
+    // whoever's; `UntilHoldersNextTurn` only once it's the
+    // *holder's* own Cleanup, and only after their own Untap has
+    // already opened this "next turn" -- see
+    // `PlayPermissionExpiry`'s doc.
+    state
+        .engine
+        .exile_play_permissions
+        .retain(|perm| match perm.expiry {
+            PlayPermissionExpiry::EndOfTurn => false,
+            PlayPermissionExpiry::UntilHoldersNextTurn {
+                holder_turn_started,
+            } => !(perm.holder == p && holder_turn_started),
+        });
 }
 
 // --------------------------------------------------------------- combat
