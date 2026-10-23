@@ -875,3 +875,66 @@ fn a_monocolored_red_spell_spends_the_throne_mana_its_caster_chooses() {
         assert_eq!((state.players[0].mana_pool[r], state.restricted_mana[0][r]), (4, 4 - amount));
     }
 }
+
+/// Every nonland card in the Ognis deck, from its list.
+fn ognis_deck_spells() -> Vec<&'static str> {
+    include_str!("../../configs/commander/ognis.txt")
+        .lines()
+        .map(|l| l.trim().trim_start_matches("commander:").trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.split_once(' ').filter(|(n, _)| n.parse::<u32>().is_ok()).map_or(l, |(_, name)| name))
+        .filter(|&name| !mtg_kernel::card_def::CARD_DEFS[id(name) as usize].types.contains(&mtg_kernel::card_def::CardType::Land))
+        .collect()
+}
+
+#[test]
+fn ruby_medallion_and_the_fire_crystal_take_one_generic_each_off_red_spells_only() {
+    // 601.2f, 118.7d: each reducer its caster controls takes {1} off a red
+    // spell's generic cost, never off the colored part; colorless spells
+    // and the opponent's reducers don't count. Cavern-Hoard Dragon's own
+    // reduction counts the opponent's artifacts first.
+    use mtg_kernel::card_def::CARD_DEFS;
+    // Needs a spell or ability on the stack to target.
+    let skipped = ["Deflecting Swat", "Redirect Lightning"];
+    let reducers = ["Ruby Medallion", "The Fire Crystal"];
+    let arrangements: [(&[&str], &[&str]); 5] =
+        [(&[], &[]), (&reducers[..1], &[]), (&reducers[1..], &[]), (&reducers, &[]), (&[], &reducers)];
+    let spells = ognis_deck_spells();
+    assert_eq!(spells.len(), 65, "the commander and 64 nonland cards");
+    for name in spells.into_iter().filter(|n| !skipped.contains(n)) {
+        let def = &CARD_DEFS[id(name) as usize];
+        let red = def.colors.contains(&mtg_kernel::mana::ManaColor::R);
+        for (mine, theirs) in arrangements {
+            let mut generic = def.cost.generic;
+            if name == "Cavern-Hoard Dragon" {
+                generic -= 1 + theirs.len() as u8;
+            }
+            let reduction = if red { generic.min(mine.len() as u8) } else { 0 };
+            let need = usize::from(generic - reduction) + def.cost.pips.len();
+            let castable_with = |lands_count: usize| {
+                let mut state = game();
+                put(&mut state, P1, "Guttersnipe");
+                put(&mut state, P1, "Sol Ring");
+                put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+                put_in(&mut state, P0, "Mountain", Zone::Hand);
+                for r in mine {
+                    put(&mut state, P0, r);
+                }
+                for r in theirs {
+                    put(&mut state, P1, r);
+                }
+                lands(&mut state, P0, lands_count);
+                let card = if name == "Ognis, the Dragon's Lash" {
+                    state.command.iter().copied().find(|&o| state.objects.get(o).owner == P0).unwrap()
+                } else {
+                    put_in(&mut state, P0, name, Zone::Hand)
+                };
+                castable(&mut state, card)
+            };
+            assert!(castable_with(need), "{name} with {mine:?} / {theirs:?}: {need} mana");
+            if need > 0 {
+                assert!(!castable_with(need - 1), "{name} with {mine:?} / {theirs:?}: not {} mana", need - 1);
+            }
+        }
+    }
+}
