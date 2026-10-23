@@ -2386,3 +2386,60 @@ fn chain_chaos_warp_on_a_stolen_permanent_returns_it_to_its_owner() {
     }
     assert_eq!(outcomes, [true, true]);
 }
+
+#[test]
+fn mirror_two_screaming_nemeses_in_one_combat_both_trigger_and_hit_the_other_player() {
+    // M3, 603.3b: player 0's Nemesis is blocked by player 1's; both are
+    // dealt 3 at once and each trigger aims at the other player.
+    let mut state = game();
+    let mine = put(&mut state, P0, "Screaming Nemesis");
+    let theirs = put(&mut state, P1, "Screaming Nemesis");
+    let mut triggers = Vec::new();
+    let mut declared = (false, false);
+    drive(&mut state, |s, d| match d {
+        Decision::DeclareAttackers { .. } if !declared.0 => {
+            declared.0 = true;
+            Some(Action::DeclareAttackers(vec![mine]))
+        }
+        Decision::DeclareBlockers { .. } if !declared.1 => {
+            declared.1 = true;
+            Some(Action::DeclareBlockers(vec![(theirs, mine)]))
+        }
+        Decision::ChooseTargets { player, .. } => {
+            triggers.push(*player);
+            Some(Action::ChooseTarget(Target::Player(player.opponent())))
+        }
+        Decision::CastSpellOrPass { .. } if matches!(s.step, Step::EndCombat | Step::Main2) && s.stack.is_empty() => None,
+        Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+        _ => first_choice(s, d),
+    });
+    triggers.sort_by_key(|p| p.index());
+    assert_eq!(triggers, [P0, P1]);
+    assert_eq!((state.players[0].life, state.players[1].life), (37, 37));
+    assert!(state.cant_gain_life[0] && state.cant_gain_life[1]);
+}
+
+#[test]
+fn mirror_each_spider_punk_gives_riot_only_to_its_controllers_spiders() {
+    // M1, 613.1f: one Spider-Punk each; player 0's Spider-Man gets one riot
+    // choice, from player 0's Spider-Punk only.
+    let mut state = game();
+    put(&mut state, P0, "Spider-Punk");
+    put(&mut state, P1, "Spider-Punk");
+    lands(&mut state, P0, 4);
+    let spider_man = put_in(&mut state, P0, "Spider-Man, Web-Spinner", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(spider_man)).unwrap();
+    let mut riots = 0;
+    drive(&mut state, |s, d| match d {
+        Decision::ChooseRiot { player, .. } => {
+            assert_eq!(*player, P0);
+            riots += 1;
+            Some(Action::ChooseRiot(false))
+        }
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => first_choice(s, d),
+    });
+    assert_eq!(riots, 1);
+    assert_eq!(state.objects.get(spider_man).counters.plus1_plus1, 1);
+}
