@@ -1003,3 +1003,39 @@ fn each_kind_of_artifact_is_a_target_for_the_artifact_spells_and_lowers_cavern_h
         }
     }
 }
+
+#[test]
+fn a_stolen_permanents_you_text_serves_the_thief() {
+    // 109.5, 613.1b: Zealous Conscripts stands for the threaten cards.
+    use mtg_kernel::card_def::Keywords;
+    // The opposing Ognis makes the thief's tapped Treasure.
+    let mut state = game();
+    let ognis = put(&mut state, P1, "Ognis, the Dragon's Lash");
+    lands(&mut state, P0, 5);
+    cast(&mut state, "Zealous Conscripts", Some(Target::Object(ognis)), 0);
+    let conscripts = named(&state, P0, "Zealous Conscripts")[0];
+    attack_with(&mut state, vec![conscripts]);
+    assert_eq!(named(&state, P0, "Treasure Token").len(), 1, "the stolen Ognis's trigger");
+    assert!(named(&state, P1, "Treasure Token").is_empty());
+
+    // The opposing Ruby Medallion reduces the thief's red spells.
+    let mut state = game();
+    let ruby = put(&mut state, P1, "Ruby Medallion");
+    lands(&mut state, P0, 5);
+    cast(&mut state, "Zealous Conscripts", Some(Target::Object(ruby)), 0);
+    lands(&mut state, P0, 1);
+    let impulse = put_in(&mut state, P0, "Reckless Impulse", Zone::Hand);
+    assert!(castable(&mut state, impulse), "{{1}}{{R}} for one mana");
+
+    // The opposing Fire Crystal gives the thief's creatures haste, not its owner's.
+    let mut state = game();
+    let crystal = put(&mut state, P1, "The Fire Crystal");
+    let theirs = put(&mut state, P1, "Spider-Punk");
+    state.objects.get_mut(theirs).summoning_sick = true;
+    lands(&mut state, P0, 5);
+    cast(&mut state, "Zealous Conscripts", Some(Target::Object(crystal)), 0);
+    let mine = put(&mut state, P0, "Spider-Punk");
+    state.objects.get_mut(mine).summoning_sick = true;
+    assert!(engine::has_effective_keyword(&state, mine, Keywords::HASTE));
+    assert!(!engine::has_effective_keyword(&state, theirs, Keywords::HASTE));
+}
