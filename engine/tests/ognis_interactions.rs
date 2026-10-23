@@ -2224,3 +2224,41 @@ fn call_for_aids_creatures_cant_pay_demand_answers_sacrifice() {
         assert_eq!((zone(&state, ring), zone(&state, titan)), (Zone::Graveyard, Zone::Battlefield), "{steal}");
     }
 }
+
+#[test]
+fn delayed_blast_fireball_deals_five_when_cast_from_exile_by_any_route() {
+    // From hand: 2 to player 1. Foretold, or exiled by Reckless Impulse and
+    // cast from there: 5.
+    for route in ["hand", "foretell", "Reckless Impulse"] {
+        let mut state = game();
+        let fireball = match route {
+            "hand" => put_in(&mut state, P0, "Delayed Blast Fireball", Zone::Hand),
+            "foretell" => {
+                let f = put_in(&mut state, P0, "Delayed Blast Fireball", Zone::Hand);
+                lands(&mut state, P0, 2);
+                advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+                engine::step(&mut state, Action::Foretell(f)).unwrap();
+                end_turn(&mut state);
+                end_turn(&mut state);
+                f
+            }
+            _ => {
+                let f = library_card(&mut state, P0, 0, "Delayed Blast Fireball");
+                lands(&mut state, P0, 2);
+                cast(&mut state, "Reckless Impulse", None, 0);
+                assert_eq!(zone(&state, f), Zone::Exile);
+                f
+            }
+        };
+        lands(&mut state, P0, 6);
+        advance(&mut state, |s, d| s.active_player == P0 && matches!(d, Decision::CastSpellOrPass { castable_spells, .. } if castable_spells.contains(&fireball)));
+        let life = state.players[1].life;
+        engine::step(&mut state, Action::CastSpell(fireball)).unwrap();
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseCastMethod { methods, .. } => Some(Action::ChooseCastMethod(methods[0])),
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        assert_eq!(life - state.players[1].life, if route == "hand" { 2 } else { 5 }, "{route}");
+    }
+}
