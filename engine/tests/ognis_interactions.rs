@@ -1826,3 +1826,33 @@ fn light_up_the_stages_spectacle_follows_the_opponents_life_loss_from_each_sourc
         assert_eq!(castable(&mut state, stage), lost, "{source}");
     }
 }
+
+#[test]
+fn mob_rule_reads_each_creatures_power_with_counters_and_base_changes() {
+    // Mode 1 takes power 4 or greater, mode 2 power 3 or less, read as it
+    // resolves: Laelia 2/2 with two +1/+1 counters is 4; a celebrating
+    // Goddric is a 4/4, otherwise 3/3.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    for (card, celebrate, counters, power) in [
+        ("Laelia, the Blade Reforged", false, 2, 4),
+        ("Laelia, the Blade Reforged", false, 0, 2),
+        ("Goddric, Cloaked Reveler", true, 0, 4),
+        ("Goddric, Cloaked Reveler", false, 0, 3),
+    ] {
+        for mode in [0u8, 1] {
+            let mut state = game();
+            let theirs = put(&mut state, P1, card);
+            state.objects.get_mut(theirs).counters.plus1_plus1 = counters;
+            if celebrate {
+                for _ in 0..2 {
+                    propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P1));
+                }
+            }
+            assert_eq!(engine::effective_power(&state, theirs), power, "{card}");
+            lands(&mut state, P0, 6);
+            cast(&mut state, "Mob Rule", None, mode);
+            let taken = state.objects.get(theirs).controller == P0;
+            assert_eq!(taken, (mode == 0) == (power >= 4), "{card} at power {power}, mode {mode}");
+        }
+    }
+}
