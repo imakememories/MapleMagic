@@ -412,3 +412,60 @@ fn cast_and_respond(state: &mut GameState, card: &str, target: Option<Target>, m
     }
     assert!(responded, "a trigger waited above {card}");
 }
+
+#[test]
+fn slickshots_pump_doesnt_follow_it_to_a_new_object() {
+    // 400.7: Slickshot Show-Off leaves and returns while its trigger waits.
+    let mut state = game();
+    lands(&mut state, P0, 1);
+    let show_off = put(&mut state, P0, "Slickshot Show-Off");
+    let base = mtg_kernel::engine::effective_power(&state, show_off);
+    cast_and_respond(&mut state, "Lightning Bolt", Some(Target::Player(P1)), |s| bounce_through_graveyard(s, show_off));
+    assert_eq!(mtg_kernel::engine::effective_power(&state, show_off), base);
+}
+
+#[test]
+fn laelias_counter_doesnt_follow_her_to_a_new_object() {
+    // 400.7: Laelia leaves and returns while her exile trigger waits.
+    let mut state = game();
+    lands(&mut state, P0, 2);
+    let laelia = put(&mut state, P0, "Laelia, the Blade Reforged");
+    // Wrenn's Resolve exiles on resolution: respond to Laelia's trigger then.
+    let spell = put_in(&mut state, P0, "Wrenn's Resolve", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(spell)).unwrap();
+    let mut responded = false;
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::CastSpellOrPass { .. } if zone(&state, spell) == Zone::Graveyard && !state.stack.is_empty() && !responded => {
+                responded = true;
+                bounce_through_graveyard(&mut state, laelia);
+                Action::Pass
+            }
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert!(responded);
+    assert_eq!(state.objects.get(laelia).counters.plus1_plus1, 0);
+}
+
+#[test]
+fn goddrics_dragon_pump_doesnt_follow_a_dragon_to_a_new_object() {
+    // 400.7, 611.2c: Goldspan Dragon pumped by Goddric leaves and returns.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    lands(&mut state, P0, 1);
+    let goddric = put(&mut state, P0, "Goddric, Cloaked Reveler");
+    let dragon = put(&mut state, P0, "Goldspan Dragon");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    for _ in 0..2 {
+        propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P0));
+    }
+    activate(&mut state, goddric, 0, None);
+    assert_eq!(mtg_kernel::engine::effective_power(&state, dragon), 5);
+    bounce_through_graveyard(&mut state, dragon);
+    assert_eq!(mtg_kernel::engine::effective_power(&state, dragon), 4);
+}

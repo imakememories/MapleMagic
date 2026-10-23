@@ -20139,23 +20139,23 @@ mod tests {
         }
         pass_until_stack_resolves(&mut state);
 
+        // 611.2c: one effect per creature in the locked-in set, itself included.
         assert_eq!(state.engine.until_end_of_turn.len(), 1);
         match &state.engine.until_end_of_turn[0] {
-            UntilEndOfTurnEffect::ResolvedSetEffect {
+            UntilEndOfTurnEffect::ResolvedObjectEffect {
                 layer,
                 duration,
-                object_ids,
+                object_id,
+                object_zone_change_count,
                 ..
             } => {
                 assert!(layer.has(Layers::POWER_TOUGHNESS), "grants +1/+0");
                 assert!(layer.has(Layers::ABILITY_ADDING), "grants Haste");
                 assert_eq!(*duration, EffectDuration::EndOfTurn);
-                assert!(
-                    object_ids.contains(&bushwhacker),
-                    "611.2c: the resolving effect's own locked-in set includes itself"
-                );
+                assert_eq!(*object_id, bushwhacker);
+                assert_eq!(*object_zone_change_count, state.objects.get(bushwhacker).zone_change_count);
             }
-            other => panic!("expected ResolvedSetEffect, got {other:?}"),
+            other => panic!("expected ResolvedObjectEffect, got {other:?}"),
         }
     }
 

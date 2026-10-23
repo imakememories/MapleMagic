@@ -8812,6 +8812,13 @@ impl ExecCtx {
         }
     }
 
+    /// Whether the ability's source is still the object it came from (400.7):
+    /// "this creature" doesn't follow it to a new object.
+    fn source_incarnation_matches(&self, state: &GameState) -> bool {
+        self.ability_source_contract
+            .is_none_or(|c| c.source != self.source || state.objects.get(self.source).zone_change_count == c.zone_change_count)
+    }
+
     fn target_incarnation_matches(&self, index: usize, state: &GameState) -> bool {
         match (self.targets.get(index), self.target_contracts.get(index)) {
             (Some(Target::Player(player)), Some(StackTargetContractV4::Player(bound))) => {
@@ -10825,6 +10832,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 ObjectRef::ThisSource => None,
             };
             if target_index.is_some_and(|index| !ctx.target_incarnation_matches(index, state))
+                || (target_index.is_none() && !ctx.source_incarnation_matches(state))
                 || state.objects.get(object_id).zone != Zone::Battlefield
                 || !crate::engine::object_has_type(state, object_id, CardType::Creature)
             {
@@ -11785,7 +11793,7 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             }
         }
         EffectOp::AddChargeCounterToSource => {
-            if state.objects.get(ctx.source).zone == Zone::Battlefield {
+            if state.objects.get(ctx.source).zone == Zone::Battlefield && ctx.source_incarnation_matches(state) {
                 state.objects.get_mut(ctx.source).counters.charge += 1;
             }
         }
@@ -12048,18 +12056,22 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 if *grant_haste {
                     layer = layer | crate::engine::Layers::ABILITY_ADDING;
                 }
+                // Each creature as it is now: the pump doesn't follow it to a new object (400.7, 611.2c).
                 let timestamp = crate::engine::next_timestamp(state);
-                state.engine.until_end_of_turn.push(
-                    crate::engine::UntilEndOfTurnEffect::ResolvedSetEffect {
-                        object_ids,
-                        layer,
-                        timestamp,
-                        duration: crate::engine::EffectDuration::EndOfTurn,
-                        power: *power,
-                        toughness: *toughness,
-                        grant_haste: *grant_haste,
-                    },
-                );
+                for object_id in object_ids {
+                    state.engine.until_end_of_turn.push(
+                        crate::engine::UntilEndOfTurnEffect::ResolvedObjectEffect {
+                            object_id,
+                            object_zone_change_count: state.objects.get(object_id).zone_change_count,
+                            layer,
+                            timestamp,
+                            duration: crate::engine::EffectDuration::EndOfTurn,
+                            power: *power,
+                            toughness: *toughness,
+                            grant_haste: *grant_haste,
+                        },
+                    );
+                }
             }
         }
         EffectOp::PumpTargetUntilEndOfTurnDynamic {
@@ -12070,6 +12082,9 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
             let Target::Object(object) = ctx.resolve_target(*target) else {
                 panic!("dynamic target pump requires an object target");
             };
+            if *target == TargetRef::ThisSource && !ctx.source_incarnation_matches(state) {
+                return;
+            }
             let power = dynamic_value(ctx, state, *power);
             let toughness = dynamic_value(ctx, state, *toughness);
             if power != 0 || toughness != 0 {
