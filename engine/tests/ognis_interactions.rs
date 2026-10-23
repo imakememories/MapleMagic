@@ -2189,3 +2189,38 @@ fn exiling_the_graveyards_ends_flashback_and_retrace() {
         assert!(!castable(&mut state, impulse) && !castable(&mut state, embrace), "{exiler}");
     }
 }
+
+#[test]
+fn call_for_aids_creatures_cant_pay_demand_answers_sacrifice() {
+    // A stolen Depthshaker Titan is an artifact player 0 controls: taken with
+    // Zealous Conscripts it may be sacrificed for Demand Answers; taken with
+    // Call for Aid it can't, so Sol Ring is the only choice and is taken
+    // without asking.
+    for (steal, target) in [("Zealous Conscripts", None), ("Call for Aid", Some(Target::Player(P1)))] {
+        let mut state = game();
+        let titan = put(&mut state, P1, "Depthshaker Titan");
+        let ring = put(&mut state, P0, "Sol Ring");
+        lands(&mut state, P0, 7);
+        cast(&mut state, steal, Some(target.unwrap_or(Target::Object(titan))), 0);
+        assert_eq!(state.objects.get(titan).controller, P0, "{steal}");
+        let answers = put_in(&mut state, P0, "Demand Answers", Zone::Hand);
+        put_in(&mut state, P0, "Mountain", Zone::Hand);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::CastSpell(answers)).unwrap();
+        let mut offered = None;
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseEffectOption { .. } => Some(Action::ChooseEffectOption(0)),
+            Decision::ChooseCostTargets { candidates, .. } => {
+                offered = Some(candidates.clone());
+                Some(Action::ChooseCostTarget(ring))
+            }
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        match steal {
+            "Zealous Conscripts" => assert_eq!(offered.map(|mut c| { c.sort(); c }), Some(vec![titan, ring])),
+            _ => assert_eq!(offered, None, "only Sol Ring"),
+        }
+        assert_eq!((zone(&state, ring), zone(&state, titan)), (Zone::Graveyard, Zone::Battlefield), "{steal}");
+    }
+}
