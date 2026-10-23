@@ -2262,3 +2262,38 @@ fn delayed_blast_fireball_deals_five_when_cast_from_exile_by_any_route() {
         assert_eq!(life - state.players[1].life, if route == "hand" { 2 } else { 5 }, "{route}");
     }
 }
+
+#[test]
+fn a_celebrating_goddric_keeps_its_4_4_and_flying_through_other_type_changes() {
+    // 613.1d, 613.4b, 613.7: Gornog's Coward (newer) replaces Goddric's
+    // Dragon type but not his base 4/4 or flying; Liquimetal Torque adds the
+    // artifact type and he stays a 4/4 Dragon creature.
+    use mtg_kernel::card_def::{CardType, Keywords, Subtype};
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let celebrate = |state: &mut GameState, p| {
+        for _ in 0..2 {
+            propose_and_commit(state, ProposedEvent::create_token(id("Treasure Token"), p));
+        }
+    };
+    let mut state = game();
+    let gornog = put(&mut state, P0, "Gornog, the Red Reaper");
+    let goddric = put(&mut state, P1, "Goddric, Cloaked Reveler");
+    celebrate(&mut state, P1);
+    attack_and_see_blocks(&mut state, vec![gornog], Target::Object(goddric));
+    assert!(engine::has_effective_subtype(&state, goddric, Subtype::Coward));
+    assert!(!engine::has_effective_subtype(&state, goddric, Subtype::Dragon));
+    assert_eq!((engine::effective_power(&state, goddric), engine::effective_toughness(&state, goddric)), (4, 4));
+    assert!(engine::has_effective_keyword(&state, goddric, Keywords::FLYING));
+
+    let mut state = game();
+    let goddric = put(&mut state, P0, "Goddric, Cloaked Reveler");
+    let torque = put(&mut state, P0, "Liquimetal Torque");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    celebrate(&mut state, P0);
+    activate(&mut state, torque, 0, Some(Target::Object(goddric)));
+    for t in [CardType::Artifact, CardType::Creature] {
+        assert!(engine::object_has_type(&state, goddric, t), "{t:?}");
+    }
+    assert!(engine::has_effective_subtype(&state, goddric, Subtype::Dragon));
+    assert_eq!((engine::effective_power(&state, goddric), engine::effective_toughness(&state, goddric)), (4, 4));
+}
