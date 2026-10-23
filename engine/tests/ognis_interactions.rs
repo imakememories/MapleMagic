@@ -1125,3 +1125,18 @@ fn a_blocked_trampler_whose_blockers_all_left_deals_its_damage_to_the_player() {
         assert_eq!(life - state.players[1].life, to_player, "{card}");
     }
 }
+
+#[test]
+fn two_until_end_of_turn_steals_of_one_creature_both_end_at_cleanup() {
+    // 613.7, 514.2: Zealous Conscripts, then Loki's Scepter, take player 1's
+    // Guttersnipe; both effects end together and it goes back to its owner.
+    let mut state = game();
+    let theirs = put(&mut state, P1, "Guttersnipe");
+    lands(&mut state, P0, 8);
+    cast(&mut state, "Zealous Conscripts", Some(Target::Object(theirs)), 0);
+    cast(&mut state, "Loki's Scepter", Some(Target::Object(theirs)), 0);
+    assert_eq!(state.objects.get(theirs).controller, P0);
+    end_turn(&mut state);
+    assert_eq!(state.objects.get(theirs).controller, P1);
+    assert!(state.players[1].battlefield.contains(&theirs));
+}
