@@ -588,3 +588,27 @@ fn an_attacker_that_leaves_and_returns_is_a_new_object_not_in_combat() {
     advance(&mut state, |s, _| s.step == Step::Main2);
     assert_eq!(state.players[1].life, life);
 }
+
+#[test]
+fn the_blockers_and_damage_steps_happen_after_the_only_attacker_died() {
+    // 508.8 skips them only if no creature was declared as an attacker.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    let dragon = put(&mut state, P0, "Goldspan Dragon");
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    engine::step(&mut state, Action::DeclareAttackers(vec![dragon])).unwrap();
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    propose_and_commit(&mut state, ProposedEvent::zone_change(dragon, Zone::Graveyard));
+    let mut priority = Vec::new();
+    advance(&mut state, |s, d| {
+        if let Decision::CastSpellOrPass { player, .. } = d {
+            priority.push((s.step, *player));
+        }
+        s.step == Step::Main2
+    });
+    for step in [Step::DeclareBlockers, Step::CombatDamage] {
+        for p in [P0, P1] {
+            assert!(priority.contains(&(step, p)), "{step:?} {p:?}: {priority:?}");
+        }
+    }
+}

@@ -1133,6 +1133,10 @@ pub enum OptionalCostChoice {
 pub struct CombatState {
     pub attackers_declared: bool,
     pub blockers_declared: bool,
+    /// Creatures were declared as attackers or put onto the battlefield
+    /// attacking this combat, even if none is still attacking (508.8).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub creatures_attacked: bool,
     pub attackers: Vec<ObjectId>,
     /// Attacker -> blockers, preserving the defender's declaration order.
     /// XMage's `ComputerPlayerRL.selectBlockers` calls `declareBlocker` in
@@ -6913,6 +6917,11 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
                 .copied()
                 .filter(|&id| is_still_in_combat(state, id))
                 .collect();
+            // Every attacker has left combat: nothing can block, no choice.
+            if attackers.is_empty() {
+                apply_declare_blockers(state, Vec::new()).expect("no blocks is legal");
+                continue;
+            }
             attackers.sort_by_key(|&id| std::cmp::Reverse(effective_power(state, id)));
             let legal_blockers = attackers
                 .iter()
@@ -11299,35 +11308,10 @@ fn advance_step(state: &mut GameState) {
         state.extra_combats -= 1;
         next = Step::BeginCombat;
     }
-    // 508.4/509.1: `DeclareBlockers` (and everything after it this combat)
-    // is skipped not just when *no attackers were ever declared*, but
-    // whenever *none of them are still around to be blocked* -- confirmed
-    // against the real reference: `DeclareBlockersStep`/`CombatDamageStep`
-    // both override `skipStep()` to check `Combat.noAttackers()`, which
-    // recomputes live from the mutable attacker set on every call (so a
-    // declared attacker that died in the interim drops out), and
-    // `Phase.play()` re-checks `skipStep()` immediately before *each* step,
-    // not just once at Declare Attackers. `is_still_in_combat` already
-    // exists for the exact same "declared, but no longer on the
-    // battlefield" check (`combat_damage_wave`'s doc) -- reused here rather
-    // than re-deriving it. `.all(..)` over an empty `attackers` list is
-    // vacuously true, so this subsumes the original "nothing was ever
-    // declared" case too. Root-caused against
-    // `game_20260713_002153_0010.txt`: SelfPlay declares a single attacker
-    // (Voldaren Epicure) then kills it themselves with Lava Dart still
-    // inside the Declare Attackers priority window; the reference logs
-    // nothing further for either player until Postcombat Main, but the
-    // kernel -- still holding the now-dead attacker's `ObjectId` in
-    // `combat.attackers` -- entered `DeclareBlockers` for real and asked a
-    // phantom post-block priority question.
-    if next == Step::DeclareBlockers
-        && state
-            .engine
-            .combat
-            .attackers
-            .iter()
-            .all(|&id| !is_still_in_combat(state, id))
-    {
+    // 508.8: skip the declare blockers and combat damage steps only if no
+    // creature was declared or put onto the battlefield attacking, even if
+    // every attacker has since left combat.
+    if next == Step::DeclareBlockers && !state.engine.combat.creatures_attacked {
         next = Step::EndCombat;
     }
 
@@ -12476,6 +12460,7 @@ pub(crate) fn put_ninjutsu_source_onto_battlefield_attacking(
     event::propose_and_commit(state, ProposedEvent::zone_change(source, Zone::Battlefield));
     state.objects.get_mut(source).tapped = true;
     state.engine.combat.attackers.push(source);
+    state.engine.combat.creatures_attacked = true;
     Ok(())
 }
 
@@ -14638,6 +14623,7 @@ fn apply_declare_attackers(state: &mut GameState, attackers: Vec<ObjectId>) -> R
     for &id in &attackers {
         event::log_declared_attacker(state, id);
     }
+    state.engine.combat.creatures_attacked |= !attackers.is_empty();
     state.engine.combat.attackers = attackers;
     state.engine.combat.attackers_declared = true;
     collect_and_queue_triggers(state);
@@ -16883,47 +16869,32 @@ mod tests {
         assert!(state.engine.until_end_of_turn.is_empty());
     }
 
-    /// Regression test for the increment-13 fix (root-caused against
-    /// `game_20260713_002153_0010.txt`, see `advance_step`'s doc): a
-    /// declared attacker that dies before Declare Blockers must still let
-    /// the kernel skip straight to `EndCombat`, same as if it had never
-    /// been declared at all -- not just when `combat.attackers` was empty
-    /// from the start.
+    /// 508.8: the declare blockers step still happens when the only declared
+    /// attacker has died since.
     #[test]
-    fn declare_blockers_is_skipped_once_the_sole_attacker_has_died() {
+    fn declare_blockers_still_happens_once_the_sole_attacker_has_died() {
         let mut state = empty_game();
         let attacker = put_on_battlefield(&mut state, PlayerId::P0, "Guttersnipe");
         state.active_player = PlayerId::P0;
         state.step = Step::DeclareAttackers;
         state.engine.combat.attackers = vec![attacker];
         state.engine.combat.attackers_declared = true;
-
-        // The attacker dies mid-Declare-Attackers (e.g. to a burn spell),
-        // same as `is_still_in_combat`'s own "declared, but not on the
-        // battlefield by damage time" shape.
+        state.engine.combat.creatures_attacked = true;
         state.objects.get_mut(attacker).zone = Zone::Graveyard;
 
         advance_step(&mut state);
-        assert_eq!(
-            state.step,
-            Step::EndCombat,
-            "a dead sole attacker must not keep DeclareBlockers alive"
-        );
+        assert_eq!(state.step, Step::DeclareBlockers);
     }
 
-    /// Same fix, opposite polarity: a *surviving* declared attacker must
-    /// still route through `DeclareBlockers` normally.
     #[test]
-    fn declare_blockers_is_not_skipped_while_the_attacker_is_still_alive() {
+    fn declare_blockers_is_skipped_when_no_creature_attacked() {
         let mut state = empty_game();
-        let attacker = put_on_battlefield(&mut state, PlayerId::P0, "Guttersnipe");
         state.active_player = PlayerId::P0;
         state.step = Step::DeclareAttackers;
-        state.engine.combat.attackers = vec![attacker];
         state.engine.combat.attackers_declared = true;
 
         advance_step(&mut state);
-        assert_eq!(state.step, Step::DeclareBlockers);
+        assert_eq!(state.step, Step::EndCombat);
     }
 
     #[test]
