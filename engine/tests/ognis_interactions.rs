@@ -2059,6 +2059,7 @@ fn a_treasure_feeds_dragonspark_idol_lannery_and_coin_of_mastery() {
     });
     assert_eq!(engine::effective_power(&state, lannery), base + 1, "a Treasure was sacrificed");
     assert_eq!(state.artifact_mana[0][ManaColor::R.pool_index()], 1);
+    assert!(offered_ability(&mut state, idol, 0), "602.5b: the token was created this turn, though gone");
     let show_off = put_in(&mut state, P0, "Slickshot Show-Off", Zone::Hand);
     engine::step(&mut state, Action::CastSpell(show_off)).unwrap();
     drive(&mut state, |s, d| match d {
