@@ -243,17 +243,27 @@ pub fn prevents_combat_damage_to(state: &GameState, target: crate::state::Target
 /// Whether the creature `id` has riot (702.136): Spider-Punk itself, and
 /// other Spiders whose controller controls a Spider-Punk.
 pub fn has_riot(state: &GameState, id: ObjectId) -> bool {
+    riot_instances(state, id) > 0
+}
+
+/// Instances of riot (702.136b: each works separately): Spider-Punk's own,
+/// and one from each other Spider-Punk its controller controls.
+pub fn riot_instances(state: &GameState, id: ObjectId) -> usize {
     let o = state.objects.get(id);
     let def = &CARD_DEFS[o.card_def as usize];
     if !def.has_type(CardType::Creature) {
-        return false;
+        return 0;
     }
-    def.name == "Spider-Punk"
-        || (def.subtypes.contains(&Subtype::Spider)
-            && state.players[o.controller.index()]
-                .battlefield
-                .iter()
-                .any(|&other| other != id && CARD_DEFS[state.objects.get(other).card_def as usize].name == "Spider-Punk"))
+    let printed = usize::from(def.name == "Spider-Punk");
+    if !def.subtypes.contains(&Subtype::Spider) {
+        return printed;
+    }
+    printed
+        + state.players[o.controller.index()]
+            .battlefield
+            .iter()
+            .filter(|&&other| other != id && CARD_DEFS[state.objects.get(other).card_def as usize].name == "Spider-Punk")
+            .count()
 }
 
 /// Whether `id` chose haste for riot.

@@ -265,3 +265,61 @@ fn depthshaker_titan_skips_a_target_that_is_no_longer_a_noncreature_artifact_you
     assert!(engine::object_has_type(&state, treasure, CardType::Creature));
     assert!(!engine::object_has_type(&state, ring, CardType::Creature), "an illegal target is left alone");
 }
+#[test]
+fn a_copy_of_spider_punk_next_to_spider_punk_has_riot_twice() {
+    // 702.136b: its own riot and the one Spider-Punk gives other Spiders.
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let punk = put(&mut state, P0, "Spider-Punk");
+    let mirror = put_in(&mut state, P0, "Cursed Mirror", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(mirror)).unwrap();
+    let mut riots = 0;
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseCopy { .. } => Action::ChooseCopy(Some(punk)),
+            Decision::ChooseRiot { creature, .. } => {
+                assert_eq!(creature, mirror);
+                riots += 1;
+                Action::ChooseRiot(false)
+            }
+            Decision::ChooseLegendToKeep { .. } => Action::ChooseLegendToKeep(mirror),
+            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(riots, 2);
+    assert_eq!(state.objects.get(mirror).counters.plus1_plus1, 2);
+}
+#[test]
+fn the_opposing_hideous_taskmaster_taken_by_yours_has_annihilator_twice() {
+    // 702.86b: its printed annihilator 1 and the one your Taskmaster gives it.
+    let mut state = game();
+    lands(&mut state, P0, 7);
+    let theirs = put(&mut state, P1, "Hideous Taskmaster");
+    let lands_of_1: Vec<ObjectId> = (0..3).map(|_| put(&mut state, P1, "Mountain")).collect();
+    cast(&mut state, "Hideous Taskmaster", Some(Target::Object(theirs)), 0);
+    assert_eq!(state.objects.get(theirs).controller, P0);
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    engine::step(&mut state, Action::DeclareAttackers(vec![theirs])).unwrap();
+    let mut sacrifices = 0;
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseEffectTargets { legal_targets, .. } => {
+                sacrifices += 1;
+                Action::ChooseEffectTarget(legal_targets[0])
+            }
+            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(sacrifices, 2);
+    assert_eq!(lands_of_1.iter().filter(|&&m| zone(&state, m) == Zone::Graveyard).count(), 2);
+}
+

@@ -922,9 +922,11 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
         let link = crate::state::ObjectLinkV4 { object, zone_change_count: state.objects.get(object).zone_change_count };
         state.pending_color_choice.push(link);
     }
-    if let Some(object) = entered.filter(|&o| crate::statics::has_riot(state, o)) {
+    if let Some(object) = entered {
         let link = crate::state::ObjectLinkV4 { object, zone_change_count: state.objects.get(object).zone_change_count };
-        state.pending_riot.push(link);
+        for _ in 0..crate::statics::riot_instances(state, object) {
+            state.pending_riot.push(link);
+        }
     }
     state.engine.event_log.push(committed.clone());
     state.engine.event_history.push(committed);
@@ -952,7 +954,7 @@ pub fn entered_as_copy(state: &mut GameState, object: ObjectId) {
     if crate::statics::chooses_color_on_entry(state, object) {
         state.pending_color_choice.push(link);
     }
-    if crate::statics::has_riot(state, object) {
+    for _ in 0..crate::statics::riot_instances(state, object) {
         state.pending_riot.push(link);
     }
     let controller = state.objects.get(object).controller;

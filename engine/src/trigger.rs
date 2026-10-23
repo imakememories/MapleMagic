@@ -1217,6 +1217,24 @@ pub fn annihilator_effect() -> EffectOp {
     EffectOp::SacrificeCreature { player: PlayerRef::Opponent, filter: crate::effect::CreatureSacrificeFilter::AnyPermanent }
 }
 
+/// Printed annihilator plus each grant in force on this incarnation.
+fn annihilator_instances(state: &GameState, id: ObjectId) -> usize {
+    let o = state.objects.get(id);
+    let printed = crate::card_def::CARD_DEFS[o.card_def as usize]
+        .keywords_for_face(o.v4.face_index)
+        .has(Keywords::ANNIHILATOR);
+    let granted = state
+        .engine
+        .until_end_of_turn
+        .iter()
+        .filter(|e| {
+            matches!(**e, crate::engine::UntilEndOfTurnEffect::ResolvedObjectKeywordEffect { object_id, object_zone_change_count, keywords, .. }
+                if object_id == id && object_zone_change_count == o.zone_change_count && keywords.has(Keywords::ANNIHILATOR))
+        })
+        .count();
+    (usize::from(printed) + granted).max(1)
+}
+
 /// Hideous Taskmaster: gain control of up to one target creature until end
 /// of turn, untap it; it gains trample, haste and annihilator 1.
 fn hideous_taskmaster_cast_effect() -> EffectOp {
@@ -2219,13 +2237,15 @@ fn triggers_from_events(
                 }
             }
         }
-        // Annihilator, printed or granted: a keyword trigger on attacking.
+        // Annihilator, printed or granted: a keyword trigger on attacking, one
+        // per instance (702.86b).
         let attacked = |ev: &CommittedEvent| matches!(ev, CommittedEvent::DeclaredAttacker { source, .. } if *source == id);
         if obj.zone == Zone::Battlefield
             && events.iter().any(attacked)
             && crate::engine::has_effective_keyword(state, id, crate::card_def::Keywords::ANNIHILATOR)
         {
-            for ev in events {
+            let instances = annihilator_instances(state, id);
+            for ev in events.iter().flat_map(|ev| std::iter::repeat_n(ev, instances)) {
                 if attacked(ev) {
                     let mut contract = AbilitySourceContractV4::capture(state, id);
                     contract.controller = obj.controller;
