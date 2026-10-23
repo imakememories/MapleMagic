@@ -2162,3 +2162,30 @@ fn abstergo_returns_exactly_the_historic_cards_in_the_deck() {
     }
     assert!(historic_count >= 25, "{historic_count}");
 }
+
+#[test]
+fn exiling_the_graveyards_ends_flashback_and_retrace() {
+    // Abstergo Entertainment or Scavenger Grounds exiles all graveyards: a
+    // Reckless Impulse given flashback and an Embrace the Unknown with
+    // retrace are gone and can no longer be cast.
+    for exiler in ["Abstergo Entertainment", "Scavenger Grounds"] {
+        let mut state = game();
+        let impulse = put_in(&mut state, P0, "Reckless Impulse", Zone::Graveyard);
+        let embrace = put_in(&mut state, P0, "Embrace the Unknown", Zone::Graveyard);
+        put_in(&mut state, P0, "Mountain", Zone::Hand);
+        lands(&mut state, P0, 1);
+        cast(&mut state, "Flashback", Some(Target::Object(impulse)), 0);
+        lands(&mut state, P0, 6);
+        assert!(castable(&mut state, impulse) && castable(&mut state, embrace), "{exiler}");
+        let source = put(&mut state, P0, exiler);
+        assert!(offered_ability(&mut state, source, 0), "{exiler}");
+        engine::step(&mut state, Action::ActivateAbility(source, 0)).unwrap();
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseTargets { .. } | Decision::ChooseEffectTargets { .. } => Some(Action::FinishEffectSelection),
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        assert_eq!((zone(&state, impulse), zone(&state, embrace)), (Zone::Exile, Zone::Exile), "{exiler}");
+        assert!(!castable(&mut state, impulse) && !castable(&mut state, embrace), "{exiler}");
+    }
+}
