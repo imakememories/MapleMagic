@@ -2136,3 +2136,29 @@ fn the_land_destroyers_target_each_land_in_the_deck_demolition_field_only_nonbas
         }
     }
 }
+
+#[test]
+fn abstergo_returns_exactly_the_historic_cards_in_the_deck() {
+    // 700.6: artifacts, legendaries and Sagas are historic.
+    use mtg_kernel::card_def::{CardType, Subtype, Supertype, CARD_DEFS};
+    let mut historic_count = 0;
+    for name in ognis_deck_spells().into_iter().filter(|&n| n != "Ognis, the Dragon's Lash") {
+        let def = &CARD_DEFS[id(name) as usize];
+        let historic = def.types.contains(&CardType::Artifact)
+            || def.supertypes.contains(&Supertype::Legendary)
+            || def.subtypes.contains(&Subtype::Saga);
+        historic_count += usize::from(historic);
+        let mut state = game();
+        let abstergo = put(&mut state, P0, "Abstergo Entertainment");
+        lands(&mut state, P0, 3);
+        let card = put_in(&mut state, P0, name, Zone::Graveyard);
+        assert!(offered_ability(&mut state, abstergo, 0), "{name}");
+        engine::step(&mut state, Action::ActivateAbility(abstergo, 0)).unwrap();
+        let offered = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseTargets { legal_targets, .. } | Decision::ChooseEffectTargets { legal_targets, .. } => legal_targets,
+            _ => Vec::new(),
+        };
+        assert_eq!(offered.contains(&Target::Object(card)), historic, "{name}");
+    }
+    assert!(historic_count >= 25, "{historic_count}");
+}
