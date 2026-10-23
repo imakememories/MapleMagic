@@ -14003,7 +14003,8 @@ pub(crate) fn create_replicate_copy(
     let copy_source = state.objects.push(crate::state::GameObject {
         card_def,
         name: card_def::CARD_DEFS[card_def as usize].name.into(),
-        owner,
+        // 707.10: owned by the player who put it on the stack.
+        owner: controller,
         controller,
         zone: Zone::Stack,
         tapped: false,
@@ -21063,5 +21064,21 @@ mod tests {
             expected_rng,
             "the frame commit must advance the RNG exactly as the historical shuffle"
         );
+    }
+
+    /// 707.10: a replicate copy is owned by the player who put it on the
+    /// stack, even of a spell another player owns. No Ognis card casts
+    /// another player's card, so the parent is built directly.
+    #[test]
+    fn a_replicate_copy_is_owned_by_the_player_who_put_it_on_the_stack() {
+        let mut state = empty_game();
+        let parent = put_on_battlefield(&mut state, PlayerId::P1, "Shattering Spree");
+        state.objects.get_mut(parent).zone = Zone::Stack;
+        state.objects.get_mut(parent).controller = PlayerId::P0;
+        let link = ObjectLinkV4 { object: parent, zone_change_count: state.objects.get(parent).zone_change_count };
+        let card_def = state.objects.get(parent).card_def;
+        create_replicate_copy(&mut state, link, card_def, PlayerId::P0, TargetSpec::ArtifactPermanent, None).unwrap();
+        let copy = state.stack.last().unwrap().source;
+        assert_eq!(state.objects.get(copy).owner, PlayerId::P0);
     }
 }
