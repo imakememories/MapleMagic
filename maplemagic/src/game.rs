@@ -53,6 +53,8 @@ pub enum Kind {
     Mulligan = 23,
     /// Put a card from the mulligan hand on the bottom of the library.
     Bottom = 24,
+    /// Assign `arg` (and `role`, uncapped) of `src`'s combat damage to `tgt`.
+    AssignDamage = 25,
 }
 
 /// A choice's tree key and model input. `role` is in the key only.
@@ -1156,6 +1158,14 @@ impl Game {
                 self.actor = player;
                 self.pending = Pending::Discard { count, pool: choices, picked: Vec::new() };
             }
+            Decision::AssignCombatDamage { player, attacker, recipient, options } => {
+                self.actor = player;
+                let (d, tgt) = (def_of(st, attacker), target_sig(st, recipient, player));
+                for a in options {
+                    let feat = ActFeat::new(Kind::AssignDamage, d, tgt, a.min(63)).with_role(u32::from(a));
+                    out.push(mk(feat, Exec::Engine(Action::AssignCombatDamage(a))));
+                }
+            }
             Decision::DeclareAttackers { player, eligible } => {
                 self.actor = player;
                 self.declaration_fell_back = false;
@@ -1205,6 +1215,7 @@ fn decision_name(d: &Decision) -> &'static str {
         Decision::ChooseEffectTargets { .. } => "ChooseEffectTargets",
         Decision::ChooseOptionalCost { .. } => "ChooseOptionalCost",
         Decision::Discard { .. } => "Discard",
+        Decision::AssignCombatDamage { .. } => "AssignCombatDamage",
         Decision::DeclareAttackers { .. } => "DeclareAttackers",
         Decision::DeclareBlockers { .. } => "DeclareBlockers",
         Decision::OrderTriggers { .. } => "OrderTriggers",

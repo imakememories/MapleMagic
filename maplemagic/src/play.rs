@@ -246,6 +246,7 @@ pub fn describe(g: &Game, i: usize, viewer: PlayerId) -> String {
         Kind::Foretell => format!("Foretell {}", secret(src)),
         Kind::Mulligan => if f.arg == 1 { "Mulligan".into() } else { "Keep this hand".into() },
         Kind::Bottom => format!("Put {} on the bottom of the library", secret(src)),
+        Kind::AssignDamage => format!("{src}: assign {} damage to {tgt}", f.role),
     }
 }
 

@@ -221,6 +221,7 @@ fn run_goldfish(state: &mut GameState) -> RunResult {
         | Decision::ChooseCopy { .. }
             | Decision::ChooseCascadeCast { .. }
         | Decision::ChooseLegendToKeep { .. }
+        | Decision::AssignCombatDamage { .. }
         | Decision::ChooseCastFromExile { .. }
         | Decision::ChooseCastMethod { .. }
         | Decision::ChooseColor { .. }

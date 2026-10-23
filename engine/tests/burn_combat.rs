@@ -74,6 +74,7 @@ fn kind_of(d: &Decision) -> Kind {
         | Decision::ChooseCopy { .. }
         | Decision::ChooseCascadeCast { .. }
         | Decision::ChooseLegendToKeep { .. }
+        | Decision::AssignCombatDamage { .. }
         | Decision::ChooseCastFromExile { .. }
         | Decision::ChooseCastMethod { .. }
         | Decision::ChooseColor { .. }
@@ -339,6 +340,7 @@ fn run_combat_game(state: &mut GameState) -> (Vec<Kind>, u32, Vec<CommittedEvent
         | Decision::ChooseCopy { .. }
         | Decision::ChooseCascadeCast { .. }
         | Decision::ChooseLegendToKeep { .. }
+        | Decision::AssignCombatDamage { .. }
         | Decision::ChooseCastFromExile { .. }
         | Decision::ChooseCastMethod { .. }
         | Decision::ChooseColor { .. }

@@ -74,6 +74,9 @@ pub struct EngineState {
     /// triggers, so players get priority and another cleanup step follows.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cleanup_again: bool,
+    /// The active player is dividing combat damage (510.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_combat_damage: Option<PendingCombatDamage>,
     /// Bumped by `reset_priority` alone -- i.e. only on the two rules-level
     /// "everyone's pass streak clears and the active player is asked
     /// first" boundaries (a new step via `advance_step`, or a stack
@@ -1123,6 +1126,13 @@ pub struct CombatState {
     /// This is reference-AI behavior, not a rules-level ordering guarantee;
     /// a future surface can carry an explicit damage allocation instead.
     pub blocked_by: Vec<(ObjectId, Vec<ObjectId>)>,
+    /// Combat damage steps begun this combat: 1 after a first-strike step,
+    /// which another follows (510.4); 2 after the last.
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub damage_steps: u8,
+    /// Creatures with first or double strike as the first-strike step began.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub first_strikers: Vec<ObjectId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1331,6 +1341,16 @@ pub enum Decision {
         player: PlayerId,
         pending: Vec<PendingTrigger>,
     },
+    /// 510.1c, 702.19b: how much of `attacker`'s combat damage `recipient`
+    /// gets, one recipient at a time in blocking order (the player last,
+    /// with trample). Amounts that can't change the game are offered once;
+    /// a recipient with one possible amount isn't asked.
+    AssignCombatDamage {
+        player: PlayerId,
+        attacker: ObjectId,
+        recipient: Target,
+        options: Vec<u16>,
+    },
     GameOver {
         winner: Option<PlayerId>,
     },
@@ -1420,6 +1440,8 @@ pub enum Action {
     /// base cost, `false` declines.
     ChooseKicker(bool),
     Discard(Vec<ObjectId>),
+    /// Answers `Decision::AssignCombatDamage` with one of its amounts.
+    AssignCombatDamage(u16),
     DeclareAttackers(Vec<ObjectId>),
     /// (blocker, attacker) pairs. A blocker may appear at most once; an
     /// attacker may appear multiple times (gang-blocked).
@@ -6663,6 +6685,13 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
             continue;
         }
 
+        if state.engine.pending_combat_damage.is_some() {
+            if let Some(d) = combat_damage_decision(state) {
+                return d;
+            }
+            // The damage was dealt: start over (game over, SBAs, triggers).
+            continue;
+        }
         if let Some(d) = drain_pending_discard_or_decide(state) {
             return d;
         }
@@ -6966,6 +6995,10 @@ pub fn advance_until_decision(state: &mut GameState) -> Decision {
             } else if cleanup_again {
                 // 514.3a: a new cleanup step.
                 run_step_entry_action(state, Step::Cleanup);
+                reset_priority(state);
+            } else if state.step == Step::CombatDamage && state.engine.combat.damage_steps == 1 {
+                // 510.4: the second combat damage step.
+                run_step_entry_action(state, Step::CombatDamage);
                 reset_priority(state);
             } else {
                 advance_step(state);
@@ -11475,7 +11508,7 @@ fn run_step_entry_action(state: &mut GameState, step: Step) {
             collect_and_queue_triggers(state);
         }
         Step::CombatDamage => {
-            deal_combat_damage(state);
+            begin_combat_damage_step(state);
         }
         Step::End => {
             state.river_blocks.clear();
@@ -11990,115 +12023,276 @@ pub fn has_effective_subtype(state: &GameState, id: ObjectId, subtype: card_def:
         || subtypes_added_this_turn(state, id).any(|added| added == subtype)
 }
 
+/// 510.4: who deals damage in this combat damage step. After a first-strike
+/// step, the second one is for creatures that had neither first nor double
+/// strike as the first began, and for those with double strike now.
 fn participates_in_wave(state: &GameState, id: ObjectId, first_strike_wave: bool) -> bool {
-    let has_fs = has_effective_keyword(state, id, Keywords::FIRST_STRIKE);
-    let has_ds = has_effective_keyword(state, id, Keywords::DOUBLE_STRIKE);
+    let first_strikers = &state.engine.combat.first_strikers;
     if first_strike_wave {
-        has_fs || has_ds
+        first_strikers.contains(&id)
     } else {
-        !has_fs || has_ds
+        !first_strikers.contains(&id) || has_effective_keyword(state, id, Keywords::DOUBLE_STRIKE)
     }
 }
 
-fn combat_has_first_or_double_strike(state: &GameState) -> bool {
-    let all_combatants = state.engine.combat.attackers.iter().copied().chain(
-        state
-            .engine
-            .combat
-            .blocked_by
+fn combatants(state: &GameState) -> impl Iterator<Item = ObjectId> + '_ {
+    let combat = &state.engine.combat;
+    combat.attackers.iter().copied().chain(combat.blocked_by.iter().flat_map(|(_, bs)| bs.iter().copied()))
+}
+
+/// How one blocked attacker's combat damage may be divided (510.1c, 702.19b).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DamageSplit {
+    pub attacker: ObjectId,
+    pub power: u16,
+    /// The blockers in declaration order, then the player with trample.
+    pub recipients: Vec<Target>,
+    /// Lethal damage for each blocker: toughness minus marked damage, or 1
+    /// with deathtouch (702.19b, 702.2c).
+    pub lethal: Vec<u16>,
+    /// Blockers that react to the amount they are dealt (Screaming Nemesis),
+    /// for which damage past lethal still matters.
+    pub sensitive: Vec<bool>,
+    /// Every split that can change the game, one amount per recipient.
+    /// Damage past lethal on a blocker that isn't sensitive is the same
+    /// outcome as lethal, so it isn't offered twice.
+    pub outcomes: Vec<Vec<u16>>,
+}
+
+impl DamageSplit {
+    fn new(state: &GameState, attacker: ObjectId, power: i32, blockers: &[ObjectId], trample: bool) -> Self {
+        let power = u16::try_from(power).unwrap_or(u16::MAX);
+        let deathtouch = has_effective_keyword(state, attacker, Keywords::DEATHTOUCH);
+        let lethal: Vec<u16> = blockers
             .iter()
-            .flat_map(|(_, bs)| bs.iter().copied()),
-    );
-    all_combatants.into_iter().any(|id| {
-        has_effective_keyword(state, id, Keywords::FIRST_STRIKE)
-            || has_effective_keyword(state, id, Keywords::DOUBLE_STRIKE)
-    })
-}
+            .map(|&b| {
+                let left = (effective_toughness(state, b) - state.objects.get(b).damage as i32).max(0);
+                let left = if deathtouch { left.min(1) } else { left };
+                u16::try_from(left).unwrap_or(u16::MAX)
+            })
+            .collect();
+        let sensitive: Vec<bool> = blockers
+            .iter()
+            .map(|&b| {
+                trigger::triggers_for(state.objects.get(b).card_def)
+                    .iter()
+                    .any(|t| t.condition == trigger::TriggerCondition::IsDealtDamage)
+            })
+            .collect();
+        let mut recipients: Vec<Target> = blockers.iter().map(|&b| Target::Object(b)).collect();
+        if trample {
+            recipients.push(Target::Player(state.objects.get(attacker).controller.opponent()));
+        }
+        let outcomes = damage_outcomes(power, &lethal, &sensitive, trample);
+        DamageSplit { attacker, power, recipients, lethal, sensitive, outcomes }
+    }
 
-/// 510: all combat damage is dealt in one simultaneous batch, via
-/// `event::propose_and_commit_batch` -- unless first/double strike is in
-/// play, in which case there are two such batches (510.5), with an SBA
-/// check between them so a first-strike kill actually removes its victim
-/// before the normal wave. No creature in this increment's pool has
-/// either keyword, so `combat_has_first_or_double_strike` is always
-/// false here and this always takes the single-wave path; the branch
-/// exists so the next increment that adds a first-strike creature only
-/// needs to flip a keyword bit, not restructure this function.
-fn deal_combat_damage(state: &mut GameState) {
-    if combat_has_first_or_double_strike(state) {
-        combat_damage_wave(state, true);
-        trigger::sba_fixed_point(state);
-        combat_damage_wave(state, false);
-    } else {
-        combat_damage_wave(state, false);
+    /// The amounts the next recipient may get after `chosen`.
+    fn options(&self, chosen: &[u16]) -> Vec<u16> {
+        let mut options: Vec<u16> = self
+            .outcomes
+            .iter()
+            .filter(|o| o.starts_with(chosen))
+            .map(|o| o[chosen.len()])
+            .collect();
+        options.sort_unstable();
+        options.dedup();
+        options
+    }
+
+    /// The damage each recipient is assigned for `outcome`: what is left
+    /// over goes to the first blocker already at lethal that isn't sensitive.
+    fn realize(&self, outcome: &[u16]) -> Vec<(Target, i32)> {
+        let mut amounts: Vec<i32> = outcome.iter().map(|&a| i32::from(a)).collect();
+        let rest = i32::from(self.power) - amounts.iter().sum::<i32>();
+        if rest > 0 {
+            let absorber = (0..self.lethal.len())
+                .find(|&i| !self.sensitive[i] && outcome[i] == self.lethal[i])
+                .expect("an outcome with damage left over has a blocker to take it");
+            amounts[absorber] += rest;
+        }
+        self.recipients.iter().copied().zip(amounts).collect()
     }
 }
 
-/// 510.1c: "an attacking creature that's been removed from combat... doesn't
-/// assign combat damage." A creature is removed from combat the instant it
-/// leaves the battlefield (undefined-but-implied by 506.4, made explicit by
-/// 510.1c's own wording) -- most commonly here, a creature killed by a
-/// burn spell (Lava Dart, Lightning Bolt, ...) cast during the priority
-/// window `apply_declare_blockers`/`finalize_activation`/etc already
-/// grants before the actual `Step::CombatDamage` entry action runs
-/// (`deal_combat_damage`). Root-caused against
-/// `game_20260713_002204_0027.txt` decision 304: the attacking player
-/// Lava-Darted their own just-declared (unblocked) attacker dead in
-/// response, well before combat damage -- the reference correctly deals
-/// zero combat damage from it (it's simply not there anymore by the time
-/// the damage step runs), but this function used to compute `effective_
-/// power`/assign damage purely from `EngineState::combat`'s *snapshot* of
-/// who was attacking/blocking when blocks were declared, never rechecking
-/// whether each participant was still actually on the battlefield by
-/// damage time.
-fn is_still_in_combat(state: &GameState, id: ObjectId) -> bool {
-    state.objects.get(id).zone == Zone::Battlefield
+/// Every distinct division of `power` among blockers with `lethal` damage
+/// (and the player last, with trample).
+fn damage_outcomes(power: u16, lethal: &[u16], sensitive: &[bool], trample: bool) -> Vec<Vec<u16>> {
+    let k = lethal.len();
+    let top: Vec<u16> = (0..k).map(|i| if sensitive[i] { power } else { lethal[i].min(power) }).collect();
+    let mut out = Vec::new();
+    let mut d = vec![0u16; k];
+    loop {
+        let sum: u32 = d.iter().map(|&a| u32::from(a)).sum();
+        if sum <= u32::from(power) {
+            let rest = power - sum as u16;
+            let absorber = (0..k).any(|i| !sensitive[i] && d[i] == lethal[i]);
+            if trample {
+                let all_lethal = d.iter().zip(lethal).all(|(&a, &l)| a >= l);
+                for p in 0..=(if all_lethal { rest } else { 0 }) {
+                    if p == rest || absorber {
+                        let mut o = d.clone();
+                        o.push(p);
+                        out.push(o);
+                    }
+                }
+            } else if rest == 0 || absorber {
+                out.push(d.clone());
+            }
+        }
+        let Some(i) = (0..k).find(|&i| d[i] < top[i]) else {
+            break;
+        };
+        d[i] += 1;
+        d[..i].iter_mut().for_each(|a| *a = 0);
+    }
+    out
 }
 
-fn combat_damage_wave(state: &mut GameState, first_strike_wave: bool) {
-    let attackers = state.engine.combat.attackers.clone();
-    let blocked_by = state.engine.combat.blocked_by.clone();
-    let mut events = Vec::new();
+/// A pending combat damage assignment: the attackers whose damage the
+/// active player still divides, then the step's damage.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PendingCombatDamage {
+    pub first_strike_wave: bool,
+    pub assigned: Vec<(ObjectId, Vec<(Target, i32)>)>,
+    pub splits: Vec<DamageSplit>,
+    /// Amounts chosen so far for `splits[0]`, one per recipient.
+    pub chosen: Vec<u16>,
+}
 
-    for &attacker in &attackers {
-        if !is_still_in_combat(state, attacker)
-            || !participates_in_wave(state, attacker, first_strike_wave)
-        {
+/// 510.1, 510.4: a combat damage step. With a first or double striker in
+/// combat as it begins, only they deal damage and a second step follows.
+fn begin_combat_damage_step(state: &mut GameState) {
+    let first_strike_wave = state.engine.combat.damage_steps == 0 && combat_has_first_or_double_strike(state);
+    if first_strike_wave {
+        let strikers: Vec<ObjectId> = combatants(state)
+            .filter(|&id| {
+                has_effective_keyword(state, id, Keywords::FIRST_STRIKE)
+                    || has_effective_keyword(state, id, Keywords::DOUBLE_STRIKE)
+            })
+            .collect();
+        state.engine.combat.first_strikers = strikers;
+        state.engine.combat.damage_steps = 1;
+    } else {
+        state.engine.combat.damage_steps = 2;
+    }
+    let mut assigned = Vec::new();
+    let mut splits = Vec::new();
+    for attacker in state.engine.combat.attackers.clone() {
+        if !is_still_in_combat(state, attacker) || !participates_in_wave(state, attacker, first_strike_wave) {
             continue;
         }
         let power = effective_power(state, attacker);
         if power <= 0 {
             continue;
         }
-        if let Some((_, blockers)) = blocked_by.iter().find(|(a, _)| *a == attacker) {
-            assign_attacker_damage_to_blockers(state, attacker, power, blockers, &mut events);
+        let defender = Target::Player(state.objects.get(attacker).controller.opponent());
+        let Some((_, blockers)) = state.engine.combat.blocked_by.iter().find(|(a, _)| *a == attacker) else {
+            assigned.push((attacker, vec![(defender, power)]));
+            continue;
+        };
+        let blockers: Vec<ObjectId> = blockers.iter().copied().filter(|&b| is_still_in_combat(state, b)).collect();
+        let trample = has_effective_keyword(state, attacker, Keywords::TRAMPLE);
+        if blockers.is_empty() {
+            // 702.19d; without trample a blocked creature with no blockers deals none (510.1c).
+            if trample {
+                assigned.push((attacker, vec![(defender, power)]));
+            }
+            continue;
+        }
+        let split = DamageSplit::new(state, attacker, power, &blockers, trample);
+        if split.outcomes.len() == 1 {
+            assigned.push((attacker, split.realize(&split.outcomes[0])));
         } else {
-            let defender = state.objects.get(attacker).controller.opponent();
-            events.push(ProposedEvent::combat_damage(
-                attacker,
-                Target::Player(defender),
-                power,
-            ));
+            splits.push(split);
         }
     }
-    for (attacker, blockers) in &blocked_by {
-        for &blocker in blockers {
-            if !is_still_in_combat(state, blocker)
-                || !participates_in_wave(state, blocker, first_strike_wave)
-            {
+    if splits.is_empty() {
+        deal_combat_damage_wave(state, first_strike_wave, assigned);
+    } else {
+        state.engine.pending_combat_damage =
+            Some(PendingCombatDamage { first_strike_wave, assigned, splits, chosen: Vec::new() });
+    }
+}
+
+/// The next combat damage choice, filling in recipients with one possible
+/// amount; deals the step's damage once every split is chosen.
+fn combat_damage_decision(state: &mut GameState) -> Option<Decision> {
+    loop {
+        let pending = state.engine.pending_combat_damage.as_mut()?;
+        let split = &pending.splits[0];
+        if pending.chosen.len() == split.recipients.len() {
+            let parts = split.realize(&pending.chosen);
+            pending.assigned.push((split.attacker, parts));
+            pending.splits.remove(0);
+            pending.chosen.clear();
+            if pending.splits.is_empty() {
+                let done = state.engine.pending_combat_damage.take().expect("checked above");
+                deal_combat_damage_wave(state, done.first_strike_wave, done.assigned);
+                return None;
+            }
+            continue;
+        }
+        let options = split.options(&pending.chosen);
+        if options.len() == 1 {
+            pending.chosen.push(options[0]);
+            continue;
+        }
+        let (attacker, recipient) = (split.attacker, split.recipients[pending.chosen.len()]);
+        return Some(Decision::AssignCombatDamage {
+            player: state.objects.get(attacker).controller,
+            attacker,
+            recipient,
+            options,
+        });
+    }
+}
+
+fn apply_assign_combat_damage(state: &mut GameState, amount: u16) -> Result<(), String> {
+    let pending = state.engine.pending_combat_damage.as_mut().ok_or("no combat damage assignment is pending")?;
+    let options = pending.splits[0].options(&pending.chosen);
+    if !options.contains(&amount) {
+        return Err(format!("{amount} is not one of the damage amounts {options:?}"));
+    }
+    pending.chosen.push(amount);
+    Ok(())
+}
+
+/// Both combat damage steps at once, choosing nothing: for unit tests whose
+/// blocks leave no choice.
+#[cfg(test)]
+fn deal_combat_damage(state: &mut GameState) {
+    begin_combat_damage_step(state);
+    if state.engine.combat.damage_steps == 1 {
+        begin_combat_damage_step(state);
+    }
+}
+
+/// 510.2: the step's combat damage is dealt at once: the attackers' assigned
+/// damage, and each blocker's to the attacker it blocks (510.1d).
+fn deal_combat_damage_wave(state: &mut GameState, first_strike_wave: bool, assigned: Vec<(ObjectId, Vec<(Target, i32)>)>) {
+    let mut events = Vec::new();
+    for (attacker, parts) in assigned {
+        for (target, amount) in parts {
+            if amount > 0 {
+                events.push(ProposedEvent::combat_damage(attacker, target, amount));
+            }
+        }
+    }
+    for (attacker, blockers) in state.engine.combat.blocked_by.clone() {
+        if !is_still_in_combat(state, attacker) {
+            continue;
+        }
+        for blocker in blockers {
+            if !is_still_in_combat(state, blocker) || !participates_in_wave(state, blocker, first_strike_wave) {
                 continue;
             }
             let power = effective_power(state, blocker);
             if power > 0 {
-                events.push(ProposedEvent::combat_damage(
-                    blocker,
-                    Target::Object(*attacker),
-                    power,
-                ));
+                events.push(ProposedEvent::combat_damage(blocker, Target::Object(attacker), power));
             }
         }
     }
-
     let event_start = state.engine.event_log.len();
     event::propose_and_commit_batch(state, events);
     let combat_player_damage = state.engine.event_log[event_start..]
@@ -12167,6 +12361,44 @@ fn combat_damage_wave(state: &mut GameState, first_strike_wave: bool) {
     collect_and_queue_triggers(state);
 }
 
+fn combat_has_first_or_double_strike(state: &GameState) -> bool {
+    let all_combatants = state.engine.combat.attackers.iter().copied().chain(
+        state
+            .engine
+            .combat
+            .blocked_by
+            .iter()
+            .flat_map(|(_, bs)| bs.iter().copied()),
+    );
+    all_combatants.into_iter().any(|id| {
+        has_effective_keyword(state, id, Keywords::FIRST_STRIKE)
+            || has_effective_keyword(state, id, Keywords::DOUBLE_STRIKE)
+    })
+}
+
+
+/// 510.1c: "an attacking creature that's been removed from combat... doesn't
+/// assign combat damage." A creature is removed from combat the instant it
+/// leaves the battlefield (undefined-but-implied by 506.4, made explicit by
+/// 510.1c's own wording) -- most commonly here, a creature killed by a
+/// burn spell (Lava Dart, Lightning Bolt, ...) cast during the priority
+/// window `apply_declare_blockers`/`finalize_activation`/etc already
+/// grants before the actual `Step::CombatDamage` entry action runs
+/// (`deal_combat_damage`). Root-caused against
+/// `game_20260713_002204_0027.txt` decision 304: the attacking player
+/// Lava-Darted their own just-declared (unblocked) attacker dead in
+/// response, well before combat damage -- the reference correctly deals
+/// zero combat damage from it (it's simply not there anymore by the time
+/// the damage step runs), but this function used to compute `effective_
+/// power`/assign damage purely from `EngineState::combat`'s *snapshot* of
+/// who was attacking/blocking when blocks were declared, never rechecking
+/// whether each participant was still actually on the battlefield by
+/// damage time.
+fn is_still_in_combat(state: &GameState, id: ObjectId) -> bool {
+    state.objects.get(id).zone == Zone::Battlefield
+}
+
+
 /// Resolves one definition-owned ninjutsu effect. The returned attacker was
 /// paid before this ability reached the stack. Resolution still requires the
 /// same live post-blockers combat, and only the exact revealed hand
@@ -12218,58 +12450,6 @@ pub(crate) fn put_ninjutsu_source_onto_battlefield_attacking(
     Ok(())
 }
 
-/// 510.1c, no-trample simplification: lethal damage (toughness minus
-/// damage already marked) goes to each blocker in `blockers`' order
-/// except the last, which absorbs whatever power remains (there being no
-/// trample in this pool, that's the only legal recipient once the
-/// attacker itself has already been assigned to blockers rather than the
-/// player). A single blocker just gets it all directly. The order itself
-/// is `CombatState::blocked_by`'s fixed deterministic sort -- see that
-/// field's doc for why this is a stubbed decision point, not a real one,
-/// this increment.
-fn assign_attacker_damage_to_blockers(
-    state: &GameState,
-    attacker: ObjectId,
-    power: i32,
-    blockers: &[ObjectId],
-    events: &mut Vec<ProposedEvent>,
-) {
-    if blockers.len() == 1 {
-        events.push(ProposedEvent::combat_damage(
-            attacker,
-            Target::Object(blockers[0]),
-            power,
-        ));
-        return;
-    }
-    let mut remaining = power;
-    for (i, &blocker) in blockers.iter().enumerate() {
-        if remaining <= 0 {
-            break;
-        }
-        let is_last = i + 1 == blockers.len();
-        let assign = if is_last {
-            remaining
-        } else {
-            let lethal_needed = if has_effective_keyword(state, attacker, Keywords::DEATHTOUCH) {
-                1
-            } else {
-                let toughness = effective_toughness(state, blocker);
-                let already = state.objects.get(blocker).damage as i32;
-                (toughness - already).max(0)
-            };
-            remaining.min(lethal_needed)
-        };
-        if assign > 0 {
-            events.push(ProposedEvent::combat_damage(
-                attacker,
-                Target::Object(blocker),
-                assign,
-            ));
-        }
-        remaining -= assign;
-    }
-}
 
 // ---------------------------------------------------------------- actions
 
@@ -12528,6 +12708,9 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
                 "action does not match pending activation stage {stage:?}"
             ));
         }
+    }
+    if state.engine.pending_combat_damage.is_some() && !matches!(&action, Action::AssignCombatDamage(_)) {
+        return Err("only AssignCombatDamage may answer a pending combat damage assignment".to_string());
     }
     if let Some(pending_discard) = state.engine.pending_discard.as_ref() {
         validate_pending_discard_binding(state, pending_discard).map_err(|(_, message)| message)?;
@@ -12873,6 +13056,7 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
             Ok(())
         }
         Action::Discard(chosen) => apply_discard_action(state, chosen),
+        Action::AssignCombatDamage(amount) => apply_assign_combat_damage(state, amount),
         Action::DeclareAttackers(attackers) => apply_declare_attackers(state, attackers),
         Action::DeclareBlockers(blocks) => apply_declare_blockers(state, blocks),
         Action::OrderTriggers(perm) => apply_order_triggers(state, perm),
@@ -16905,7 +17089,7 @@ mod tests {
     }
 
     #[test]
-    fn declare_blockers_preserves_sequential_pick_order_for_damage_assignment() {
+    fn a_double_blocked_attacker_divides_its_damage_as_its_controller_chooses() {
         let mut state = empty_game();
         let raider = put_on_battlefield(&mut state, PlayerId::P0, "Goblin Tomb Raider");
         put_on_battlefield(&mut state, PlayerId::P0, "Great Furnace");
@@ -16930,19 +17114,20 @@ mod tests {
             state.engine.combat.blocked_by,
             vec![(raider, vec![samurai, epicure])]
         );
-        deal_combat_damage(&mut state);
-
-        assert_eq!(
-            state.objects.get(epicure).zone,
-            Zone::Battlefield,
-            "Tomb Raider's 2 damage is all assigned to the first 2-toughness blocker"
-        );
-        assert!(
-            !state.players[PlayerId::P1.index()]
-                .battlefield
-                .contains(&samurai),
-            "the first blocker takes lethal damage and the token ceases to exist"
-        );
+        // 510.1c: the attacking player divides the damage as they choose.
+        begin_combat_damage_step(&mut state);
+        match combat_damage_decision(&mut state) {
+            Some(Decision::AssignCombatDamage { player, recipient, options, .. }) => {
+                assert_eq!((player, recipient), (PlayerId::P0, Target::Object(samurai)));
+                assert_eq!(options, vec![0, 1, 2]);
+            }
+            other => panic!("expected a damage assignment, got {other:?}"),
+        }
+        step(&mut state, Action::AssignCombatDamage(0)).unwrap();
+        assert!(combat_damage_decision(&mut state).is_none(), "the Epicure's share is what is left");
+        trigger::sba_fixed_point(&mut state);
+        assert!(state.players[PlayerId::P1.index()].battlefield.contains(&samurai), "no damage to the Samurai");
+        assert_eq!(state.objects.get(epicure).zone, Zone::Graveyard);
     }
 
     // ================================================================
