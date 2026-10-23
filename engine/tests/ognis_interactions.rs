@@ -680,3 +680,30 @@ fn the_caster_gets_priority_first_with_its_trigger_on_the_stack() {
     assert_eq!(state.stack.len(), 2, "the Bolt and the trigger");
     assert!(matches!(next, Decision::CastSpellOrPass { player: P1, .. }), "{next:?}");
 }
+
+#[test]
+fn the_legend_rule_choice_includes_a_legend_with_lethal_damage() {
+    // 704.3: lethal damage and the legend rule are checked together, so the
+    // player may keep the dying Laelia (losing both) or the other one.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    for keep_damaged in [false, true] {
+        let mut state = game();
+        let damaged = put(&mut state, P0, "Laelia, the Blade Reforged");
+        let other = put_in(&mut state, P0, "Laelia, the Blade Reforged", Zone::Hand);
+        let mountain = put_in(&mut state, P0, "Mountain", Zone::Hand);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        state.objects.get_mut(damaged).damage = 2;
+        propose_and_commit(&mut state, ProposedEvent::zone_change(other, Zone::Battlefield));
+        // A land drop runs the state-based action check.
+        engine::step(&mut state, Action::PlayLand(mountain)).unwrap();
+        let Decision::ChooseLegendToKeep { legends, .. } = engine::advance_until_decision(&mut state) else {
+            panic!("the legend rule asks first");
+        };
+        assert!(legends.contains(&damaged) && legends.contains(&other), "{legends:?}");
+        let keep = if keep_damaged { damaged } else { other };
+        engine::step(&mut state, Action::ChooseLegendToKeep(keep)).unwrap();
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        assert_eq!(zone(&state, damaged), Zone::Graveyard);
+        assert_eq!(zone(&state, other), if keep_damaged { Zone::Graveyard } else { Zone::Battlefield });
+    }
+}

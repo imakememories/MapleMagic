@@ -13042,11 +13042,14 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
             if !legends.contains(&keep) {
                 return Err(format!("{keep} isn't one of the legends to choose from"));
             }
-            let events = legends
-                .into_iter()
-                .filter(|&id| id != keep)
-                .map(|id| ProposedEvent::zone_change(id, Zone::Graveyard))
-                .collect();
+            // 704.3: with the deaths the state-based action check deferred.
+            let mut leaving: Vec<ObjectId> = legends.into_iter().filter(|&id| id != keep).collect();
+            for id in crate::trigger::dying_creatures(state) {
+                if !leaving.contains(&id) {
+                    leaving.push(id);
+                }
+            }
+            let events = leaving.into_iter().map(|id| ProposedEvent::zone_change(id, Zone::Graveyard)).collect();
             event::propose_and_commit_batch(state, events);
             collect_and_queue_triggers(state);
             Ok(())

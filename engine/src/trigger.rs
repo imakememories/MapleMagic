@@ -1780,6 +1780,28 @@ fn permanents_where(
     ids
 }
 
+/// 704.5g: creatures with toughness 0 or less, put into their owners'
+/// graveyards. 704.5h: creatures with lethal damage marked, destroyed.
+pub(crate) fn dying_creatures(state: &GameState) -> Vec<ObjectId> {
+    permanents_where(state, |id, obj| {
+        if !crate::engine::object_has_type(state, id, crate::card_def::CardType::Creature) {
+            return false;
+        }
+        let toughness = crate::engine::effective_toughness(state, id);
+        // 704.5g is a put-into-graveyard action and ignores
+        // indestructible. 704.5h destroys for lethal damage, so
+        // indestructible prevents only that branch.
+        toughness <= 0
+            || obj.damage > 0
+                && creature_dies_to_state_based_actions(
+                    toughness,
+                    obj.damage as i32,
+                    obj.v4.deathtouch_damage,
+                    crate::engine::has_effective_keyword(state, id, crate::card_def::Keywords::INDESTRUCTIBLE),
+                )
+    })
+}
+
 fn sba_fixed_point_with_protected_triggers(
     state: &mut GameState,
     protected_triggers: &[PendingTrigger],
@@ -1787,26 +1809,12 @@ fn sba_fixed_point_with_protected_triggers(
     loop {
         let mut changed = false;
 
-        // 704.5g: a creature with toughness 0 or less is put into its
-        // owner's graveyard. 704.5h: a creature with lethal damage marked
-        // is destroyed.
-        let dying = permanents_where(state, |id, obj| {
-            if !crate::engine::object_has_type(state, id, crate::card_def::CardType::Creature) {
-                return false;
-            }
-            let toughness = crate::engine::effective_toughness(state, id);
-            // 704.5g is a put-into-graveyard action and ignores
-            // indestructible. 704.5h destroys for lethal damage, so
-            // indestructible prevents only that branch.
-            toughness <= 0
-                || obj.damage > 0
-                    && creature_dies_to_state_based_actions(
-                        toughness,
-                        obj.damage as i32,
-                        obj.v4.deathtouch_damage,
-                        crate::engine::has_effective_keyword(state, id, crate::card_def::Keywords::INDESTRUCTIBLE),
-                    )
-        });
+        // 704.3: with the legend rule to apply, these wait for its choice and
+        // happen with it (`Action::ChooseLegendToKeep`).
+        let mut dying = dying_creatures(state);
+        if !dying.is_empty() && crate::statics::legend_rule_violation(state).is_some() {
+            dying.clear();
+        }
         for id in dying {
             crate::event::commit(
                 state,
