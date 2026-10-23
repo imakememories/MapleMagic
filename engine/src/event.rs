@@ -1253,6 +1253,7 @@ fn commit_zone_change(
     }
     if from_zone == Zone::Battlefield {
         crate::copy::leave_battlefield(state, id);
+        crate::engine::remove_from_combat(state, id);
     }
     remove_from_zone(state, owner, id, from_zone);
     state.forget_hand_object(id);

@@ -573,3 +573,18 @@ fn creature_type_overwrites_and_additions_apply_in_timestamp_order() {
     assert!(is(&state, goddric, Subtype::Dragon) && is(&state, goddric, Subtype::Villain));
     assert!(!is(&state, goddric, Subtype::Human));
 }
+
+#[test]
+fn an_attacker_that_leaves_and_returns_is_a_new_object_not_in_combat() {
+    // 400.7, 506.4: as when Chaos Warp reveals the attacker it shuffled away.
+    let mut state = game();
+    let dragon = put(&mut state, P0, "Goldspan Dragon");
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    engine::step(&mut state, Action::DeclareAttackers(vec![dragon])).unwrap();
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    bounce_through_graveyard(&mut state, dragon);
+    assert!(!state.engine.combat.attackers.contains(&dragon));
+    let life = state.players[1].life;
+    advance(&mut state, |s, _| s.step == Step::Main2);
+    assert_eq!(state.players[1].life, life);
+}

@@ -503,12 +503,18 @@ pub(crate) fn set_controller(state: &mut GameState, id: ObjectId, to: PlayerId) 
     let object = state.objects.get_mut(id);
     object.controller = to;
     object.summoning_sick = true;
+    remove_from_combat(state, id);
+}
+
+/// 506.4: `id` stops attacking or blocking. A blocked attacker stays blocked.
+pub(crate) fn remove_from_combat(state: &mut GameState, id: ObjectId) {
     let combat = &mut state.engine.combat;
     combat.attackers.retain(|&a| a != id);
     combat.blocked_by.retain(|(a, _)| *a != id);
     for (_, blockers) in combat.blocked_by.iter_mut() {
         blockers.retain(|&b| b != id);
     }
+    combat.first_strikers.retain(|&f| f != id);
 }
 
 /// Gains control of `id` for `player` until end of turn, untaps it, and gives
