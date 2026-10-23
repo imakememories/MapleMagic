@@ -469,3 +469,29 @@ fn goddrics_dragon_pump_doesnt_follow_a_dragon_to_a_new_object() {
     bounce_through_graveyard(&mut state, dragon);
     assert_eq!(mtg_kernel::engine::effective_power(&state, dragon), 4);
 }
+
+#[test]
+fn chaos_warp_on_a_token_reveals_the_top_card_not_the_token() {
+    // 111.1, 111.8: the token is shuffled in and ceases to exist; it isn't a
+    // card, so the revealed top card is a real one. Over seeds, the token is
+    // sometimes shuffled to the top.
+    for seed in 0..16u64 {
+        let mut state = game();
+        state.reseed_shuffles(seed);
+        lands(&mut state, P0, 3);
+        let treasure = put(&mut state, P1, "Treasure Token");
+        for i in 0..10 {
+            library_card(&mut state, P1, i, "Lightning Bolt");
+        }
+        cast(&mut state, "Chaos Warp", Some(Target::Object(treasure)), 0);
+        let lib = &state.players[1].library;
+        assert_eq!(lib.len(), 10, "seed {seed}: the token is gone");
+        for p in [P0, P1] {
+            assert!(
+                state.known_library_cards(p, P1).iter().any(|e| e.position == 0 && e.object == lib[0]),
+                "seed {seed}: the revealed card is known on top"
+            );
+        }
+    }
+}
+

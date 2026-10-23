@@ -10604,14 +10604,19 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 state.engine.halted = Some((crate::engine::UnsupportedMechanic::InvalidEffectContinuation, ctx.source));
                 return;
             }
-            let Some(&top) = state.players[owner.index()].library.first() else {
+            // A token shuffled in is still there until SBAs (111.8), but it
+            // isn't a card (111.1): the top card is the first real one.
+            let Some(position) =
+                state.players[owner.index()].library.iter().position(|&id| !state.objects.get(id).v4.is_token)
+            else {
                 return;
             };
+            let top = state.players[owner.index()].library[position];
             for observer in [PlayerId::P0, PlayerId::P1] {
-                state.reveal_library_top(observer, owner, 1);
+                state.reveal_library_position(observer, owner, position);
             }
             let o = state.objects.get(top);
-            if !o.v4.is_token && crate::card_def::CARD_DEFS[o.card_def as usize].is_permanent_card() {
+            if crate::card_def::CARD_DEFS[o.card_def as usize].is_permanent_card() {
                 put_library_card_onto_battlefield(state, ctx, top);
             }
         }
