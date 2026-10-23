@@ -181,6 +181,7 @@ fn lethal_damage_from_a_chosen_split_ends_the_game_at_once() {
     engine::step(&mut state, Action::AssignCombatDamage(1)).unwrap();
     assert!(matches!(engine::advance_until_decision(&mut state), Decision::GameOver { winner: Some(P0) }));
 }
+
 #[test]
 fn vision_of_love_doesnt_offer_sacrificing_an_artifact_call_for_aid_forbids() {
     // Depthshaker Titan is an artifact creature: taken by Call for Aid, it
@@ -196,6 +197,7 @@ fn vision_of_love_doesnt_offer_sacrificing_an_artifact_call_for_aid_forbids() {
     let offer = advance(&mut state, |_, d| matches!(d, Decision::ChooseOptionalCost { .. }));
     assert!(matches!(offer, Decision::ChooseOptionalCost { discard_payable: true, sacrifice_payable: false, .. }), "{offer:?}");
 }
+
 #[test]
 fn call_for_aids_sacrifice_ban_binds_only_its_caster() {
     // "You can't sacrifice those creatures": once its owner has it back (here
@@ -216,6 +218,7 @@ fn call_for_aids_sacrifice_ban_binds_only_its_caster() {
         _ => unreachable!(),
     }
 }
+
 #[test]
 fn creatures_stop_attacking_when_combat_ends() {
     // 511.3: Gornog's bonus for attacking Warriors is gone in main phase 2.
@@ -230,6 +233,7 @@ fn creatures_stop_attacking_when_combat_ends() {
     advance(&mut state, |s, _| s.step == Step::Main2);
     assert_eq!(mtg_kernel::engine::effective_power(&state, gornog), base);
 }
+
 #[test]
 fn depthshaker_titan_skips_a_target_that_is_no_longer_a_noncreature_artifact_you_control() {
     // 608.2b: Sol Ring changes control while the enters trigger waits; only
@@ -265,6 +269,7 @@ fn depthshaker_titan_skips_a_target_that_is_no_longer_a_noncreature_artifact_you
     assert!(engine::object_has_type(&state, treasure, CardType::Creature));
     assert!(!engine::object_has_type(&state, ring, CardType::Creature), "an illegal target is left alone");
 }
+
 #[test]
 fn a_copy_of_spider_punk_next_to_spider_punk_has_riot_twice() {
     // 702.136b: its own riot and the one Spider-Punk gives other Spiders.
@@ -294,6 +299,7 @@ fn a_copy_of_spider_punk_next_to_spider_punk_has_riot_twice() {
     assert_eq!(riots, 2);
     assert_eq!(state.objects.get(mirror).counters.plus1_plus1, 2);
 }
+
 #[test]
 fn the_opposing_hideous_taskmaster_taken_by_yours_has_annihilator_twice() {
     // 702.86b: its printed annihilator 1 and the one your Taskmaster gives it.
@@ -322,4 +328,3 @@ fn the_opposing_hideous_taskmaster_taken_by_yours_has_annihilator_twice() {
     assert_eq!(sacrifices, 2);
     assert_eq!(lands_of_1.iter().filter(|&&m| zone(&state, m) == Zone::Graveyard).count(), 2);
 }
-
