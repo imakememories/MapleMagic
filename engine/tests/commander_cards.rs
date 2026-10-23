@@ -1,144 +1,13 @@
 //! Commander deck cards, driven through the public decision API.
 
-use mtg_kernel::card_def::{card_id_by_name, CARD_DEFS};
+use mtg_kernel::card_def::CARD_DEFS;
 use mtg_kernel::engine::{self, effective_power, Action, Decision};
 use mtg_kernel::ids::{ObjectId, PlayerId};
 use mtg_kernel::mana::ManaColor;
-use mtg_kernel::state::{GameObject, GameState, ObjectStateV4, Step, Target, Zone};
+use mtg_kernel::state::{GameState, ObjectStateV4, Step, Target, Zone};
 
-const P0: PlayerId = PlayerId::P0;
-const P1: PlayerId = PlayerId::P1;
-
-fn id(name: &str) -> u16 {
-    card_id_by_name(name).unwrap_or_else(|| panic!("{name} not in CARD_DEFS"))
-}
-
-/// A Commander game in player 0's first main phase, both libraries ten Mountains.
-fn game() -> GameState {
-    let lib = vec![id("Mountain"); 10];
-    let mut state = GameState::new_commander_game_v1(
-        &lib,
-        &lib,
-        [id("Ognis, the Dragon's Lash"), id("Ognis, the Dragon's Lash")],
-        |c| CARD_DEFS[c as usize].name.to_string(),
-        1,
-        P0,
-    );
-    state.turn = 2;
-    state.step = Step::Main1;
-    state
-}
-
-fn put(state: &mut GameState, player: PlayerId, name: &str) -> ObjectId {
-    put_in(state, player, name, Zone::Battlefield)
-}
-
-fn put_in(state: &mut GameState, player: PlayerId, name: &str, zone: Zone) -> ObjectId {
-    let card_def = id(name);
-    let obj = state.objects.push(GameObject {
-        card_def,
-        name: name.to_string().into(),
-        owner: player,
-        controller: player,
-        zone,
-        tapped: false,
-        summoning_sick: false,
-        damage: 0,
-        counters: Default::default(),
-        v4: ObjectStateV4::from_card_def(card_def),
-        spell_copy_origin: None,
-        plotted_turn: None,
-        zone_change_count: 0,
-    });
-    match zone {
-        Zone::Battlefield => state.players[player.index()].battlefield.push(obj),
-        Zone::Hand => state.players[player.index()].hand.push(obj),
-        Zone::Graveyard => state.players[player.index()].graveyard.push(obj),
-        _ => panic!("put_in {zone:?}"),
-    }
-    obj
-}
-
-fn lands(state: &mut GameState, player: PlayerId, n: usize) {
-    for _ in 0..n {
-        put(state, player, "Mountain");
-    }
-}
-
-/// Casts `card` from player 0's hand with `target` for every target choice (no
-/// target where "up to" allows none) and `mode` for a modal spell or as X,
-/// then resolves the stack.
-fn cast(state: &mut GameState, card: &str, target: Option<Target>, mode: u8) -> ObjectId {
-    let spell = put_in(state, P0, card, Zone::Hand);
-    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
-    engine::step(state, Action::CastSpell(spell)).unwrap();
-    loop {
-        let d = engine::advance_until_decision(state);
-        let a = match &d {
-            Decision::ChooseTargets { legal_targets, can_finish, .. }
-            | Decision::ChooseEffectTargets { legal_targets, can_finish, .. } => match target {
-                Some(t) => {
-                    assert!(legal_targets.contains(&t), "{t:?} not in {legal_targets:?}");
-                    if matches!(d, Decision::ChooseEffectTargets { .. }) {
-                        Action::ChooseEffectTarget(t)
-                    } else {
-                        Action::ChooseTarget(t)
-                    }
-                }
-                // "Up to" targets: choose none.
-                None if *can_finish => Action::FinishEffectSelection,
-                None => panic!("a target is required"),
-            },
-            Decision::ChooseSpellMode { .. } => Action::ChooseSpellMode(mode),
-            Decision::ChooseEffectOption { .. } => Action::ChooseEffectOption(u16::from(mode)),
-            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
-            Decision::CastSpellOrPass { .. } => return spell,
-            other => panic!("unhandled decision {other:?}"),
-        };
-        engine::step(state, a).unwrap();
-    }
-}
-
-/// Passes to the next player's turn.
-fn end_turn(state: &mut GameState) {
-    let me = state.active_player;
-    advance(state, |s, _| s.active_player != me);
-}
-
-fn named(state: &GameState, player: PlayerId, name: &str) -> Vec<ObjectId> {
-    state.players[player.index()].battlefield.iter().copied().filter(|&o| CARD_DEFS[state.objects.get(o).card_def as usize].name == name).collect()
-}
-
-/// Passes priority (and declines blocks) until `stop` accepts a decision.
-fn advance(state: &mut GameState, mut stop: impl FnMut(&GameState, &Decision) -> bool) -> Decision {
-    for _ in 0..500 {
-        let d = engine::advance_until_decision(state);
-        if stop(state, &d) {
-            return d;
-        }
-        let a = match &d {
-            Decision::CastSpellOrPass { .. } => Action::Pass,
-            Decision::DeclareAttackers { .. } => Action::DeclareAttackers(vec![]),
-            Decision::DeclareBlockers { .. } => Action::DeclareBlockers(vec![]),
-            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
-            Decision::ChooseTargets { legal_targets, .. } => {
-                let opponent = Target::Player(P1);
-                Action::ChooseTarget(if legal_targets.contains(&opponent) { opponent } else { legal_targets[0] })
-            }
-            other => panic!("unhandled decision {other:?} (halt site {:?})", engine::last_halt_site()),
-        };
-        engine::step(state, a).unwrap();
-    }
-    panic!("no stop after 500 decisions");
-}
-
-/// Attacks with `attackers`, choosing the opponent for any targeted trigger,
-/// and passes until combat damage is done.
-fn attack_with(state: &mut GameState, attackers: Vec<ObjectId>) {
-    advance(state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
-    engine::step(state, Action::DeclareAttackers(attackers)).unwrap();
-    advance(state, |s, _| s.step == Step::EndCombat || s.step == Step::Main2);
-}
+mod common;
+use common::*;
 
 #[test]
 fn ognis_makes_a_tapped_treasure_for_each_hasty_attacker() {
@@ -272,22 +141,6 @@ fn identity_mana_makes_only_the_commanders_colors() {
     }
 }
 
-/// Declares `attackers`, answers trigger targets with `target`, and returns the
-/// blockers player 1 may use against each attacker.
-fn attack_and_see_blocks(state: &mut GameState, attackers: Vec<ObjectId>, target: Target) -> Vec<(ObjectId, Vec<ObjectId>)> {
-    advance(state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
-    engine::step(state, Action::DeclareAttackers(attackers)).unwrap();
-    loop {
-        match engine::advance_until_decision(state) {
-            Decision::ChooseTargets { .. } => engine::step(state, Action::ChooseTarget(target)).unwrap(),
-            Decision::CastSpellOrPass { .. } => engine::step(state, Action::Pass).unwrap(),
-            Decision::DeclareBlockers { legal_blockers, .. } => return legal_blockers,
-            Decision::OrderTriggers { pending, .. } => engine::step(state, Action::OrderTriggers((0..pending.len()).collect())).unwrap(),
-            other => panic!("unhandled decision {other:?}"),
-        }
-    }
-}
-
 #[test]
 fn spider_man_stops_a_blocker() {
     let mut state = game();
@@ -398,16 +251,6 @@ fn connecting_the_dots_exiles_unseen_cards_and_cashes_them_in() {
     }
 }
 
-/// Passes priority until the stack is empty.
-fn resolve(state: &mut GameState) {
-    while !state.stack.is_empty() {
-        match engine::advance_until_decision(state) {
-            Decision::CastSpellOrPass { .. } => engine::step(state, Action::Pass).unwrap(),
-            other => panic!("unhandled decision {other:?}"),
-        }
-    }
-}
-
 /// Damage on player 1's Myr Enforcer (4/4; `None` once dead) and on player 0's creature, and player 1's life.
 fn fireball_marks(state: &GameState, theirs: ObjectId, mine: ObjectId) -> (Option<u16>, u16, i32) {
     let o = state.objects.get(theirs);
@@ -492,14 +335,6 @@ fn mass_mutiny_and_molten_primordial_may_take_nothing() {
     assert_eq!(state.objects.get(mutiny).zone, Zone::Graveyard);
 }
 
-/// Advances to player 0's next upkeep, where it holds priority.
-fn to_my_next_upkeep(state: &mut GameState) {
-    let turn = state.turn;
-    advance(state, |s, d| {
-        s.turn != turn && s.active_player == P0 && s.step == Step::Upkeep && matches!(d, Decision::CastSpellOrPass { player: P0, .. })
-    });
-}
-
 #[test]
 fn knuckles_checks_thirty_artifacts_as_upkeep_begins_and_again_on_resolution() {
     // 603.4: with 29 artifacts as the upkeep begins, the ability doesn't trigger at all.
@@ -535,31 +370,6 @@ fn lokis_scepter_makes_the_stolen_creature_a_villain_until_end_of_turn() {
     end_turn(&mut state);
     assert!(!engine::has_effective_subtype(&state, theirs, Subtype::Villain));
     assert!(engine::has_effective_subtype(&state, theirs, Subtype::Goblin));
-}
-
-/// Activates `source`'s ability `index` and resolves it: `pick` for a target
-/// when legal, else the first option offered at each choice.
-fn activate(state: &mut GameState, source: ObjectId, index: u8, pick: Option<Target>) {
-    advance(state, |_, d| {
-        matches!(d, Decision::CastSpellOrPass { activatable_abilities, .. } if activatable_abilities.contains(&(source, index)))
-    });
-    engine::step(state, Action::ActivateAbility(source, index)).unwrap();
-    loop {
-        let a = match engine::advance_until_decision(state) {
-            Decision::ChooseTargets { legal_targets, .. } => {
-                Action::ChooseTarget(pick.filter(|t| legal_targets.contains(t)).unwrap_or(legal_targets[0]))
-            }
-            Decision::ChooseEffectTargets { legal_targets, .. } => {
-                Action::ChooseEffectTarget(pick.filter(|t| legal_targets.contains(t)).unwrap_or(legal_targets[0]))
-            }
-            Decision::ChooseCostTargets { candidates, .. } => Action::ChooseCostTarget(candidates[0]),
-            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
-            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
-            Decision::CastSpellOrPass { .. } => return,
-            other => panic!("unhandled decision {other:?}"),
-        };
-        engine::step(state, a).unwrap();
-    }
 }
 
 #[test]
@@ -719,10 +529,6 @@ fn goblin_war_drums_gives_only_your_creatures_menace() {
     engine::step(&mut state, Action::DeclareAttackers(vec![mine])).unwrap();
     advance(&mut state, |_, d| matches!(d, Decision::DeclareBlockers { .. }));
     assert!(engine::step(&mut state.clone(), Action::DeclareBlockers(vec![(theirs, mine)])).is_err(), "one blocker can't block it");
-}
-
-fn offered_ability(state: &mut GameState, source: ObjectId, index: u8) -> bool {
-    matches!(engine::advance_until_decision(state), Decision::CastSpellOrPass { activatable_abilities, .. } if activatable_abilities.contains(&(source, index)))
 }
 
 #[test]
@@ -940,17 +746,6 @@ fn urabrask_impulses_for_you_and_turns_the_opponents_draw_into_an_exile() {
     assert!(state.engine.exile_play_permissions.iter().any(|p| p.object == mine[0] && p.holder == P0));
 }
 
-/// Player 0 attacks with `attacker` and player 1 blocks with `blocker`;
-/// returns the attacker's damage and whether the blocker died.
-fn attack_into_block(state: &mut GameState, attacker: ObjectId, blocker: ObjectId) -> (u16, bool) {
-    advance(state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
-    engine::step(state, Action::DeclareAttackers(vec![attacker])).unwrap();
-    advance(state, |_, d| matches!(d, Decision::DeclareBlockers { .. }));
-    engine::step(state, Action::DeclareBlockers(vec![(blocker, attacker)])).unwrap();
-    advance(state, |s, _| s.step == Step::EndCombat);
-    (state.objects.get(attacker).damage, state.objects.get(blocker).zone == Zone::Graveyard)
-}
-
 #[test]
 fn dolmen_gate_prevents_combat_damage_to_your_attackers_unless_spider_punk_says_no() {
     let mut state = game();
@@ -965,25 +760,6 @@ fn dolmen_gate_prevents_combat_damage_to_your_attackers_unless_spider_punk_says_
     let attacker = put(&mut state, P0, "Myr Enforcer");
     let blocker = put(&mut state, P1, "Guttersnipe");
     assert_eq!(attack_into_block(&mut state, attacker, blocker), (2, true), "damage can't be prevented");
-}
-
-/// Casts `card` for player 0, answering riot with `haste`.
-fn cast_with_riot(state: &mut GameState, card: &str, haste: bool) -> ObjectId {
-    let spell = put_in(state, P0, card, Zone::Hand);
-    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
-    engine::step(state, Action::CastSpell(spell)).unwrap();
-    loop {
-        let a = match engine::advance_until_decision(state) {
-            Decision::ChooseRiot { creature, .. } => {
-                assert_eq!(creature, spell);
-                Action::ChooseRiot(haste)
-            }
-            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
-            Decision::CastSpellOrPass { .. } => return spell,
-            other => panic!("unhandled decision {other:?}"),
-        };
-        engine::step(state, a).unwrap();
-    }
 }
 
 #[test]
@@ -1237,52 +1013,6 @@ fn pyreswipe_hawk_grows_by_artifact_mana_value_and_takes_an_artifact_on_expend_s
     assert_eq!(state.objects.get(theirs).controller, P1, "only as long as you control the Hawk");
 }
 
-/// Activates `source`'s ability `index` and answers its decisions: targets
-/// from `targets` in order (none left finishes an "up to"), artifacts to tap
-/// from `tap` (then done), and effect options from `options` in order.
-fn activate_with(state: &mut GameState, source: ObjectId, index: u8, targets: &[Target], tap: &[ObjectId], options: &[u16]) {
-    advance(state, |_, d| {
-        matches!(d, Decision::CastSpellOrPass { activatable_abilities, .. } if activatable_abilities.contains(&(source, index)))
-    });
-    engine::step(state, Action::ActivateAbility(source, index)).unwrap();
-    let (mut targets, mut tap, mut options) = (targets.iter(), tap.iter(), options.iter());
-    loop {
-        let a = match engine::advance_until_decision(state) {
-            Decision::ChooseTargets { legal_targets, .. } => {
-                let t = *targets.next().expect("a target is required");
-                assert!(legal_targets.contains(&t), "{t:?} not in {legal_targets:?}");
-                Action::ChooseTarget(t)
-            }
-            Decision::ChooseEffectTargets { legal_targets, .. } => match targets.next() {
-                Some(&t) => {
-                    assert!(legal_targets.contains(&t), "{t:?} not in {legal_targets:?}");
-                    Action::ChooseEffectTarget(t)
-                }
-                None => Action::FinishEffectSelection,
-            },
-            Decision::ChooseCostTargets { candidates, can_finish, .. } => match tap.next() {
-                Some(&o) => {
-                    assert!(candidates.contains(&o), "{o:?} not in {candidates:?}");
-                    Action::ChooseCostTarget(o)
-                }
-                None => {
-                    assert!(can_finish);
-                    Action::FinishEffectSelection
-                }
-            },
-            Decision::ChooseEffectOption { .. } => Action::ChooseEffectOption(*options.next().expect("an option")),
-            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
-            Decision::CastSpellOrPass { .. } => return,
-            other => panic!("unhandled decision {other:?}"),
-        };
-        engine::step(state, a).unwrap();
-    }
-}
-
-fn zone(state: &GameState, o: ObjectId) -> Zone {
-    state.objects.get(o).zone
-}
-
 #[test]
 fn abstergo_makes_colorless_or_any_color_for_one() {
     let mut state = game();
@@ -1460,16 +1190,6 @@ fn secluded_starforge_pumps_only_as_a_sorcery_and_makes_robots() {
     let o = state.objects.get(robot);
     assert_eq!((effective_power(&state, robot), CARD_DEFS[o.card_def as usize].types.len()), (2, 2));
     assert!(o.v4.is_token);
-}
-
-/// Makes `player`'s library card at `position` (0 = top) a `name`.
-fn library_card(state: &mut GameState, player: PlayerId, position: usize, name: &str) -> ObjectId {
-    let o = state.players[player.index()].library[position];
-    let obj = state.objects.get_mut(o);
-    obj.card_def = id(name);
-    obj.name = name.to_string().into();
-    obj.v4 = ObjectStateV4::from_card_def(id(name));
-    o
 }
 
 /// Activates Fomori Vault, discarding the first card offered, and picks `pick` if asked.
@@ -1918,37 +1638,6 @@ fn vandalblast_destroys_one_artifact_or_overloaded_each_you_dont_control() {
     assert_eq!(zone(&state, spell), Zone::Graveyard, "not shuffled away like an Omen");
 }
 
-/// Casts graveyard card `card`, answering a method choice with `method`, a
-/// target with player 1, and a discard with the first offer (whose choices are
-/// returned).
-fn cast_from_graveyard(state: &mut GameState, card: ObjectId, method: Option<mtg_kernel::state::CastMethodV4>) -> Vec<ObjectId> {
-    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
-    engine::step(state, Action::CastSpell(card)).unwrap();
-    let mut discard_choices = Vec::new();
-    loop {
-        let a = match engine::advance_until_decision(state) {
-            Decision::ChooseCastMethod { methods, .. } => {
-                let m = method.expect("a method choice");
-                assert!(methods.contains(&m), "{methods:?}");
-                Action::ChooseCastMethod(m)
-            }
-            Decision::ChooseTargets { .. } => Action::ChooseTarget(Target::Player(P1)),
-            Decision::Discard { choices, .. } => {
-                discard_choices = choices.clone();
-                Action::Discard(vec![choices[0]])
-            }
-            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
-            Decision::CastSpellOrPass { .. } => return discard_choices,
-            other => panic!("unhandled decision {other:?}"),
-        };
-        engine::step(state, a).unwrap();
-    }
-}
-
-fn castable(state: &mut GameState, card: ObjectId) -> bool {
-    matches!(advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. })), Decision::CastSpellOrPass { castable_spells, .. } if castable_spells.contains(&card))
-}
-
 #[test]
 fn flashback_lets_a_graveyard_spell_be_cast_once_for_its_mana_cost_this_turn() {
     let mut state = game();
@@ -2178,66 +1867,6 @@ fn throne_of_eldraine_draws_with_three_mana_of_its_color_only() {
     lands(&mut state, P0, 2);
     activate_with(&mut state, throne, 0, &[], &[], &[]);
     assert_eq!(state.players[0].hand.len(), 2);
-}
-
-/// Answers decisions with `policy` until it returns `None`.
-fn drive(state: &mut GameState, mut policy: impl FnMut(&GameState, &Decision) -> Option<Action>) {
-    for _ in 0..500 {
-        let d = engine::advance_until_decision(state);
-        let Some(a) = policy(state, &d) else {
-            return;
-        };
-        engine::step(state, a.clone()).unwrap_or_else(|e| panic!("{a:?} at {d:?}: {e}"));
-    }
-    panic!("no stop after 500 decisions");
-}
-
-/// Player 0 bolts `bolt_target`; player 1 answers with `card` aimed at the
-/// Bolt, choosing additional-cost option `option`; each new target choice
-/// takes `pick`. Stops once the Bolt has left the stack.
-fn bolt_and_answer(state: &mut GameState, bolt_target: Target, card: &str, option: Option<u16>, pick: Target) -> ObjectId {
-    let bolt = put_in(state, P0, "Lightning Bolt", Zone::Hand);
-    let answer = put_in(state, P1, card, Zone::Hand);
-    drive(state, |s, d| match d {
-        _ if zone(s, bolt) != Zone::Hand && zone(s, bolt) != Zone::Stack => None,
-        Decision::CastSpellOrPass { player, castable_spells, .. } => Some(match *player {
-            P0 if castable_spells.contains(&bolt) => Action::CastSpell(bolt),
-            P1 if castable_spells.contains(&answer) => Action::CastSpell(answer),
-            _ => Action::Pass,
-        }),
-        Decision::ChooseTargets { player: P0, .. } => Some(Action::ChooseTarget(bolt_target)),
-        Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Object(bolt))),
-        Decision::ChooseEffectOption { .. } => Some(Action::ChooseEffectOption(option.expect("no additional-cost choice"))),
-        Decision::ChooseCastMode { .. } => Some(Action::ChooseCastMode(mtg_kernel::engine::CastMode::Alternative)),
-        Decision::ChooseEffectBoolean { .. } => Some(Action::ChooseEffectBoolean(true)),
-        Decision::ChooseEffectTargets { legal_targets, .. } => {
-            assert!(legal_targets.contains(&pick), "{pick:?} not in {legal_targets:?}");
-            Some(Action::ChooseEffectTarget(pick))
-        }
-        Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
-        other => panic!("unhandled decision {other:?}"),
-    });
-    answer
-}
-
-/// Whether player 1 is offered `card` in response to a Bolt at them.
-fn offered_against_bolt(state: &mut GameState, card: ObjectId) -> bool {
-    put_in(state, P0, "Lightning Bolt", Zone::Hand);
-    lands(state, P0, 1);
-    let mut offered = false;
-    drive(state, |s, d| match d {
-        Decision::CastSpellOrPass { player: P0, castable_spells, .. } if s.stack.is_empty() => {
-            castable_spells.first().map(|&b| Action::CastSpell(b))
-        }
-        Decision::CastSpellOrPass { player: P1, castable_spells, .. } => {
-            offered = castable_spells.contains(&card);
-            None
-        }
-        Decision::CastSpellOrPass { .. } => Some(Action::Pass),
-        Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Player(P1))),
-        other => panic!("unhandled decision {other:?}"),
-    });
-    offered
 }
 
 #[test]
@@ -2584,23 +2213,6 @@ fn raging_river_with_no_creatures_to_divide_lets_only_flyers_block() {
     let of_x: Vec<ObjectId> = legal_blockers.iter().find(|(o, _)| *o == x).map(|(_, v)| v.clone()).unwrap_or_default();
     assert_eq!(of_x, vec![seer]);
     assert!(!of_x.contains(&late));
-}
-
-/// Passes priority and combat; `answer` gives `Some(None)` to stop,
-/// `Some(Some(action))` to act, `None` for the default.
-fn pass_until(state: &mut GameState, mut answer: impl FnMut(&GameState, &Decision) -> Option<Option<Action>>) {
-    drive(state, |s, d| {
-        if let Some(a) = answer(s, d) {
-            return a;
-        }
-        Some(match d {
-            Decision::CastSpellOrPass { .. } => Action::Pass,
-            Decision::DeclareAttackers { .. } => Action::DeclareAttackers(vec![]),
-            Decision::DeclareBlockers { .. } => Action::DeclareBlockers(vec![]),
-            Decision::OrderTriggers { pending, .. } => Action::OrderTriggers((0..pending.len()).collect()),
-            other => panic!("unhandled decision {other:?}"),
-        })
-    });
 }
 
 /// A card put straight into exile, linked to `saga` as exiled with it.
