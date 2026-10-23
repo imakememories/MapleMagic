@@ -1276,3 +1276,57 @@ fn more_stolen_permanents_read_the_thief_as_you() {
     propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P0));
     assert!(engine::has_effective_subtype(&state, goddric, Subtype::Dragon));
 }
+
+#[test]
+fn the_legend_rule_applies_to_each_legend_in_the_deck_per_controller() {
+    // 704.5j: two with the same name under one player ask which to keep; one
+    // each is fine; stealing the opponent's makes it apply.
+    use mtg_kernel::card_def::{Supertype, CARD_DEFS};
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let legends: Vec<&str> = ognis_deck_spells()
+        .into_iter()
+        .filter(|&n| CARD_DEFS[id(n) as usize].supertypes.contains(&Supertype::Legendary))
+        .collect();
+    assert!(legends.len() >= 15, "{legends:?}");
+    for name in legends {
+        for (first_owner, keep_second) in [(P0, false), (P0, true), (P1, false)] {
+            let mut state = game();
+            let first = put(&mut state, first_owner, name);
+            let second = put_in(&mut state, P0, name, Zone::Hand);
+            propose_and_commit(&mut state, ProposedEvent::zone_change(second, Zone::Battlefield));
+            match engine::advance_until_decision(&mut state) {
+                Decision::ChooseLegendToKeep { player, legends } if first_owner == P0 => {
+                    assert_eq!((player, legends.len()), (P0, 2), "{name}");
+                    let keep = if keep_second { second } else { first };
+                    engine::step(&mut state, Action::ChooseLegendToKeep(keep)).unwrap();
+                    let gone = if keep_second { first } else { second };
+                    assert_eq!(zone(&state, keep), Zone::Battlefield, "{name}");
+                    assert_ne!(zone(&state, gone), Zone::Battlefield, "{name}");
+                }
+                Decision::ChooseLegendToKeep { .. } => panic!("{name}: one each is fine"),
+                _ if first_owner == P0 => panic!("{name}: no legend rule choice"),
+                _ => {}
+            }
+        }
+    }
+    // Stolen: Zealous Conscripts takes the opposing Laelia while player 0 has one.
+    let mut state = game();
+    put(&mut state, P0, "Laelia, the Blade Reforged");
+    let theirs = put(&mut state, P1, "Laelia, the Blade Reforged");
+    lands(&mut state, P0, 5);
+    let conscripts = put_in(&mut state, P0, "Zealous Conscripts", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(conscripts)).unwrap();
+    let mut asked = false;
+    drive(&mut state, |s, d| match d {
+        Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Object(theirs))),
+        Decision::ChooseLegendToKeep { .. } => {
+            asked = true;
+            Some(Action::ChooseLegendToKeep(theirs))
+        }
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => None,
+    });
+    assert!(asked, "the stolen Laelia makes two under player 0");
+    assert_eq!(named(&state, P0, "Laelia, the Blade Reforged"), vec![theirs]);
+}
