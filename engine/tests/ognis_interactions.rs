@@ -1876,3 +1876,50 @@ fn pyreswipe_hawk_gets_the_greatest_mana_value_among_your_artifacts() {
         assert_eq!(engine::effective_power(&state, hawk), base + x, "{artifact}");
     }
 }
+
+#[test]
+fn screaming_nemesis_returns_damage_from_each_kind_of_source() {
+    // Player 0's Delayed Blast Fireball (2), Dragonspark Reactor (1) and
+    // Smaug's attack trigger (2 Treasures) damage player 1's Nemesis, which
+    // deals as much to player 0.
+    for (source, damage) in [("Delayed Blast Fireball", 2), ("Dragonspark Reactor", 1), ("Smaug the Magnificent", 2)] {
+        let mut state = game();
+        let nemesis = put(&mut state, P1, "Screaming Nemesis");
+        let at_nemesis = |s: &GameState, d: &Decision| match d {
+            Decision::ChooseTargets { player: P1, .. } => Some(Action::ChooseTarget(Target::Player(P0))),
+            Decision::ChooseTargets { legal_targets, .. } if legal_targets.contains(&Target::Object(nemesis)) => {
+                Some(Action::ChooseTarget(Target::Object(nemesis)))
+            }
+            Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Player(P1))),
+            Decision::DeclareBlockers { .. } => Some(Action::DeclareBlockers(vec![])),
+            Decision::CastSpellOrPass { .. } if s.stack.is_empty() && matches!(s.step, Step::Main1 | Step::Main2) => None,
+            Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+            _ => first_choice(s, d),
+        };
+        match source {
+            "Delayed Blast Fireball" => {
+                lands(&mut state, P0, 3);
+                let fireball = put_in(&mut state, P0, source, Zone::Hand);
+                advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+                engine::step(&mut state, Action::CastSpell(fireball)).unwrap();
+            }
+            "Dragonspark Reactor" => {
+                let reactor = put(&mut state, P0, source);
+                state.objects.get_mut(reactor).counters.charge = 1;
+                lands(&mut state, P0, 4);
+                advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+                engine::step(&mut state, Action::ActivateAbility(reactor, 0)).unwrap();
+            }
+            _ => {
+                let smaug = put(&mut state, P0, source);
+                put(&mut state, P0, "Treasure Token");
+                put(&mut state, P0, "Treasure Token");
+                advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+                engine::step(&mut state, Action::DeclareAttackers(vec![smaug])).unwrap();
+            }
+        }
+        drive(&mut state, at_nemesis);
+        assert_eq!(state.objects.get(nemesis).damage, damage as u16, "{source}");
+        assert_eq!(40 - state.players[0].life, damage, "{source}");
+    }
+}
