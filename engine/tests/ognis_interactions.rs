@@ -1427,3 +1427,38 @@ fn redirect_lightning_answers_exactly_the_single_target_spells_and_deflecting_sw
         assert!(swat_offered, "{name}: Deflecting Swat");
     }
 }
+
+#[test]
+fn goldspan_dragon_makes_a_treasure_when_any_spell_targets_it_but_not_an_ability() {
+    // "Becomes the target of a spell": player 0's spells at player 1's
+    // Goldspan Dragon give player 1 a Treasure; Hylda's Crown's ability doesn't.
+    for (spell, mode) in [("Chaos Warp", 0u8), ("Wild Magic Surge", 0), ("Mass Mutiny", 0), ("Untimely Malfunction", 2)] {
+        let mut state = game();
+        let dragon = put(&mut state, P1, "Goldspan Dragon");
+        lands(&mut state, P0, 5);
+        let card = put_in(&mut state, P0, spell, Zone::Hand);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::CastSpell(card)).unwrap();
+        let mut aimed = false;
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseSpellMode { .. } => Some(Action::ChooseSpellMode(mode)),
+            Decision::ChooseTargets { .. } if !aimed => {
+                aimed = true;
+                Some(Action::ChooseTarget(Target::Object(dragon)))
+            }
+            Decision::ChooseTargets { .. } | Decision::ChooseEffectTargets { .. } => Some(Action::FinishEffectSelection),
+            Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+            _ => None,
+        });
+        assert!(aimed, "{spell}");
+        assert_eq!(named(&state, P1, "Treasure Token").len(), 1, "{spell}");
+    }
+    let mut state = game();
+    let dragon = put(&mut state, P1, "Goldspan Dragon");
+    let crown = put(&mut state, P0, "Hylda's Crown of Winter");
+    lands(&mut state, P0, 1);
+    activate(&mut state, crown, 0, Some(Target::Object(dragon)));
+    assert!(state.objects.get(dragon).tapped);
+    assert!(named(&state, P1, "Treasure Token").is_empty(), "an ability isn't a spell");
+}
