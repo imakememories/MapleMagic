@@ -2095,7 +2095,7 @@ fn triggers_from_events(
                         && matches!(def.condition, TriggerCondition::DealsCombatDamageToPlayer)
                     {
                         moon_circuit_hacker_combat_effect_for_entered_this_turn(
-                            obj.v4.entered_battlefield_turn == Some(state.turn),
+                            obj.v4.entered_battlefield_turn == Some(crate::face_down::turn_index(state)),
                         )
                     } else if let (TriggerCondition::DealsCombatDamageToPlayer, CommittedEvent::CombatDamageToPlayer { player, .. }, "Cavern-Hoard Dragon") =
                         (def.condition, ev, card.name)
@@ -2558,7 +2558,7 @@ fn trigger_matches(
             let live = state.objects.get(*attacker);
             *attacker_controller == controller
                 && live.zone_change_count == *source_zone_change_count
-                && (!entered_this_turn || live.v4.entered_battlefield_turn == Some(state.turn))
+                && (!entered_this_turn || live.v4.entered_battlefield_turn == Some(crate::face_down::turn_index(state)))
         }
         (
             TriggerCondition::OneOrMoreControlledCreaturesDealCombatDamageToPlayer,

@@ -838,6 +838,7 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
                 state.tokens_created_this_turn[t.controller.index()].saturating_add(1);
             let token_def = &crate::card_def::CARD_DEFS[t.token_def as usize];
             let name: crate::state::ObjectName = token_def.object_name.into();
+            let entered_turn = crate::face_down::turn_index(state);
             let object = state.objects.push(crate::state::GameObject {
                 card_def: t.token_def,
                 name,
@@ -860,7 +861,7 @@ pub fn commit(state: &mut GameState, event: ProposedEvent) {
                 counters: Default::default(),
                 v4: {
                     let mut v4 = crate::state::ObjectStateV4::from_card_def(t.token_def);
-                    v4.entered_battlefield_turn = Some(state.turn);
+                    v4.entered_battlefield_turn = Some(entered_turn);
                     // A token copy of a card is a token too.
                     v4.is_token = true;
                     v4
@@ -1280,7 +1281,7 @@ fn commit_zone_change(
         Zone::Stack => panic!("MoveObject to Stack is an engine action, not an effect leaf"),
     }
 
-    let turn = state.turn;
+    let turn = crate::face_down::turn_index(state);
     let enters_battlefield_tapped = to_zone == Zone::Battlefield
         && (force_battlefield_tapped || permanent_enters_battlefield_tapped(state, id, owner));
     {

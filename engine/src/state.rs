@@ -278,6 +278,7 @@ pub struct ObjectStateV4 {
     /// Sorted, unique `card_def::Subtype::stable_id()` values.
     pub effective_subtype_ids: SubtypeIds,
     pub chosen_color: Option<ManaColor>,
+    /// The turn (`face_down::turn_index`, not the round) it last entered the battlefield.
     pub entered_battlefield_turn: Option<u32>,
     /// Incarnation-local delayed effect. Control-changing effects must preserve
     /// this marker; only a zone change or the affected controller's next
@@ -2150,7 +2151,7 @@ impl GameState {
         self.transfer_library_knowledge_to_hand(player, 0, id);
         self.note_library_removal(player, 0);
         self.clear_object_relations(id);
-        let turn = self.turn;
+        let turn = crate::face_down::turn_index(self);
         let new_generation = {
             let object = self.objects.get_mut(id);
             object.zone = Zone::Hand;
@@ -3132,7 +3133,7 @@ impl GameState {
         ps.battlefield.push(id);
         self.forget_hand_object(id);
         self.clear_object_relations(id);
-        let turn = self.turn;
+        let turn = crate::face_down::turn_index(self);
         let enters_battlefield_tapped = crate::card_def::CARD_DEFS
             [self.objects.get(id).card_def as usize]
             .enters_battlefield_tapped;

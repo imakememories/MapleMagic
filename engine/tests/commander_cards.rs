@@ -159,7 +159,7 @@ fn whirlwind_triggers_once_and_only_for_creatures_that_entered_this_turn() {
         let whirl = put(&mut state, P0, "Whirlwind, Killer Cyclone");
         let veteran = put(&mut state, P0, "Captain Lannery Storm");
         if new_attacker {
-            state.objects.get_mut(whirl).v4.entered_battlefield_turn = Some(state.turn);
+            state.objects.get_mut(whirl).v4.entered_battlefield_turn = Some(mtg_kernel::face_down::turn_index(&state));
         }
         let wall = put(&mut state, P1, "Guttersnipe");
         let attackers = if new_attacker { vec![whirl, veteran] } else { vec![veteran] };

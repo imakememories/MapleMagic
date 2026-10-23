@@ -15497,7 +15497,7 @@ fn abort_cast(state: &mut GameState, pending: PendingCast, cast_method: CastMeth
     }
     state.forget_hand_object(pending.spell);
     state.clear_object_relations(pending.spell);
-    let turn = state.turn;
+    let turn = crate::face_down::turn_index(state);
     {
         let object = state.objects.get_mut(pending.spell);
         object.zone = to_zone;
@@ -15746,7 +15746,7 @@ fn move_to_stack(state: &mut GameState, id: ObjectId, from_zone: Zone) {
     }
     state.forget_hand_object(id);
     state.clear_object_relations(id);
-    let turn = state.turn;
+    let turn = crate::face_down::turn_index(state);
     let object = state.objects.get_mut(id);
     object.zone = Zone::Stack;
     object.plotted_turn = None;
