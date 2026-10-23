@@ -508,3 +508,68 @@ fn the_opposing_gornog_made_a_coward_loses_its_minotaur_type() {
         assert!(!engine::has_effective_subtype(&state, theirs, t), "{t:?}");
     }
 }
+
+#[test]
+fn creature_type_overwrites_and_additions_apply_in_timestamp_order() {
+    // 613.7: Gornog's Coward overwrites the creature types; Loki's Scepter's
+    // Villain is "in addition", so whichever is newer decides.
+    use mtg_kernel::card_def::Subtype;
+    use mtg_kernel::engine::{effective_subtype_ids, has_effective_subtype};
+    let is = |state: &GameState, o: ObjectId, t: Subtype| {
+        let has = has_effective_subtype(state, o, t);
+        assert_eq!(has, effective_subtype_ids(state, o).contains(&t.stable_id()), "{t:?}");
+        has
+    };
+
+    // Coward, then Villain: both.
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let gornog = put(&mut state, P0, "Gornog, the Red Reaper");
+    let theirs = put(&mut state, P1, "Guttersnipe");
+    attack_and_see_blocks(&mut state, vec![gornog], Target::Object(theirs));
+    advance(&mut state, |s, _| s.step == Step::Main2);
+    cast(&mut state, "Loki's Scepter", Some(Target::Object(theirs)), 0);
+    assert!(is(&state, theirs, Subtype::Coward) && is(&state, theirs, Subtype::Villain));
+    assert!(!is(&state, theirs, Subtype::Goblin));
+
+    // Villain, then Coward: Coward only. Player 1 Chaos Warps its Treasure
+    // at the beginning of combat and reveals Loki's Scepter, which makes its
+    // own creature a Villain.
+    let mut state = game();
+    let gornog = put(&mut state, P0, "Gornog, the Red Reaper");
+    let theirs = put(&mut state, P1, "Guttersnipe");
+    lands(&mut state, P1, 3);
+    let treasure = put(&mut state, P1, "Treasure Token");
+    for i in 0..10 {
+        library_card(&mut state, P1, i, "Loki's Scepter");
+    }
+    let warp = put_in(&mut state, P1, "Chaos Warp", Zone::Hand);
+    advance(&mut state, |s, d| s.step == Step::BeginCombat && matches!(d, Decision::CastSpellOrPass { player: P1, .. }));
+    engine::step(&mut state, Action::CastSpell(warp)).unwrap();
+    let mut picks = [Target::Object(treasure), Target::Object(theirs)].into_iter();
+    loop {
+        let a = match engine::advance_until_decision(&mut state) {
+            Decision::ChooseTargets { .. } => Action::ChooseTarget(picks.next().unwrap()),
+            Decision::CastSpellOrPass { .. } if !state.stack.is_empty() => Action::Pass,
+            Decision::CastSpellOrPass { .. } => break,
+            other => panic!("unhandled decision {other:?}"),
+        };
+        engine::step(&mut state, a).unwrap();
+    }
+    assert_eq!(picks.next(), None, "Loki's Scepter's trigger targeted");
+    assert!(is(&state, theirs, Subtype::Villain));
+    attack_and_see_blocks(&mut state, vec![gornog], Target::Object(theirs));
+    assert!(is(&state, theirs, Subtype::Coward));
+    assert!(!is(&state, theirs, Subtype::Villain) && !is(&state, theirs, Subtype::Goblin));
+
+    // A celebrating Goddric's static is older than Loki's Scepter's effect.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    lands(&mut state, P0, 3);
+    let goddric = put(&mut state, P0, "Goddric, Cloaked Reveler");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P0));
+    cast(&mut state, "Loki's Scepter", Some(Target::Object(goddric)), 0);
+    assert!(is(&state, goddric, Subtype::Dragon) && is(&state, goddric, Subtype::Villain));
+    assert!(!is(&state, goddric, Subtype::Human));
+}

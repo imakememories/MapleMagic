@@ -297,10 +297,11 @@ pub fn is_creature_type_id(id: u16) -> bool {
     CREATURE_TYPE_IDS.binary_search(&id).is_ok()
 }
 
-/// The creature type that replaces all of `id`'s creature types (layer 4):
-/// an effect with no duration (Coward, newest wins), else Goddric's static
-/// Dragon while celebrating.
-pub fn creature_type_override(state: &GameState, id: ObjectId) -> Option<Subtype> {
+/// The creature type that replaces all of `id`'s creature types (layer 4),
+/// with its effect's timestamp: an effect with no duration (Coward, newest
+/// wins), else Goddric's static Dragon while celebrating (`None`: a static
+/// is as old as its object, older than any effect on it).
+pub fn creature_type_override(state: &GameState, id: ObjectId) -> Option<(Subtype, Option<u64>)> {
     let o = state.objects.get(id);
     if o.zone != Zone::Battlefield {
         return None;
@@ -309,9 +310,9 @@ pub fn creature_type_override(state: &GameState, id: ObjectId) -> Option<Subtype
         .creature_type_overrides
         .iter()
         .rev()
-        .find(|(l, _)| l.object == id && l.zone_change_count == o.zone_change_count)
-        .map(|e| e.1)
-        .or_else(|| celebrating_goddric(state, id).then_some(Subtype::Dragon))
+        .find(|(l, _, _)| l.object == id && l.zone_change_count == o.zone_change_count)
+        .map(|&(_, subtype, timestamp)| (subtype, Some(timestamp)))
+        .or_else(|| celebrating_goddric(state, id).then_some((Subtype::Dragon, None)))
 }
 
 /// Gornog: "Attacking Warriors you control get +X/+0, where X is the number

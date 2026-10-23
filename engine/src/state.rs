@@ -1658,9 +1658,10 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "no_celebration")]
     pub nonland_permanents_entered: [u8; 2],
     /// Creatures whose creature types an effect replaced, with no duration
-    /// (Gornog's "becomes a Coward"): until they leave the battlefield.
+    /// (Gornog's "becomes a Coward"): until they leave the battlefield. The
+    /// last field is the effect's timestamp.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub creature_type_overrides: Vec<(ObjectLinkV4, crate::card_def::Subtype)>,
+    pub creature_type_overrides: Vec<(ObjectLinkV4, crate::card_def::Subtype, u64)>,
     /// See [`TypeAdditionV1`]; end-of-turn ones are dropped at cleanup.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_additions: Vec<TypeAdditionV1>,

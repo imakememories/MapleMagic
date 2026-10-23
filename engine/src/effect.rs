@@ -11793,7 +11793,8 @@ pub fn execute(op: &EffectOp, ctx: &ExecCtx, state: &mut GameState) {
                 let o = state.objects.get(id);
                 if o.zone == Zone::Battlefield {
                     let link = crate::state::ObjectLinkV4 { object: id, zone_change_count: o.zone_change_count };
-                    state.creature_type_overrides.push((link, crate::card_def::Subtype::Coward));
+                    let timestamp = crate::engine::next_timestamp(state);
+                    state.creature_type_overrides.push((link, crate::card_def::Subtype::Coward, timestamp));
                 }
             }
         }

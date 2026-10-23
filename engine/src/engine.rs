@@ -414,6 +414,7 @@ pub enum UntilEndOfTurnEffect {
         object_id: ObjectId,
         object_zone_change_count: u32,
         subtype: card_def::Subtype,
+        timestamp: u64,
     },
     /// Control of one battlefield incarnation changed until end of turn;
     /// cleanup returns it to `previous_controller`.
@@ -429,25 +430,34 @@ pub(crate) fn add_subtype_until_end_of_turn(state: &mut GameState, id: ObjectId,
     let object = state.objects.get(id);
     if object.zone == Zone::Battlefield {
         let object_zone_change_count = object.zone_change_count;
+        let timestamp = next_timestamp(state);
         state.engine.until_end_of_turn.push(UntilEndOfTurnEffect::AddSubtype {
             object_id: id,
             object_zone_change_count,
             subtype,
+            timestamp,
         });
     }
 }
 
-/// Subtypes effects give `id` until end of turn.
-fn subtypes_added_this_turn(state: &GameState, id: ObjectId) -> impl Iterator<Item = card_def::Subtype> + '_ {
+/// Subtypes effects give `id` until end of turn, with their timestamps.
+fn subtypes_added_this_turn(state: &GameState, id: ObjectId) -> impl Iterator<Item = (card_def::Subtype, u64)> + '_ {
     let generation = state.objects.get(id).zone_change_count;
     state.engine.until_end_of_turn.iter().filter_map(move |e| match *e {
-        UntilEndOfTurnEffect::AddSubtype { object_id, object_zone_change_count, subtype }
+        UntilEndOfTurnEffect::AddSubtype { object_id, object_zone_change_count, subtype, timestamp }
             if object_id == id && object_zone_change_count == generation =>
         {
-            Some(subtype)
+            Some((subtype, timestamp))
         }
         _ => None,
     })
+}
+
+/// 613.7: an added creature type survives an overwrite of the creature types
+/// only if its effect is newer. `since` is the overwrite's timestamp; `None`
+/// is Goddric's static, older than any effect on that object.
+fn added_after_overwrite(subtype: card_def::Subtype, timestamp: u64, overwrite: Option<(card_def::Subtype, Option<u64>)>) -> bool {
+    !subtype.is_creature_type() || overwrite.is_none_or(|(_, since)| since.is_none_or(|since| timestamp > since))
 }
 
 /// Whether `id`'s controller may sacrifice it: not if an effect forbids that
@@ -11997,11 +12007,16 @@ pub fn effective_subtype_ids(state: &GameState, id: ObjectId) -> Vec<u16> {
         attached_equipment_profiles(state, id)
             .filter_map(|(_, equipment)| equipment.add_subtype.map(|subtype| subtype.stable_id())),
     );
-    subtype_ids.extend(subtypes_added_this_turn(state, id).map(card_def::Subtype::stable_id));
-    if let Some(only) = crate::statics::creature_type_override(state, id) {
+    let overwrite = crate::statics::creature_type_override(state, id);
+    if let Some((only, _)) = overwrite {
         subtype_ids.retain(|&s| !crate::statics::is_creature_type_id(s));
         subtype_ids.push(only.stable_id());
     }
+    subtype_ids.extend(
+        subtypes_added_this_turn(state, id)
+            .filter(|&(s, t)| added_after_overwrite(s, t, overwrite))
+            .map(|(s, _)| s.stable_id()),
+    );
     subtype_ids.sort_unstable();
     subtype_ids.dedup();
     subtype_ids
@@ -12012,8 +12027,10 @@ pub fn has_effective_subtype(state: &GameState, id: ObjectId, subtype: card_def:
         return false;
     };
     if subtype.is_creature_type() {
-        if let Some(only) = crate::statics::creature_type_override(state, id) {
-            return subtype == only;
+        if let Some((only, since)) = crate::statics::creature_type_override(state, id) {
+            return subtype == only
+                || subtypes_added_this_turn(state, id)
+                    .any(|(s, t)| s == subtype && added_after_overwrite(s, t, Some((only, since))));
         }
     }
     if object
@@ -12026,7 +12043,7 @@ pub fn has_effective_subtype(state: &GameState, id: ObjectId, subtype: card_def:
     }
     attached_equipment_profiles(state, id)
         .any(|(_, equipment)| equipment.add_subtype == Some(subtype))
-        || subtypes_added_this_turn(state, id).any(|added| added == subtype)
+        || subtypes_added_this_turn(state, id).any(|(added, _)| added == subtype)
 }
 
 /// 510.4: who deals damage in this combat damage step. After a first-strike
