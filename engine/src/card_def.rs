@@ -251,6 +251,17 @@ pub enum Subtype {
     Coward,
 }
 
+/// `Subtype::CREATURE_TYPES` by discriminant.
+const CREATURE_TYPE_TABLE: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut i = 0;
+    while i < Subtype::CREATURE_TYPES.len() {
+        table[Subtype::CREATURE_TYPES[i] as usize] = true;
+        i += 1;
+    }
+    table
+};
+
 impl Subtype {
     /// Every creature type represented by the checked-in pool, in stable-id
     /// order. Case-distinct registry spellings remain separate because their
@@ -357,65 +368,7 @@ impl Subtype {
     /// materializes every true entry into an object's effective subtype set;
     /// card, artifact, enchantment, and land subtypes remain excluded.
     pub const fn is_creature_type(self) -> bool {
-        matches!(
-            self,
-            Subtype::Ape
-                | Subtype::BirdAllCaps
-                | Subtype::Bird
-                | Subtype::Cat
-                | Subtype::Detective
-                | Subtype::Dragon
-                | Subtype::Drone
-                | Subtype::Druid
-                | Subtype::Eldrazi
-                | Subtype::Elf
-                | Subtype::FaerieAllCaps
-                | Subtype::Faerie
-                | Subtype::Goblin
-                | Subtype::HumanAllCaps
-                | Subtype::Hero
-                | Subtype::Human
-                | Subtype::Hydra
-                | Subtype::Knight
-                | Subtype::Monk
-                | Subtype::Moonfolk
-                | Subtype::Monkey
-                | Subtype::Myr
-                | Subtype::NinjaAllCaps
-                | Subtype::Ninja
-                | Subtype::Ouphe
-                | Subtype::Pirate
-                | Subtype::RogueAllCaps
-                | Subtype::Ranger
-                | Subtype::Rat
-                | Subtype::Rogue
-                | Subtype::Serpent
-                | Subtype::Samurai
-                | Subtype::Shaman
-                | Subtype::Shapeshifter
-                | Subtype::Soldier
-                | Subtype::Spider
-                | Subtype::Spirit
-                | Subtype::Toy
-                | Subtype::Treefolk
-                | Subtype::Vampire
-                | Subtype::WizardAllCaps
-                | Subtype::Warrior
-                | Subtype::Wizard
-                | Subtype::Zombie
-                | Subtype::Illusion
-                | Subtype::Dryad
-                | Subtype::Plant
-                | Subtype::Wall
-                | Subtype::Troll
-                | Subtype::Elemental
-                | Subtype::Giant
-                | Subtype::Spawn
-                | Subtype::Phyrexian
-                | Subtype::Horror
-                | Subtype::Nightmare
-                | Subtype::Coward
-        )
+        CREATURE_TYPE_TABLE[self as usize]
     }
 }
 

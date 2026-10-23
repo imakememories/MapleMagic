@@ -494,3 +494,17 @@ fn chaos_warp_on_a_token_reveals_the_top_card_not_the_token() {
         }
     }
 }
+
+#[test]
+fn the_opposing_gornog_made_a_coward_loses_its_minotaur_type() {
+    use mtg_kernel::card_def::Subtype;
+    assert!(Subtype::CREATURE_TYPES.iter().all(|t| t.is_creature_type()));
+    let mut state = game();
+    let gornog = put(&mut state, P0, "Gornog, the Red Reaper");
+    let theirs = put(&mut state, P1, "Gornog, the Red Reaper");
+    attack_and_see_blocks(&mut state, vec![gornog], Target::Object(theirs));
+    assert!(engine::has_effective_subtype(&state, theirs, Subtype::Coward));
+    for t in [Subtype::Minotaur, Subtype::Warrior] {
+        assert!(!engine::has_effective_subtype(&state, theirs, t), "{t:?}");
+    }
+}
