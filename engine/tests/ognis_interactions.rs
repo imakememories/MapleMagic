@@ -1948,3 +1948,56 @@ fn hobgoblin_grows_for_the_card_each_discard_source_discards() {
         assert_eq!(engine::effective_power(&state, hobgoblin), base + 2, "{source}");
     }
 }
+
+#[test]
+fn jurin_must_be_blocked_only_by_a_creature_able_to_block_it() {
+    // 509.1c: player 1's one creature must block Jurin unless a restriction
+    // makes it unable: Untimely Malfunction's third mode, Headliner
+    // Scarlett, Spider-Man's attack trigger, or Goblin War Drums' menace.
+    for restriction in ["none", "Untimely Malfunction", "Headliner Scarlett", "Spider-Man, Web-Spinner", "Goblin War Drums"] {
+        let mut state = game();
+        let jurin = put(&mut state, P0, "Jurin, Leading the Charge");
+        let theirs = put(&mut state, P1, "Zealous Conscripts");
+        let mut attackers = vec![jurin];
+        match restriction {
+            "Untimely Malfunction" => {
+                lands(&mut state, P0, 2);
+                let spell = put_in(&mut state, P0, restriction, Zone::Hand);
+                advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+                engine::step(&mut state, Action::CastSpell(spell)).unwrap();
+                let mut picked = false;
+                drive(&mut state, |s, d| match d {
+                    Decision::ChooseSpellMode { .. } => Some(Action::ChooseSpellMode(2)),
+                    Decision::ChooseTargets { .. } if !picked => {
+                        picked = true;
+                        Some(Action::ChooseTarget(Target::Object(theirs)))
+                    }
+                    Decision::ChooseTargets { .. } => Some(Action::FinishEffectSelection),
+                    Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+                    _ => None,
+                });
+            }
+            "Headliner Scarlett" => {
+                lands(&mut state, P0, 4);
+                cast(&mut state, restriction, Some(Target::Player(P1)), 0);
+            }
+            "Spider-Man, Web-Spinner" => attackers.push(put(&mut state, P0, restriction)),
+            "Goblin War Drums" => {
+                put(&mut state, P0, restriction);
+            }
+            _ => {}
+        }
+        advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+        engine::step(&mut state, Action::DeclareAttackers(attackers)).unwrap();
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseTargets { legal_targets, .. } if legal_targets.contains(&Target::Object(theirs)) => {
+                Some(Action::ChooseTarget(Target::Object(theirs)))
+            }
+            Decision::DeclareBlockers { .. } => None,
+            Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        let unblocked = engine::step(&mut state, Action::DeclareBlockers(vec![]));
+        assert_eq!(unblocked.is_ok(), restriction != "none", "{restriction}: {unblocked:?}");
+    }
+}
