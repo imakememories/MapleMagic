@@ -1663,3 +1663,50 @@ fn flashback_lets_each_instant_and_sorcery_be_cast_from_the_graveyard_for_its_ma
         }
     }
 }
+
+#[test]
+fn gornog_pumps_each_attacking_warrior_in_the_deck_and_no_other_attacker() {
+    // "Attacking Warriors you control get +X/+0, where X is the number of
+    // Cowards your opponents control": one Coward, made by Gornog's trigger.
+    use mtg_kernel::card_def::{Subtype, CARD_DEFS};
+    let creatures: Vec<&str> = ognis_deck_spells()
+        .into_iter()
+        .filter(|&n| CARD_DEFS[id(n) as usize].types.contains(&mtg_kernel::card_def::CardType::Creature))
+        .filter(|&n| !["Gornog, the Red Reaper", "Shivan Devastator", "Gogo, Mysterious Mime"].contains(&n))
+        .collect();
+    let mut warriors = 0;
+    for name in creatures {
+        let mut state = game();
+        let gornog = put(&mut state, P0, "Gornog, the Red Reaper");
+        let attacker = put(&mut state, P0, name);
+        let theirs = put(&mut state, P1, "Guttersnipe");
+        put(&mut state, P1, "Mountain");
+        let warrior = engine::has_effective_subtype(&state, attacker, Subtype::Warrior);
+        warriors += usize::from(warrior);
+        let base = engine::effective_power(&state, attacker);
+        let mut declared = false;
+        drive(&mut state, |s, d| match d {
+            Decision::DeclareAttackers { .. } if !declared => {
+                declared = true;
+                Some(Action::DeclareAttackers(vec![gornog, attacker]))
+            }
+            Decision::ChooseTargets { legal_targets, .. } if legal_targets.contains(&Target::Object(theirs)) => {
+                Some(Action::ChooseTarget(Target::Object(theirs)))
+            }
+            // Annihilator: player 1 sacrifices the Mountain.
+            Decision::ChooseEffectTargets { legal_targets, .. } if legal_targets.contains(&Target::Object(theirs)) => {
+                Some(Action::ChooseEffectTarget(*legal_targets.iter().find(|&&t| t != Target::Object(theirs)).unwrap()))
+            }
+            Decision::DeclareBlockers { .. } => None,
+            Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        assert!(engine::has_effective_subtype(&state, theirs, Subtype::Coward), "{name}");
+        // Other attack pumps: the Titan's melee, Jurin's +1 for player 1's one
+        // creature, Laelia's counter for the card she exiles.
+        let pumped = engine::effective_power(&state, attacker) - base;
+        let others = i32::from(["Depthshaker Titan", "Jurin, Leading the Charge", "Laelia, the Blade Reforged"].contains(&name));
+        assert_eq!(pumped - others, i32::from(warrior), "{name}");
+    }
+    assert_eq!(warriors, 4, "Ognis, Knuckles, Laelia, Zealous Conscripts");
+}
