@@ -1524,3 +1524,67 @@ fn a_permanent_put_onto_the_battlefield_by_chaos_warp_isnt_cast_but_enters() {
         }
     }
 }
+
+#[test]
+fn slickshot_show_off_grows_for_each_noncreature_spell_in_the_deck_and_no_creature_spell() {
+    // Artifacts and enchantments count; Summon: Esper Valigarmanda is a
+    // creature spell, so it doesn't.
+    use mtg_kernel::card_def::{CardType, CARD_DEFS};
+    let skipped = ["Deflecting Swat", "Redirect Lightning", "Slickshot Show-Off"];
+    for name in ognis_deck_spells().into_iter().filter(|n| !skipped.contains(n)) {
+        let noncreature = !CARD_DEFS[id(name) as usize].types.contains(&CardType::Creature);
+        let mut state = game();
+        let show_off = put(&mut state, P0, "Slickshot Show-Off");
+        let base = engine::effective_power(&state, show_off);
+        let ring = put(&mut state, P1, "Sol Ring");
+        put(&mut state, P1, "Guttersnipe");
+        put_in(&mut state, P0, "Lightning Bolt", Zone::Graveyard);
+        put_in(&mut state, P0, "Mountain", Zone::Hand);
+        lands(&mut state, P0, 9);
+        let spell = if name == "Ognis, the Dragon's Lash" {
+            state.command.iter().copied().find(|&o| state.objects.get(o).owner == P0).unwrap()
+        } else {
+            put_in(&mut state, P0, name, Zone::Hand)
+        };
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::CastSpell(spell)).unwrap();
+        let mut power_after_cast = None;
+        drive(&mut state, |s, d| match d {
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => {
+                // The cast trigger resolves first; read the power before the
+                // spell itself resolves.
+                if power_after_cast.is_none() && s.stack.len() == 1 && zone(s, spell) == Zone::Stack {
+                    power_after_cast = Some(engine::effective_power(s, show_off));
+                }
+                Some(Action::Pass)
+            }
+            Decision::ChooseTargets { legal_targets, .. } | Decision::ChooseEffectTargets { legal_targets, .. } => {
+                let theirs = |t: &&Target| match **t {
+                    Target::Player(p) => p == P1,
+                    Target::Object(o) => o == ring || (s.objects.get(o).controller == P1 && s.objects.get(o).zone == Zone::Battlefield),
+                    _ => false,
+                };
+                match legal_targets.iter().find(theirs).or(legal_targets.first()) {
+                    Some(&t) if matches!(d, Decision::ChooseTargets { .. }) => Some(Action::ChooseTarget(t)),
+                    Some(&t) => Some(Action::ChooseEffectTarget(t)),
+                    None => Some(Action::FinishEffectSelection),
+                }
+            }
+            Decision::ChooseSpellMode { .. } => Some(Action::ChooseSpellMode(0)),
+            Decision::ChooseEffectOption { .. } => Some(Action::ChooseEffectOption(0)),
+            Decision::ChooseCastMode { .. } => Some(Action::ChooseCastMode(engine::CastMode::Normal)),
+            Decision::ChooseCostTargets { candidates, .. } => Some(Action::ChooseCostTarget(candidates[0])),
+            Decision::Discard { choices, .. } => Some(Action::Discard(vec![choices[0]])),
+            Decision::ChooseRiot { .. } => Some(Action::ChooseRiot(true)),
+            Decision::ChooseCopy { .. } => Some(Action::ChooseCopy(None)),
+            Decision::ChooseColor { .. } => Some(Action::ChooseColor(ManaColor::R)),
+            Decision::ChooseEffectBoolean { .. } => Some(Action::ChooseEffectBoolean(false)),
+            Decision::ChooseOptionalCost { .. } => Some(Action::ChooseOptionalCost(engine::OptionalCostChoice::Decline)),
+            Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
+            Decision::CastSpellOrPass { .. } => None,
+            other => panic!("{name}: unhandled decision {other:?}"),
+        });
+        let power = power_after_cast.unwrap_or_else(|| engine::effective_power(&state, show_off));
+        assert_eq!(power, base + if noncreature { 2 } else { 0 }, "{name}");
+    }
+}
