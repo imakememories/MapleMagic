@@ -2297,3 +2297,92 @@ fn a_celebrating_goddric_keeps_its_4_4_and_flying_through_other_type_changes() {
     assert!(engine::has_effective_subtype(&state, goddric, Subtype::Dragon));
     assert_eq!((engine::effective_power(&state, goddric), engine::effective_toughness(&state, goddric)), (4, 4));
 }
+
+#[test]
+fn chain_gogo_becoming_a_copy_with_coin_of_mastery_out_gets_no_counters() {
+    // K13: becoming a copy isn't entering the battlefield (614.12).
+    let mut state = game();
+    put(&mut state, P0, "Coin of Mastery");
+    let gogo = put(&mut state, P0, "Gogo, Mysterious Mime");
+    let dragon = put(&mut state, P0, "Goldspan Dragon");
+    advance(&mut state, |s, d| s.step == Step::BeginCombat && matches!(d, Decision::ChooseTargets { .. }));
+    engine::step(&mut state, Action::ChooseTarget(Target::Object(dragon))).unwrap();
+    drive(&mut state, |s, d| match d {
+        Decision::ChooseEffectOption { option_count: 2, .. } => Some(Action::ChooseEffectOption(1)),
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => None,
+    });
+    assert_eq!(state.objects.get(gogo).card_def, id("Goldspan Dragon"));
+    assert_eq!(state.objects.get(gogo).counters.plus1_plus1, 0);
+}
+
+#[test]
+fn chain_a_cursed_mirror_copying_an_animated_sol_ring_is_a_plain_sol_ring() {
+    // K8, 707.2: Depthshaker Titan's animation isn't copiable, so the Mirror
+    // copies Sol Ring's printed values: a noncreature artifact.
+    use mtg_kernel::card_def::CardType;
+    let mut state = game();
+    put(&mut state, P0, "Depthshaker Titan");
+    let ring = put(&mut state, P0, "Sol Ring");
+    animate(&mut state, ring);
+    lands(&mut state, P0, 3);
+    let mirror = put_in(&mut state, P0, "Cursed Mirror", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(mirror)).unwrap();
+    let mut offered = Vec::new();
+    drive(&mut state, |s, d| match d {
+        Decision::ChooseCopy { creatures, .. } => {
+            offered = creatures.clone();
+            Some(Action::ChooseCopy(Some(ring)))
+        }
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => first_choice(s, d),
+    });
+    assert!(offered.contains(&ring), "an animated Sol Ring is a creature to copy");
+    assert_eq!(state.objects.get(mirror).card_def, id("Sol Ring"));
+    assert!(!engine::object_has_type(&state, mirror, CardType::Creature));
+}
+
+#[test]
+fn chain_chaos_warp_on_a_stolen_permanent_returns_it_to_its_owner() {
+    // K2: Zealous Conscripts takes player 1's Laelia; Chaos Warp shuffles her
+    // into player 1's library and reveals its top card: a Zealous Conscripts
+    // enters under player 1 with player 1's enters trigger, or Laelia herself
+    // comes back under player 1. Over seeds, both happen.
+    let mut outcomes = [false; 2];
+    for seed in 0..64u64 {
+        let mut state = game();
+        state.reseed_shuffles(seed);
+        let laelia = put(&mut state, P1, "Laelia, the Blade Reforged");
+        for i in 0..10 {
+            library_card(&mut state, P1, i, "Zealous Conscripts");
+        }
+        lands(&mut state, P0, 8);
+        cast(&mut state, "Zealous Conscripts", Some(Target::Object(laelia)), 0);
+        let warp = put_in(&mut state, P0, "Chaos Warp", Zone::Hand);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::CastSpell(warp)).unwrap();
+        let mut trigger_controller = None;
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseTargets { player: P0, .. } if zone(s, warp) == Zone::Stack && s.stack.len() == 1 => {
+                Some(Action::ChooseTarget(Target::Object(laelia)))
+            }
+            Decision::ChooseTargets { player, legal_targets, .. } => {
+                trigger_controller = Some(*player);
+                Some(Action::ChooseTarget(legal_targets[0]))
+            }
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        if zone(&state, laelia) == Zone::Battlefield {
+            outcomes[0] = true;
+            assert_eq!(state.objects.get(laelia).controller, P1, "seed {seed}");
+        } else {
+            outcomes[1] = true;
+            assert!(state.players[1].library.contains(&laelia), "seed {seed}: into its owner's library");
+            assert_eq!(named(&state, P1, "Zealous Conscripts").len(), 1, "seed {seed}");
+            assert_eq!(trigger_controller, Some(P1), "seed {seed}");
+        }
+    }
+    assert_eq!(outcomes, [true, true]);
+}
