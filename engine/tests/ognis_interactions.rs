@@ -2094,3 +2094,45 @@ fn urabrask_replaces_only_the_opponents_next_draw_even_outside_the_draw_step() {
     assert_eq!(state.players[1].hand.len(), 2, "the draw step's draw is normal");
     assert_eq!(state.exile.len(), exiled_before + 1);
 }
+
+#[test]
+fn the_land_destroyers_target_each_land_in_the_deck_demolition_field_only_nonbasic_ones() {
+    // Strip Mine ("target land"), Wild Magic Surge ("target permanent an
+    // opponent controls") and Demolition Field ("target nonbasic land an
+    // opponent controls") against each of player 1's lands.
+    use mtg_kernel::card_def::{CardType, Supertype, CARD_DEFS};
+    let lands_in_deck: Vec<&str> = include_str!("../../configs/commander/ognis.txt")
+        .lines()
+        .filter_map(|l| l.split_once(' ').map(|(_, n)| n.trim()))
+        .filter(|&n| mtg_kernel::card_def::card_id_by_name(n).is_some_and(|c| CARD_DEFS[c as usize].types.contains(&CardType::Land)))
+        .collect();
+    assert_eq!(lands_in_deck.len(), 9, "{lands_in_deck:?}");
+    // Starts activating `source`'s ability 0 and returns its first target
+    // choice; none if it isn't offered (no legal target).
+    let ability_targets = |state: &mut GameState, source: ObjectId| {
+        if !offered_ability(state, source, 0) {
+            return Vec::new();
+        }
+        engine::step(state, Action::ActivateAbility(source, 0)).unwrap();
+        match engine::advance_until_decision(state) {
+            Decision::ChooseTargets { legal_targets, .. } => legal_targets,
+            other => panic!("{other:?}"),
+        }
+    };
+    for land in lands_in_deck {
+        let basic = CARD_DEFS[id(land) as usize].supertypes.contains(&Supertype::Basic);
+        for destroyer in ["Strip Mine", "Demolition Field", "Wild Magic Surge"] {
+            let mut state = game();
+            let theirs = put(&mut state, P1, land);
+            lands(&mut state, P0, 2);
+            let offered = if destroyer == "Wild Magic Surge" {
+                targets_offered(&mut state, destroyer, 0)
+            } else {
+                let source = put(&mut state, P0, destroyer);
+                ability_targets(&mut state, source)
+            };
+            let expected = destroyer != "Demolition Field" || !basic;
+            assert_eq!(offered.contains(&Target::Object(theirs)), expected, "{destroyer} at {land}");
+        }
+    }
+}
