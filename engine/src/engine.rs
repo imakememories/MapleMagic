@@ -953,6 +953,13 @@ pub struct PendingCast {
     /// Exact chosen creature incarnation for that additional cost.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chosen_creature_cost: Option<EffectObjectBinding>,
+    /// `Decision::ChooseFloatingMana` answers so far: (color index, amount).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub floating_chosen: Vec<(u8, u8)>,
+    /// Each color's chosen amount once every one is known; see
+    /// `Decision::ChooseFloatingMana`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floating_spent: Option<[u8; 6]>,
 }
 
 fn default_optional_additional_cost_declined() -> Option<bool> {
@@ -1418,6 +1425,18 @@ pub enum Decision {
         recipient: Target,
         options: Vec<u16>,
     },
+    /// 601.2h: which floating mana of `color` pays for `spell`, asked only
+    /// when it can matter. For a spell that may enter as a creature, how
+    /// much comes from artifacts (Coin of Mastery; Throne of Eldraine's
+    /// restricted mana first among it); otherwise (`restricted`), how much
+    /// is Throne's restricted mana (land mana next, artifact mana last).
+    ChooseFloatingMana {
+        player: PlayerId,
+        spell: ObjectId,
+        color: ManaColor,
+        restricted: bool,
+        options: Vec<u8>,
+    },
     GameOver {
         winner: Option<PlayerId>,
     },
@@ -1509,6 +1528,8 @@ pub enum Action {
     Discard(Vec<ObjectId>),
     /// Answers `Decision::AssignCombatDamage` with one of its amounts.
     AssignCombatDamage(u16),
+    /// Answers `Decision::ChooseFloatingMana` with one of its amounts.
+    ChooseFloatingMana(u8),
     DeclareAttackers(Vec<ObjectId>),
     /// (blocker, attacker) pairs. A blocker may appear at most once; an
     /// attacker may appear multiple times (gang-blocked).
@@ -9131,6 +9152,16 @@ fn drain_pending_cast_or_decide(state: &mut GameState) -> Option<Decision> {
         });
     }
 
+    if pending.floating_spent.is_none() {
+        match floating_mana_question(state, &pending, staged_method) {
+            FloatingMana::Ask { color, restricted, options } => {
+                return Some(Decision::ChooseFloatingMana { player: pending.controller, spell: pending.spell, color, restricted, options });
+            }
+            FloatingMana::Done(spent) => state.engine.pending_cast.as_mut().unwrap().floating_spent = Some(spent),
+            FloatingMana::NoChoice => {}
+        }
+    }
+
     if pending.additional_cost_discarded.is_none() {
         let add = chosen_additional_cost(def, &pending).expect(
             "additional_cost_discarded is None only when begin_cast saw an additional_cost",
@@ -12648,6 +12679,8 @@ fn action_matches_pending_cast_stage(action: &Action, stage: PendingCastActionSt
             PendingCastActionStage::ChooseXValue | PendingCastActionStage::ChooseReplicateCount,
             Action::ChooseEffectOption(_)
         ) | (PendingCastActionStage::Discard, Action::Discard(_))
+            // Checked by its handler, which knows the spell's payment.
+            | (PendingCastActionStage::AwaitEngineAdvance, Action::ChooseFloatingMana(_))
     )
 }
 
@@ -13093,6 +13126,21 @@ pub fn step(state: &mut GameState, action: Action) -> Result<(), String> {
         }
         Action::Discard(chosen) => apply_discard_action(state, chosen),
         Action::AssignCombatDamage(amount) => apply_assign_combat_damage(state, amount),
+        Action::ChooseFloatingMana(amount) => {
+            let pending = state.engine.pending_cast.clone().ok_or("no cast is being paid")?;
+            let def = &card_def::CARD_DEFS[state.objects.get(pending.spell).card_def as usize];
+            let _spell = mana::SpellPaymentScope::enter(state, card_def::mana_colors_mask(def.colors));
+            let staged = state.stack.last().and_then(|item| item.v4.cast_method).ok_or("no cast placeholder")?;
+            let FloatingMana::Ask { color, options, .. } = floating_mana_question(state, &pending, staged) else {
+                return Err("no floating mana choice is pending".to_string());
+            };
+            if !options.contains(&amount) {
+                return Err(format!("{amount} isn't one of {options:?}"));
+            }
+            let pending = state.engine.pending_cast.as_mut().unwrap();
+            pending.floating_chosen.push((color.pool_index() as u8, amount));
+            Ok(())
+        }
         Action::DeclareAttackers(attackers) => apply_declare_attackers(state, attackers),
         Action::DeclareBlockers(blocks) => apply_declare_blockers(state, blocks),
         Action::OrderTriggers(perm) => apply_order_triggers(state, perm),
@@ -15226,6 +15274,8 @@ fn begin_cast_ex(
         chosen_creature_cost: None,
         additional_cost_or_chosen: None,
         replicate_count: None,
+        floating_chosen: Vec::new(),
+        floating_spent: None,
     });
 }
 
@@ -15326,9 +15376,9 @@ fn finalize_owned_cast(
         &[]
     };
 
-    // Coin of Mastery counts artifact mana spent on creature spells.
-    let creature_spell = def.has_type(CardType::Creature) && !matches!(cast_method, CastMethodV4::Omen | CastMethodV4::Bestow);
-    state.cast_payment = Some((creature_spell, 0));
+    // Coin of Mastery counts artifact mana spent on a spell that may enter
+    // as a creature.
+    state.cast_payment = Some((may_enter_as_creature(state, def, cast_method, pending.spell), pending.floating_spent, 0));
     let additional_generic = chosen_additional_generic(def, &pending);
     let reduction = cast_reduction(def, cast_method == CastMethodV4::Omen, pending.controller, state);
     match cast_method {
@@ -15596,7 +15646,7 @@ fn finalize_owned_cast(
     });
     let finalized_source_contract =
         StackSourceContractV4::capture(state, pending.spell, cast_method);
-    if let Some((_, spent)) = state.cast_payment.take() {
+    if let Some((_, _, spent)) = state.cast_payment.take() {
         if spent > 0 {
             let link = crate::state::ObjectLinkV4 {
                 object: pending.spell,
@@ -16021,6 +16071,109 @@ fn record_spell_mana(state: &mut GameState, player: PlayerId, spent: u16) {
     event::log_expended(state, player, before, after);
 }
 
+/// Whether Coin of Mastery could count the mana spent on this spell: a
+/// creature spell, or a Cursed Mirror, which may enter as a copy of one.
+fn may_enter_as_creature(state: &GameState, def: &card_def::CardDef, cast_method: CastMethodV4, spell: ObjectId) -> bool {
+    (def.has_type(CardType::Creature) && !matches!(cast_method, CastMethodV4::Omen | CastMethodV4::Bestow))
+        || crate::statics::copies_on_entry(state, spell)
+}
+
+/// One color of a player's floating mana for the current payment: from
+/// lands and other non-artifacts, from artifacts without a restriction, and
+/// restricted mana this payment may spend (Throne of Eldraine's).
+#[derive(Clone, Copy)]
+struct FloatingSplit {
+    plain: u8,
+    artifact: u8,
+    restricted: u8,
+}
+
+impl FloatingSplit {
+    fn of(state: &GameState, player: PlayerId, i: usize) -> Self {
+        let pool = state.players[player.index()].mana_pool[i];
+        let artifact = state.artifact_mana[player.index()][i];
+        let restricted = state.restricted_mana[player.index()][i];
+        let usable = if mana::restricted_mana_color_allowed() == Some(i) { restricted } else { 0 };
+        FloatingSplit { plain: pool - artifact, artifact: artifact - restricted, restricted: usable }
+    }
+
+    /// The amounts a payment of `amt` may choose: artifact mana (`counters`)
+    /// or restricted mana.
+    fn range(self, amt: u8, counters: bool) -> (u8, u8) {
+        if counters {
+            (amt.saturating_sub(self.plain), amt.min(self.artifact + self.restricted))
+        } else {
+            (amt.saturating_sub(self.plain + self.artifact), amt.min(self.restricted))
+        }
+    }
+
+    /// The restricted and artifact mana (restricted included) spent when `k`
+    /// is chosen. Restricted mana goes first among artifact mana, and plain
+    /// before unrestricted artifact mana: each keeps the more useful mana.
+    fn spend(self, amt: u8, k: u8, counters: bool) -> (u8, u8) {
+        if counters {
+            (k.min(self.restricted), k)
+        } else {
+            let plain = (amt - k).min(self.plain);
+            (k, amt - plain)
+        }
+    }
+}
+
+enum FloatingMana {
+    NoChoice,
+    Ask { color: ManaColor, restricted: bool, options: Vec<u8> },
+    Done([u8; 6]),
+}
+
+/// The next `Decision::ChooseFloatingMana` for a pending cast, or every
+/// amount once known. How much floating mana of each color the payment
+/// takes comes from paying it on a copy of the state.
+fn floating_mana_question(state: &GameState, pending: &PendingCast, staged_method: CastMethodV4) -> FloatingMana {
+    let def = &card_def::CARD_DEFS[state.objects.get(pending.spell).card_def as usize];
+    let method = finalized_cast_method(pending, staged_method, def);
+    let counters = may_enter_as_creature(state, def, method, pending.spell);
+    let p = pending.controller;
+    let splits: [FloatingSplit; 6] = std::array::from_fn(|i| FloatingSplit::of(state, p, i));
+    let two_kinds = |s: &FloatingSplit| {
+        if counters {
+            s.plain > 0 && s.artifact + s.restricted > 0
+        } else {
+            s.restricted > 0 && s.plain + s.artifact > 0
+        }
+    };
+    if !splits.iter().any(two_kinds) {
+        return FloatingMana::NoChoice;
+    }
+    let mut trial = state.clone();
+    let Some(mut taken) = trial.engine.pending_cast.take() else {
+        return FloatingMana::NoChoice;
+    };
+    let discards: Vec<ObjectId> = match chosen_additional_cost(def, pending).and_then(discard_count_in) {
+        Some(n) => trial.players[p.index()].hand.iter().copied().take(usize::from(n)).collect(),
+        None => {
+            taken.additional_cost_discarded.get_or_insert_with(Vec::new);
+            Vec::new()
+        }
+    };
+    if finalize_owned_cast(&mut trial, taken, method, discards).is_err() {
+        return FloatingMana::NoChoice;
+    }
+    let mut spent = [0u8; 6];
+    let mut ask = None;
+    for (i, split) in splits.iter().enumerate() {
+        let used = state.players[p.index()].mana_pool[i].saturating_sub(trial.players[p.index()].mana_pool[i]);
+        let (lo, hi) = split.range(used, counters);
+        spent[i] = lo;
+        if let Some(&(_, a)) = pending.floating_chosen.iter().find(|&&(c, _)| usize::from(c) == i) {
+            spent[i] = a;
+        } else if lo < hi && ask.is_none() {
+            ask = Some(FloatingMana::Ask { color: ManaColor::ALL[i], restricted: !counters, options: (lo..=hi).collect() });
+        }
+    }
+    ask.unwrap_or(FloatingMana::Done(spent))
+}
+
 pub(crate) fn pay_plan(state: &mut GameState, player: PlayerId, plan: &mana::PaymentPlan) {
     for &(id, color) in &plan.taps {
         let amount = card_def::CARD_DEFS[state.objects.get(id).card_def as usize]
@@ -16043,23 +16196,24 @@ pub(crate) fn pay_plan(state: &mut GameState, player: PlayerId, plan: &mana::Pay
             from_artifacts += 1;
         }
     }
-    // Floating mana: a creature spell spends artifact mana first (more Coin
-    // of Mastery counters), anything else spends it last.
-    let prefer_artifact = state.cast_payment.is_some_and(|(prefer, _)| prefer);
-    let restricted_ok = mana::restricted_mana_color_allowed();
+    // Floating mana, as `Decision::ChooseFloatingMana` describes; without a
+    // choice, most artifact mana for a spell that may enter as a creature,
+    // otherwise most restricted mana.
+    let (counters, chosen) = state.cast_payment.map_or((false, None), |(c, chosen, _)| (c, chosen));
     for (i, &amt) in plan.pool_used.iter().enumerate() {
-        if restricted_ok == Some(i) {
-            let restricted = &mut state.restricted_mana[player.index()][i];
-            *restricted -= amt.min(*restricted);
+        if amt == 0 {
+            continue;
         }
+        let split = FloatingSplit::of(state, player, i);
+        let (lo, hi) = split.range(amt, counters);
+        let k = chosen.map_or(hi, |c| c[i]).clamp(lo, hi);
+        let (restricted, artifact) = split.spend(amt, k, counters);
+        state.restricted_mana[player.index()][i] -= restricted;
+        state.artifact_mana[player.index()][i] -= artifact;
         state.players[player.index()].mana_pool[i] -= amt;
-        let artifact = state.artifact_mana[player.index()][i];
-        let other = state.players[player.index()].mana_pool[i] + amt - artifact;
-        let used = if prefer_artifact { amt.min(artifact) } else { amt.saturating_sub(other) };
-        state.artifact_mana[player.index()][i] = artifact - used;
-        from_artifacts += u16::from(used);
+        from_artifacts += u16::from(artifact);
     }
-    if let Some((_, total)) = state.cast_payment.as_mut() {
+    if let Some((_, _, total)) = state.cast_payment.as_mut() {
         *total += from_artifacts;
     }
     state.players[player.index()].life -= plan.life_paid;

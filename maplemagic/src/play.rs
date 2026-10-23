@@ -247,6 +247,11 @@ pub fn describe(g: &Game, i: usize, viewer: PlayerId) -> String {
         Kind::Mulligan => if f.arg == 1 { "Mulligan".into() } else { "Keep this hand".into() },
         Kind::Bottom => format!("Put {} on the bottom of the library", secret(src)),
         Kind::AssignDamage => format!("{src}: assign {} damage to {tgt}", f.role),
+        Kind::FloatingMana => {
+            let color = ["W", "U", "B", "R", "G", "C"][((f.tgt - 1) / 2) as usize];
+            let kind = if (f.tgt - 1) % 2 == 1 { "Throne of Eldraine" } else { "artifact" };
+            format!("{src}: pay {} of the floating {{{color}}} with {kind} mana", f.arg)
+        }
     }
 }
 

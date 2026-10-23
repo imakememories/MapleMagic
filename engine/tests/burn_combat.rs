@@ -75,6 +75,7 @@ fn kind_of(d: &Decision) -> Kind {
         | Decision::ChooseCascadeCast { .. }
         | Decision::ChooseLegendToKeep { .. }
         | Decision::AssignCombatDamage { .. }
+        | Decision::ChooseFloatingMana { .. }
         | Decision::ChooseCastFromExile { .. }
         | Decision::ChooseCastMethod { .. }
         | Decision::ChooseColor { .. }
@@ -341,6 +342,7 @@ fn run_combat_game(state: &mut GameState) -> (Vec<Kind>, u32, Vec<CommittedEvent
         | Decision::ChooseCascadeCast { .. }
         | Decision::ChooseLegendToKeep { .. }
         | Decision::AssignCombatDamage { .. }
+        | Decision::ChooseFloatingMana { .. }
         | Decision::ChooseCastFromExile { .. }
         | Decision::ChooseCastMethod { .. }
         | Decision::ChooseColor { .. }

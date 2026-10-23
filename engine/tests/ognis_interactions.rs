@@ -780,3 +780,98 @@ fn an_artifact_taken_by_a_stolen_pyreswipe_hawk_goes_home_at_cleanup_and_untaps(
     assert_eq!(state.objects.get(ring).controller, P1);
     assert!(!state.objects.get(ring).tapped, "untapped in its owner's untap step");
 }
+
+/// A Throne of Eldraine of `color` for player 0, tapped for four.
+fn tapped_throne(state: &mut GameState, color: ManaColor) -> ObjectId {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let throne = put_in(state, P0, "Throne of Eldraine", Zone::Hand);
+    propose_and_commit(state, ProposedEvent::zone_change(throne, Zone::Battlefield));
+    assert!(matches!(engine::advance_until_decision(state), Decision::ChooseColor { .. }));
+    engine::step(state, Action::ChooseColor(color)).unwrap();
+    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(state, Action::ActivateManaAbility(throne)).unwrap();
+    throne
+}
+
+/// Casts `spell` from player 0's hand, answering a floating mana choice with
+/// `amount` and a Cursed Mirror's copy choice with `copy`; returns the
+/// options offered.
+fn cast_paying_floating(state: &mut GameState, spell: ObjectId, target: Option<Target>, amount: u8, copy: Option<ObjectId>) -> Vec<u8> {
+    advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(state, Action::CastSpell(spell)).unwrap();
+    let mut offered = Vec::new();
+    drive(state, |s, d| match d {
+        Decision::ChooseFloatingMana { options, .. } => {
+            offered = options.clone();
+            Some(Action::ChooseFloatingMana(amount))
+        }
+        Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(target.unwrap())),
+        Decision::ChooseCopy { .. } => Some(Action::ChooseCopy(copy)),
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => None,
+    });
+    offered
+}
+
+#[test]
+fn coin_of_mastery_doesnt_count_throne_mana_a_spell_cant_spend() {
+    // Throne's red pays only monocolored red spells, so Ognis spends the
+    // Mountain's floating red and no artifact mana.
+    let mut state = game();
+    put(&mut state, P0, "Coin of Mastery");
+    tapped_throne(&mut state, ManaColor::R);
+    let mountain = put(&mut state, P0, "Mountain");
+    engine::step(&mut state, Action::ActivateManaAbility(mountain)).unwrap();
+    lands(&mut state, P0, 3);
+    let ognis = state.command.iter().copied().find(|&o| state.objects.get(o).owner == P0).unwrap();
+    let offered = cast_paying_floating(&mut state, ognis, None, 0, None);
+    assert!(offered.is_empty(), "no choice: {offered:?}");
+    assert_eq!(zone(&state, ognis), Zone::Battlefield);
+    assert_eq!(state.objects.get(ognis).counters.plus1_plus1, 0);
+    let r = ManaColor::R.pool_index();
+    assert_eq!((state.players[0].mana_pool[r], state.artifact_mana[0][r], state.restricted_mana[0][r]), (4, 4, 4));
+}
+
+#[test]
+fn a_cursed_mirror_paid_from_floating_treasure_and_land_mana_spends_the_artifact_mana_its_caster_chooses() {
+    // 601.2h: a Cursed Mirror may enter as a creature, so how much of the
+    // floating Treasure mana pays for it decides Coin of Mastery's counters.
+    let r = ManaColor::R.pool_index();
+    for amount in [1u8, 2] {
+        let mut state = game();
+        put(&mut state, P0, "Coin of Mastery");
+        let theirs = put(&mut state, P1, "Guttersnipe");
+        let treasures = [put(&mut state, P0, "Treasure Token"), put(&mut state, P0, "Treasure Token")];
+        let mountains = [put(&mut state, P0, "Mountain"), put(&mut state, P0, "Mountain")];
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        for t in treasures {
+            engine::step(&mut state, Action::ActivateManaAbilityChoice(t, ManaColor::R)).unwrap();
+        }
+        for m in mountains {
+            engine::step(&mut state, Action::ActivateManaAbility(m)).unwrap();
+        }
+        let mirror = put_in(&mut state, P0, "Cursed Mirror", Zone::Hand);
+        let offered = cast_paying_floating(&mut state, mirror, None, amount, Some(theirs));
+        assert_eq!(offered, vec![1, 2], "one or both Treasure mana");
+        assert_eq!(state.objects.get(mirror).counters.plus1_plus1, i16::from(amount));
+        assert_eq!((state.players[0].mana_pool[r], state.artifact_mana[0][r]), (1, 2 - amount));
+    }
+}
+
+#[test]
+fn a_monocolored_red_spell_spends_the_throne_mana_its_caster_chooses() {
+    // 601.2h: Throne's red pays only monocolored red spells, the Mountain's
+    // pays anything: which one a Lightning Bolt takes is the caster's choice.
+    let r = ManaColor::R.pool_index();
+    for amount in [0u8, 1] {
+        let mut state = game();
+        tapped_throne(&mut state, ManaColor::R);
+        let mountain = put(&mut state, P0, "Mountain");
+        engine::step(&mut state, Action::ActivateManaAbility(mountain)).unwrap();
+        let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+        let offered = cast_paying_floating(&mut state, bolt, Some(Target::Player(P1)), amount, None);
+        assert_eq!(offered, vec![0, 1]);
+        assert_eq!(state.players[1].life, 37);
+        assert_eq!((state.players[0].mana_pool[r], state.restricted_mana[0][r]), (4, 4 - amount));
+    }
+}

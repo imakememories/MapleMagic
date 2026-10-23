@@ -55,6 +55,9 @@ pub enum Kind {
     Bottom = 24,
     /// Assign `arg` (and `role`, uncapped) of `src`'s combat damage to `tgt`.
     AssignDamage = 25,
+    /// Spend `arg` floating artifact mana (or restricted mana) of a color on
+    /// `src`; `tgt` is 1 + 2 × color + restricted.
+    FloatingMana = 26,
 }
 
 /// A choice's tree key and model input. `role` is in the key only.
@@ -1166,6 +1169,13 @@ impl Game {
                     out.push(mk(feat, Exec::Engine(Action::AssignCombatDamage(a))));
                 }
             }
+            Decision::ChooseFloatingMana { player, spell, color, restricted, options } => {
+                self.actor = player;
+                let tgt = 1 + 2 * color_code(color) as u32 + u32::from(restricted);
+                for a in options {
+                    out.push(mk(ActFeat::new(Kind::FloatingMana, def_of(st, spell), tgt, u16::from(a)), Exec::Engine(Action::ChooseFloatingMana(a))));
+                }
+            }
             Decision::DeclareAttackers { player, eligible } => {
                 self.actor = player;
                 self.declaration_fell_back = false;
@@ -1216,6 +1226,7 @@ fn decision_name(d: &Decision) -> &'static str {
         Decision::ChooseOptionalCost { .. } => "ChooseOptionalCost",
         Decision::Discard { .. } => "Discard",
         Decision::AssignCombatDamage { .. } => "AssignCombatDamage",
+        Decision::ChooseFloatingMana { .. } => "ChooseFloatingMana",
         Decision::DeclareAttackers { .. } => "DeclareAttackers",
         Decision::DeclareBlockers { .. } => "DeclareBlockers",
         Decision::OrderTriggers { .. } => "OrderTriggers",

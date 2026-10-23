@@ -1728,10 +1728,11 @@ pub struct GameState {
     /// See [`PendingExileCastV1`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_exile_cast: Option<PendingExileCastV1>,
-    /// While a cast pays: whether floating artifact mana goes first (a
-    /// creature spell), and the artifact mana spent so far.
+    /// While a cast pays: whether it may enter as a creature (Coin of
+    /// Mastery), its `PendingCast::floating_spent`, and the artifact mana
+    /// spent so far.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cast_payment: Option<(bool, u16)>,
+    pub cast_payment: Option<(bool, Option<[u8; 6]>, u16)>,
     /// See [`PendingCascadeV1`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_cascade: Option<PendingCascadeV1>,
@@ -4395,6 +4396,8 @@ mod tests {
             chosen_creature_cost: None,
             additional_cost_or_chosen: None,
             replicate_count: None,
+            floating_chosen: Vec::new(),
+            floating_spent: None,
         });
         let ordinary_contract = state.diagnostic_state_hash();
         state
