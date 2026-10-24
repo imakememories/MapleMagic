@@ -3165,3 +3165,300 @@ fn red_spell_reducers_lower_overload_x_and_redirect_lightnings_extra_cost_but_no
         }
     }
 }
+
+/// Answers what a copy asks as it enters and records it: riot (haste), the
+/// legend rule (keeps the copy, not `original`), and its enters trigger's
+/// targets (the first legal one). Targeting by `source`, the copier's own
+/// ability, is left to the caller.
+fn answer_copy_entering(s: &GameState, d: &Decision, original: ObjectId, source: ObjectId, asked: &mut Vec<&'static str>) -> Option<Action> {
+    match d {
+        Decision::ChooseRiot { .. } => {
+            asked.push("riot");
+            Some(Action::ChooseRiot(true))
+        }
+        Decision::ChooseLegendToKeep { legends, .. } => {
+            asked.push("legend");
+            Some(Action::ChooseLegendToKeep(*legends.iter().find(|&&l| l != original).unwrap()))
+        }
+        Decision::ChooseTargets { spell: by, legal_targets, .. } | Decision::ChooseEffectTargets { source: by, legal_targets, .. } if *by != source => {
+            let first = !asked.contains(&"trigger");
+            if first {
+                asked.push("trigger");
+            }
+            Some(match legal_targets.first() {
+                Some(&t) if first && matches!(d, Decision::ChooseTargets { .. }) => Action::ChooseTarget(t),
+                Some(&t) if first => Action::ChooseEffectTarget(t),
+                _ => Action::FinishEffectSelection,
+            })
+        }
+        Decision::OrderTriggers { pending, .. } => Some(Action::OrderTriggers((0..pending.len()).collect())),
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_permanent_copy_enters_with_the_copied_cards_enters_abilities_but_gogo_doesnt_enter() {
+    // 707.2, 614.12, 603.6a; Cursed Mirror and The Fire Crystal rulings: the
+    // copy has the copied card's enters triggers and "enters with" abilities,
+    // with X 0, and a Saga's first lore counter. Gogo becomes a copy on the
+    // battlefield, so none of these apply. Each original is player 0's.
+    let originals = [
+        "Zealous Conscripts",
+        "Molten Primordial",
+        "Headliner Scarlett",
+        "Depthshaker Titan",
+        "Spider-Punk",
+        "Shivan Devastator",
+        "Summon: Esper Valigarmanda",
+    ];
+    let crystal_of = |s: &GameState| named(s, P0, "The Fire Crystal")[0];
+    for copier in ["Cursed Mirror", "The Fire Crystal", "Gogo, Mysterious Mime"] {
+        for original in originals {
+            let mut state = game();
+            let o = put(&mut state, P0, original);
+            if original == "Shivan Devastator" {
+                state.objects.get_mut(o).counters.plus1_plus1 = 2;
+            }
+            put(&mut state, P1, "Guttersnipe");
+            put(&mut state, P0, "Sol Ring");
+            let mut asked = Vec::new();
+            let copy = match copier {
+                "Cursed Mirror" => {
+                    lands(&mut state, P0, 3);
+                    let mirror = put_in(&mut state, P0, copier, Zone::Hand);
+                    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+                    engine::step(&mut state, Action::CastSpell(mirror)).unwrap();
+                    drive(&mut state, |s, d| match d {
+                        Decision::ChooseCopy { .. } => Some(Action::ChooseCopy(Some(o))),
+                        _ => answer_copy_entering(s, d, o, o, &mut asked),
+                    });
+                    mirror
+                }
+                "The Fire Crystal" => {
+                    let crystal = put(&mut state, P0, copier);
+                    lands(&mut state, P0, 6);
+                    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+                    engine::step(&mut state, Action::ActivateAbility(crystal, 0)).unwrap();
+                    drive(&mut state, |s, d| match d {
+                        Decision::ChooseTargets { spell, .. } if *spell == crystal => Some(Action::ChooseTarget(Target::Object(o))),
+                        _ => answer_copy_entering(s, d, o, crystal, &mut asked),
+                    });
+                    // The token, unless it died.
+                    match state.players[0].battlefield.iter().copied().find(|&t| t != o && state.objects.get(t).name == original) {
+                        Some(token) => token,
+                        None => crystal,
+                    }
+                }
+                _ => {
+                    let gogo = put(&mut state, P0, copier);
+                    advance(&mut state, |s, d| s.step == Step::BeginCombat && matches!(d, Decision::ChooseTargets { .. }));
+                    engine::step(&mut state, Action::ChooseTarget(Target::Object(o))).unwrap();
+                    drive(&mut state, |s, d| match d {
+                        Decision::ChooseEffectOption { option_count: 2, .. } => Some(Action::ChooseEffectOption(1)),
+                        _ => answer_copy_entering(s, d, o, gogo, &mut asked),
+                    });
+                    gogo
+                }
+            };
+            let gogo = copier == "Gogo, Mysterious Mime";
+            let expected: &[&str] = match original {
+                _ if gogo => &[],
+                "Spider-Punk" => &["riot", "riot", "legend"],
+                "Headliner Scarlett" => &["legend", "trigger"],
+                "Shivan Devastator" | "Summon: Esper Valigarmanda" => &[],
+                _ => &["trigger"],
+            };
+            // The engine asks riot after the legend rule, not as the copy
+            // enters (614.12); one player makes both choices with nothing
+            // revealed between, so the order can't change the outcome.
+            asked.sort();
+            let mut expected = expected.to_vec();
+            expected.sort();
+            assert_eq!(asked, expected, "{copier} copying {original}");
+            match original {
+                // X is 0: a 0/0 (the token is gone), or Gogo's 2/0.
+                "Shivan Devastator" if copier == "The Fire Crystal" => assert_eq!(copy, crystal_of(&state), "the token died"),
+                "Shivan Devastator" => assert_ne!(zone(&state, copy), Zone::Battlefield, "{copier}"),
+                "Summon: Esper Valigarmanda" => assert_eq!(state.objects.get(copy).counters.lore, if gogo { 0 } else { 1 }, "{copier}"),
+                _ => assert_eq!(state.objects.get(copy).name, if gogo { copier } else { original }, "{copier}"),
+            }
+        }
+    }
+}
+
+#[test]
+fn dragonspark_reactor_counts_a_copy_entering_only_as_an_artifact() {
+    // Cursed Mirror entering as a copy of a nonartifact creature isn't an
+    // artifact (707.2); as a copy of Depthshaker Titan, or as itself, it is.
+    // The Fire Crystal's token likewise.
+    for (copier, copied, counts) in [
+        ("Cursed Mirror", Some("Guttersnipe"), false),
+        ("Cursed Mirror", Some("Depthshaker Titan"), true),
+        ("Cursed Mirror", None, true),
+        ("The Fire Crystal", Some("Guttersnipe"), false),
+        ("The Fire Crystal", Some("Depthshaker Titan"), true),
+    ] {
+        let mut state = game();
+        let reactor = put(&mut state, P0, "Dragonspark Reactor");
+        let o = copied.map(|c| put(&mut state, P0, c));
+        let mut asked = Vec::new();
+        if copier == "Cursed Mirror" {
+            lands(&mut state, P0, 3);
+            let mirror = put_in(&mut state, P0, copier, Zone::Hand);
+            advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+            engine::step(&mut state, Action::CastSpell(mirror)).unwrap();
+            drive(&mut state, |s, d| match d {
+                Decision::ChooseCopy { .. } => Some(Action::ChooseCopy(o)),
+                _ => answer_copy_entering(s, d, o.unwrap_or(reactor), reactor, &mut asked),
+            });
+        } else {
+            let crystal = put(&mut state, P0, copier);
+            lands(&mut state, P0, 6);
+            advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+            engine::step(&mut state, Action::ActivateAbility(crystal, 0)).unwrap();
+            let o = o.unwrap();
+            drive(&mut state, |s, d| match d {
+                Decision::ChooseTargets { spell, .. } if *spell == crystal => Some(Action::ChooseTarget(Target::Object(o))),
+                _ => answer_copy_entering(s, d, o, crystal, &mut asked),
+            });
+        }
+        assert_eq!(state.objects.get(reactor).counters.charge, if counts { 1 } else { 0 }, "{copier} copying {copied:?}");
+    }
+}
+
+#[test]
+fn a_land_exiled_to_be_played_is_playable_only_as_the_turns_land_drop() {
+    // 305.2, 305.3; Laelia and Urabrask rulings: playing an exiled land uses
+    // the turn's land play. Each source exiles an Abstergo Entertainment from
+    // the top of player 0's library: offered while no land was played this
+    // turn, not after a Mountain from hand.
+    let sources = [
+        "Reckless Impulse",
+        "Wrenn's Resolve",
+        "Light Up the Stage",
+        "Embrace the Unknown",
+        "Laelia, the Blade Reforged",
+        "Urabrask, Heretic Praetor",
+        "Headliner Scarlett",
+    ];
+    for source in sources {
+        for land_played_first in [false, true] {
+            let mut state = game();
+            library_card(&mut state, P0, 0, "Abstergo Entertainment");
+            match source {
+                "Laelia, the Blade Reforged" => {
+                    let laelia = put(&mut state, P0, source);
+                    attack_with(&mut state, vec![laelia]);
+                }
+                "Urabrask, Heretic Praetor" | "Headliner Scarlett" => {
+                    put(&mut state, P0, source);
+                    to_my_next_upkeep(&mut state);
+                }
+                _ => {
+                    lands(&mut state, P0, 3);
+                    cast(&mut state, source, None, 0);
+                }
+            }
+            advance(&mut state, |s, d| {
+                matches!(s.step, Step::Main1 | Step::Main2) && s.stack.is_empty() && matches!(d, Decision::CastSpellOrPass { player: P0, .. })
+            });
+            let exiled = state.exile.iter().copied().find(|&o| state.objects.get(o).name == "Abstergo Entertainment");
+            let exiled = exiled.unwrap_or_else(|| panic!("{source}: Abstergo exiled"));
+            if land_played_first {
+                let mountain = put_in(&mut state, P0, "Mountain", Zone::Hand);
+                engine::step(&mut state, Action::PlayLand(mountain)).unwrap();
+            }
+            let Decision::CastSpellOrPass { land_drops, .. } = engine::advance_until_decision(&mut state) else { panic!("{source}: priority") };
+            assert_eq!(land_drops.contains(&exiled), !land_played_first, "{source}, a land played first: {land_played_first}");
+        }
+    }
+}
+
+#[test]
+fn raging_river_divides_only_creatures_without_flying_and_flyers_block_either_attacker() {
+    // Raging River's piles hold the defending player's creatures without
+    // flying; a flyer may block an attacker sent to either pile, and is the
+    // only kind that may block player 0's flying Goldspan Dragon. Each
+    // creature in the deck defends alone, put in the left pile if divided;
+    // both attackers are sent right. A celebrating Goddric flies.
+    use mtg_kernel::card_def::{CardType, Keywords, CARD_DEFS};
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut creatures: Vec<(&str, bool)> = ognis_deck_spells()
+        .into_iter()
+        .filter(|&n| CARD_DEFS[id(n) as usize].types.contains(&CardType::Creature))
+        .map(|n| (n, false))
+        .collect();
+    creatures.push(("Goddric, Cloaked Reveler", true));
+    let mut flyers = 0;
+    for (name, celebrate) in creatures {
+        let mut state = game();
+        put(&mut state, P0, "Raging River");
+        let attackers = vec![put(&mut state, P0, "Goldspan Dragon"), put(&mut state, P0, "Zealous Conscripts")];
+        let theirs = put(&mut state, P1, name);
+        if name == "Shivan Devastator" {
+            state.objects.get_mut(theirs).counters.plus1_plus1 = 1;
+        }
+        if celebrate {
+            for _ in 0..2 {
+                propose_and_commit(&mut state, ProposedEvent::create_token(id("Treasure Token"), P1));
+            }
+        }
+        let flying = engine::has_effective_keyword(&state, theirs, Keywords::FLYING);
+        flyers += usize::from(flying);
+        advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+        engine::step(&mut state, Action::DeclareAttackers(attackers.clone())).unwrap();
+        let (mut piles, mut blocks) = (Vec::new(), None);
+        drive(&mut state, |s, d| match d {
+            Decision::DeclareBlockers { legal_blockers, .. } => {
+                blocks = Some(legal_blockers.clone());
+                None
+            }
+            Decision::ChooseEffectTargets { player: P1, selected_count: 0, legal_targets, .. } => {
+                piles = legal_targets.clone();
+                Some(Action::ChooseEffectTarget(Target::Object(theirs)))
+            }
+            Decision::ChooseEffectTargets { .. } => Some(Action::FinishEffectSelection),
+            Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        assert_eq!(piles.contains(&Target::Object(theirs)), !flying, "{name}: divided");
+        let blocks = blocks.unwrap_or_else(|| panic!("{name}: blockers"));
+        for a in &attackers {
+            let can_block = blocks.iter().any(|(o, v)| o == a && v.contains(&theirs));
+            assert_eq!(can_block, flying, "{name} blocking {}", state.objects.get(*a).name);
+        }
+    }
+    assert_eq!(flyers, 10, "nine printed flyers and a celebrating Goddric");
+}
+
+#[test]
+fn each_players_commander_cards_read_their_own_commander() {
+    // 903.4: player 1's Arcane Signet makes player 1's commander's colors and
+    // its War Room costs player 1 three life; player 0's Chaos Warp on its
+    // own Ognis lets player 0, the owner, choose the command zone.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    let signet = put(&mut state, P1, "Arcane Signet");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert_eq!(engine::available_mana_ability_choices(P1, signet, &state), vec![ManaColor::B, ManaColor::R, ManaColor::G]);
+
+    let mut state = game();
+    let room = put(&mut state, P1, "War Room");
+    lands(&mut state, P1, 3);
+    end_turn(&mut state);
+    advance(&mut state, |s, d| s.step == Step::Main1 && matches!(d, Decision::CastSpellOrPass { player: P1, .. }));
+    engine::step(&mut state, Action::ActivateAbility(room, 0)).unwrap();
+    drive(&mut state, |s, d| match d {
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => first_choice(s, d),
+    });
+    assert_eq!((state.players[0].life, state.players[1].life), (40, 37));
+
+    let mut state = game();
+    let ognis = state.commander.as_ref().unwrap().commanders[0];
+    propose_and_commit(&mut state, ProposedEvent::zone_change(ognis, Zone::Battlefield));
+    lands(&mut state, P0, 3);
+    cast(&mut state, "Chaos Warp", Some(Target::Object(ognis)), 1);
+    assert_eq!(zone(&state, ognis), Zone::Command);
+}
