@@ -2993,3 +2993,175 @@ fn knuckles_counts_thirty_artifacts_you_control_at_your_upkeep() {
         assert_eq!(won, matches!(kind, ArtifactKind::Card | ArtifactKind::Token), "{kind:?}: {d:?}");
     }
 }
+
+/// Ruby Medallion, The Fire Crystal, either, both.
+const REDUCER_SETS: [&[&str]; 4] = [&[], &["Ruby Medallion"], &["The Fire Crystal"], &["Ruby Medallion", "The Fire Crystal"]];
+
+#[test]
+fn red_spell_reducers_take_generic_off_flashback_retrace_foretold_and_spectacle_casts() {
+    // 601.2f, 118.7d: each reducer takes {1} off the total cost however the
+    // spell is cast, never off the colored part. Each card here has only one
+    // way to be cast from where it is, so it is castable with exactly that
+    // cost and not one mana less.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    // (card, generic, colored) of the cost paid.
+    let rows = [
+        ("Reckless Impulse", 1u8, 1u8),     // flashback {1}{R}, from Flashback
+        ("Embrace the Unknown", 2, 1),      // retrace {2}{R} and a land card
+        ("Delayed Blast Fireball", 4, 2),   // foretold {4}{R}{R}
+        ("Light Up the Stage", 0, 1),       // spectacle {R}
+    ];
+    for reducers in REDUCER_SETS {
+        let r = reducers.len() as u8;
+        for (card, generic, colored) in rows {
+            let need = usize::from(generic - generic.min(r) + colored);
+            for lands_count in [need, need - 1] {
+                let mut state = game();
+                for x in reducers {
+                    put(&mut state, P0, x);
+                }
+                let o = match card {
+                    "Reckless Impulse" => {
+                        let o = put_in(&mut state, P0, card, Zone::Graveyard);
+                        lands(&mut state, P0, 1);
+                        cast(&mut state, "Flashback", Some(Target::Object(o)), 0);
+                        o
+                    }
+                    "Embrace the Unknown" => {
+                        put_in(&mut state, P0, "Mountain", Zone::Hand);
+                        put_in(&mut state, P0, card, Zone::Graveyard)
+                    }
+                    "Delayed Blast Fireball" => {
+                        // Foretold on turn 2; cast in player 1's turn, when
+                        // the two lands that paid are still tapped.
+                        let o = put_in(&mut state, P0, card, Zone::Hand);
+                        lands(&mut state, P0, 2);
+                        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+                        engine::step(&mut state, Action::Foretell(o)).unwrap();
+                        end_turn(&mut state);
+                        o
+                    }
+                    _ => {
+                        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+                        propose_and_commit(&mut state, ProposedEvent::life_loss(P1, 1));
+                        put_in(&mut state, P0, card, Zone::Hand)
+                    }
+                };
+                lands(&mut state, P0, lands_count);
+                let ok = matches!(
+                    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { player: P0, .. })),
+                    Decision::CastSpellOrPass { castable_spells, .. } if castable_spells.contains(&o)
+                );
+                assert_eq!(ok, lands_count == need, "{card} with {reducers:?} and {lands_count} lands");
+            }
+        }
+    }
+}
+
+#[test]
+fn red_spell_reducers_lower_overload_x_and_redirect_lightnings_extra_cost_but_not_replicate_or_special_actions() {
+    // 601.2f: overload {4}{R}, X and Redirect Lightning's additional {2} are
+    // part of the total cost; replicate's {R} is colored. Foretelling ({2})
+    // and plotting ({1}{R}) are special actions, not spells (116.2h, 116.2k).
+    for reducers in REDUCER_SETS {
+        let r = reducers.len();
+        let setup = |lands_count: usize| {
+            let mut state = game();
+            for x in reducers {
+                put(&mut state, P0, x);
+            }
+            lands(&mut state, P0, lands_count);
+            state
+        };
+        // Starts casting `card` and returns the first spell-mode choice's
+        // legal modes, or each effect option count asked, until a target.
+        let start = |state: &mut GameState, card: &str| {
+            let spell = put_in(state, P0, card, Zone::Hand);
+            advance(state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+            engine::step(state, Action::CastSpell(spell)).unwrap();
+            engine::advance_until_decision(state)
+        };
+
+        // Overload: offered with 5 - r lands, not one fewer.
+        let need = 5 - r;
+        for lands_count in [need, need - 1] {
+            let mut state = setup(lands_count);
+            put(&mut state, P1, "Sol Ring");
+            // With overload unaffordable there is no mode choice.
+            let overload = matches!(start(&mut state, "Vandalblast"), Decision::ChooseSpellMode { legal_modes, .. } if legal_modes.contains(&1));
+            assert_eq!(overload, lands_count == need, "overload with {reducers:?} and {lands_count} lands");
+        }
+
+        // Shivan Devastator with three lands: X up to 2 + r.
+        let mut state = setup(3);
+        match start(&mut state, "Shivan Devastator") {
+            Decision::ChooseEffectOption { option_count, .. } => {
+                assert_eq!(usize::from(option_count) - 1, 2 + r, "largest X with {reducers:?}")
+            }
+            other => panic!("{other:?}"),
+        }
+
+        // Shattering Spree with three lands: up to two replicate payments.
+        let mut state = setup(3);
+        put(&mut state, P1, "Sol Ring");
+        let spree = put_in(&mut state, P0, "Shattering Spree", Zone::Hand);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::CastSpell(spree)).unwrap();
+        let mut counts = Vec::new();
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseEffectOption { option_count, .. } => {
+                counts.push(*option_count);
+                Some(Action::ChooseEffectOption(0))
+            }
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        assert_eq!(counts, vec![3], "zero, one or two payments with {reducers:?}");
+
+        // Redirect Lightning, player 1's: the {2} option alongside 5 life
+        // needs 3 - r lands.
+        for lands_count in 1..=3usize {
+            let mut state = game();
+            for x in reducers {
+                put(&mut state, P1, x);
+            }
+            lands(&mut state, P1, lands_count);
+            lands(&mut state, P0, 1);
+            let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+            let redirect = put_in(&mut state, P1, "Redirect Lightning", Zone::Hand);
+            let mut choice = false;
+            drive(&mut state, |s, d| match d {
+                _ if zone(s, bolt) != Zone::Hand && zone(s, bolt) != Zone::Stack => None,
+                Decision::CastSpellOrPass { player, castable_spells, .. } => Some(match *player {
+                    P0 if castable_spells.contains(&bolt) => Action::CastSpell(bolt),
+                    P1 if castable_spells.contains(&redirect) => Action::CastSpell(redirect),
+                    _ => Action::Pass,
+                }),
+                Decision::ChooseTargets { player: P0, .. } => Some(Action::ChooseTarget(Target::Player(P1))),
+                Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Object(bolt))),
+                Decision::ChooseEffectOption { .. } => {
+                    choice = true;
+                    Some(Action::ChooseEffectOption(1))
+                }
+                Decision::ChooseEffectTargets { .. } => Some(Action::ChooseEffectTarget(Target::Player(P0))),
+                other => panic!("unhandled decision {other:?}"),
+            });
+            let affordable = lands_count + r >= 3;
+            assert_eq!(choice, affordable, "{reducers:?} with {lands_count} lands");
+            assert_eq!(state.players[1].life, if affordable { 40 } else { 35 }, "{reducers:?} with {lands_count} lands");
+            assert_eq!(state.players[0].life, 37);
+        }
+
+        // Foretelling still takes {2}, plotting {1}{R}.
+        for (card, cost) in [("Delayed Blast Fireball", 2usize), ("Slickshot Show-Off", 2)] {
+            for lands_count in [cost, cost - 1] {
+                let mut state = setup(lands_count);
+                let o = put_in(&mut state, P0, card, Zone::Hand);
+                let d = advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+                let Decision::CastSpellOrPass { foretell_actions, plot_actions, .. } = d else { unreachable!() };
+                let offered = foretell_actions.contains(&o) || plot_actions.contains(&o);
+                assert_eq!(offered, lands_count == cost, "{card} with {reducers:?} and {lands_count} lands");
+            }
+        }
+    }
+}
