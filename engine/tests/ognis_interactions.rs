@@ -2808,3 +2808,188 @@ fn pyreswipe_hawks_steal_lasts_past_the_turn_and_serves_the_thief() {
     assert_eq!(state.objects.get(saga).counters.lore, 2, "none after the owner's draw step");
     assert_eq!(state.players[1].life, 33, "the Bolt, and 2 from each Guttersnipe");
 }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ArtifactKind {
+    Card,
+    Token,
+    TorquedCreature,
+    TorquedEnchantment,
+    Animated,
+    Theirs,
+    Plain,
+}
+
+impl ArtifactKind {
+    const ALL: [ArtifactKind; 7] = [
+        ArtifactKind::Card,
+        ArtifactKind::Token,
+        ArtifactKind::TorquedCreature,
+        ArtifactKind::TorquedEnchantment,
+        ArtifactKind::Animated,
+        ArtifactKind::Theirs,
+        ArtifactKind::Plain,
+    ];
+
+    /// An artifact player 0 controls.
+    fn mine(self) -> bool {
+        !matches!(self, ArtifactKind::Theirs | ArtifactKind::Plain)
+    }
+
+    fn creature(self) -> bool {
+        matches!(self, ArtifactKind::TorquedCreature | ArtifactKind::Animated | ArtifactKind::Plain)
+    }
+}
+
+/// One permanent of `kind`. The Torque is put into the graveyard after its
+/// ability resolves (the effect stays), so it isn't counted itself.
+fn artifact_of_kind(state: &mut GameState, kind: ArtifactKind) -> ObjectId {
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    match kind {
+        ArtifactKind::Card => put(state, P0, "Sol Ring"),
+        ArtifactKind::Token => put(state, P0, "Treasure Token"),
+        ArtifactKind::Theirs => put(state, P1, "Sol Ring"),
+        ArtifactKind::Plain => put(state, P0, "Guttersnipe"),
+        ArtifactKind::Animated => {
+            let ring = put(state, P0, "Sol Ring");
+            animate(state, ring);
+            ring
+        }
+        ArtifactKind::TorquedCreature | ArtifactKind::TorquedEnchantment => {
+            let o = put(state, P0, if kind == ArtifactKind::TorquedCreature { "Guttersnipe" } else { "Connecting the Dots" });
+            let torque = put(state, P0, "Liquimetal Torque");
+            activate(state, torque, 0, Some(Target::Object(o)));
+            propose_and_commit(state, ProposedEvent::zone_change(torque, Zone::Graveyard));
+            assert!(engine::object_has_type(state, o, mtg_kernel::card_def::CardType::Artifact), "{kind:?}");
+            o
+        }
+    }
+}
+
+#[test]
+fn each_kind_of_artifact_counts_for_the_vault_starforge_titan_and_sacrifices_and_only_treasures_for_smaug() {
+    // Fomori Vault's X and Secluded Starforge's taps count artifacts you
+    // control; Depthshaker Titan targets noncreature ones; Demand Answers and
+    // Vision of Love may sacrifice any; Smaug counts only Treasures you control.
+    use mtg_kernel::engine::OptionalCostChoice;
+    let sorted = |mut v: Vec<ObjectId>| {
+        v.sort();
+        v
+    };
+    for kind in ArtifactKind::ALL {
+        let mine = kind.mine();
+
+        // Fomori Vault: two Sol Rings, plus this one if it counts.
+        let mut state = game();
+        artifact_of_kind(&mut state, kind);
+        let vault = put(&mut state, P0, "Fomori Vault");
+        put(&mut state, P0, "Sol Ring");
+        put(&mut state, P0, "Sol Ring");
+        lands(&mut state, P0, 3);
+        put_in(&mut state, P0, "Mountain", Zone::Hand);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::ActivateAbility(vault, 0)).unwrap();
+        let mut x = 0;
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseEffectTargets { legal_targets, .. } => {
+                x = legal_targets.len();
+                Some(Action::ChooseEffectTarget(legal_targets[0]))
+            }
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        assert_eq!(x, 2 + usize::from(mine), "{kind:?}: Fomori Vault");
+
+        // Secluded Starforge: tappable for X if untapped and yours.
+        let mut state = game();
+        let o = artifact_of_kind(&mut state, kind);
+        let forge = put(&mut state, P0, "Secluded Starforge");
+        let creature = put(&mut state, P0, "Zealous Conscripts");
+        lands(&mut state, P0, 2);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::ActivateAbility(forge, 0)).unwrap();
+        let mut candidates = Vec::new();
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Object(creature))),
+            Decision::ChooseCostTargets { candidates: c, .. } => {
+                candidates = c.clone();
+                Some(Action::FinishEffectSelection)
+            }
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        assert_eq!(candidates.contains(&o), mine, "{kind:?}: Starforge");
+
+        // Depthshaker Titan: noncreature artifacts you control.
+        let mut state = game();
+        let o = artifact_of_kind(&mut state, kind);
+        lands(&mut state, P0, 7);
+        let titan = put_in(&mut state, P0, "Depthshaker Titan", Zone::Hand);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::CastSpell(titan)).unwrap();
+        let mut offered = Vec::new();
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseTargets { legal_targets, .. } => {
+                offered = legal_targets.clone();
+                Some(Action::FinishEffectSelection)
+            }
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        assert_eq!(offered.contains(&Target::Object(o)), mine && !kind.creature(), "{kind:?}: Depthshaker Titan");
+
+        // Demand Answers and Vision of Love, next to a Sol Ring: a choice of
+        // two only when this one may be sacrificed.
+        for spell in ["Demand Answers", "Vision of Love"] {
+            let mut state = game();
+            let o = artifact_of_kind(&mut state, kind);
+            let ring = put(&mut state, P0, "Sol Ring");
+            lands(&mut state, P0, 2);
+            put_in(&mut state, P0, "Mountain", Zone::Hand);
+            let card = put_in(&mut state, P0, spell, Zone::Hand);
+            advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+            engine::step(&mut state, Action::CastSpell(card)).unwrap();
+            let mut offered = None;
+            drive(&mut state, |s, d| match d {
+                Decision::ChooseEffectOption { .. } => Some(Action::ChooseEffectOption(0)),
+                Decision::ChooseOptionalCost { .. } => Some(Action::ChooseOptionalCost(OptionalCostChoice::SacrificeLand)),
+                Decision::ChooseCostTargets { candidates, .. } => {
+                    offered = Some(sorted(candidates.clone()));
+                    Some(Action::ChooseCostTarget(ring))
+                }
+                Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+                _ => first_choice(s, d),
+            });
+            assert_eq!(offered, mine.then(|| sorted(vec![ring, o])), "{kind:?}: {spell}");
+            assert_eq!(zone(&state, ring), Zone::Graveyard, "{kind:?}: {spell}");
+        }
+
+        // Smaug: only Treasures you control; player 1's Treasure doesn't count.
+        let mut state = game();
+        artifact_of_kind(&mut state, kind);
+        put(&mut state, P1, "Treasure Token");
+        let smaug = put(&mut state, P0, "Smaug the Magnificent");
+        attack_with(&mut state, vec![smaug]);
+        assert_eq!(40 - state.players[1].life, 4 + i32::from(kind == ArtifactKind::Token), "{kind:?}: Smaug");
+    }
+}
+
+#[test]
+fn knuckles_counts_thirty_artifacts_you_control_at_your_upkeep() {
+    // 29 Treasures and one more: an artifact card or a Treasure makes thirty;
+    // Liquimetal Torque's effect has ended by the next upkeep, and player 1's
+    // artifact isn't yours.
+    for kind in [ArtifactKind::Card, ArtifactKind::Token, ArtifactKind::TorquedCreature, ArtifactKind::Theirs] {
+        let mut state = game();
+        artifact_of_kind(&mut state, kind);
+        put(&mut state, P0, "Knuckles the Echidna");
+        for _ in 0..29 {
+            put(&mut state, P0, "Treasure Token");
+        }
+        let d = advance(&mut state, |s, d| {
+            matches!(d, Decision::GameOver { .. }) || (s.active_player == P0 && s.turn > 3 && s.step == Step::Main1)
+        });
+        let won = matches!(d, Decision::GameOver { winner: Some(P0) });
+        assert_eq!(won, matches!(kind, ArtifactKind::Card | ArtifactKind::Token), "{kind:?}: {d:?}");
+    }
+}
