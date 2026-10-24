@@ -2814,6 +2814,8 @@ enum ArtifactKind {
     Card,
     Token,
     TappedToken,
+    Robot,
+    ArtifactCreature,
     TorquedCreature,
     TorquedEnchantment,
     Animated,
@@ -2822,10 +2824,12 @@ enum ArtifactKind {
 }
 
 impl ArtifactKind {
-    const ALL: [ArtifactKind; 8] = [
+    const ALL: [ArtifactKind; 10] = [
         ArtifactKind::Card,
         ArtifactKind::Token,
         ArtifactKind::TappedToken,
+        ArtifactKind::Robot,
+        ArtifactKind::ArtifactCreature,
         ArtifactKind::TorquedCreature,
         ArtifactKind::TorquedEnchantment,
         ArtifactKind::Animated,
@@ -2839,7 +2843,10 @@ impl ArtifactKind {
     }
 
     fn creature(self) -> bool {
-        matches!(self, ArtifactKind::TorquedCreature | ArtifactKind::Animated | ArtifactKind::Plain)
+        matches!(
+            self,
+            ArtifactKind::Robot | ArtifactKind::ArtifactCreature | ArtifactKind::TorquedCreature | ArtifactKind::Animated | ArtifactKind::Plain
+        )
     }
 }
 
@@ -2856,6 +2863,9 @@ fn artifact_of_kind(state: &mut GameState, kind: ArtifactKind) -> ObjectId {
             state.objects.get_mut(t).tapped = true;
             t
         }
+        // Secluded Starforge's 2/2 artifact creature token.
+        ArtifactKind::Robot => put(state, P0, "Robot Token"),
+        ArtifactKind::ArtifactCreature => put(state, P0, "Depthshaker Titan"),
         ArtifactKind::Theirs => put(state, P1, "Sol Ring"),
         ArtifactKind::Plain => put(state, P0, "Guttersnipe"),
         ArtifactKind::Animated => {
@@ -3032,14 +3042,15 @@ fn red_spell_reducers_take_generic_off_flashback_retrace_foretold_and_spectacle_
         ("Delayed Blast Fireball", 4, 2),   // foretold {4}{R}{R}
         ("Light Up the Stage", 0, 1),       // spectacle {R}
     ];
-    for reducers in REDUCER_SETS {
-        let r = reducers.len() as u8;
+    for (reducers, theirs) in REDUCER_SETS.into_iter().flat_map(|r| [(r, false), (r, true)]) {
+        // Player 1's reducers don't count.
+        let r = if theirs { 0 } else { reducers.len() as u8 };
         for (card, generic, colored) in rows {
             let need = usize::from(generic - generic.min(r) + colored);
             for lands_count in [need, need - 1] {
                 let mut state = game();
                 for x in reducers {
-                    put(&mut state, P0, x);
+                    put(&mut state, if theirs { P1 } else { P0 }, x);
                 }
                 let o = match card {
                     "Reckless Impulse" => {
@@ -3073,7 +3084,7 @@ fn red_spell_reducers_take_generic_off_flashback_retrace_foretold_and_spectacle_
                     advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { player: P0, .. })),
                     Decision::CastSpellOrPass { castable_spells, .. } if castable_spells.contains(&o)
                 );
-                assert_eq!(ok, lands_count == need, "{card} with {reducers:?} and {lands_count} lands");
+                assert_eq!(ok, lands_count == need, "{card} with {reducers:?} (player 1's: {theirs}) and {lands_count} lands");
             }
         }
     }
@@ -3266,10 +3277,12 @@ fn a_permanent_copy_enters_with_the_copied_cards_enters_abilities_but_gogo_doesn
         "Summon: Esper Valigarmanda",
     ];
     let crystal_of = |s: &GameState| named(s, P0, "The Fire Crystal")[0];
-    for copier in ["Cursed Mirror", "The Fire Crystal", "Gogo, Mysterious Mime"] {
+    // Cursed Mirror may copy player 1's creature too; the others only player 0's.
+    let copiers = [("Cursed Mirror", P0), ("Cursed Mirror", P1), ("The Fire Crystal", P0), ("Gogo, Mysterious Mime", P0)];
+    for (copier, owner) in copiers {
         for original in originals {
             let mut state = game();
-            let o = put(&mut state, P0, original);
+            let o = put(&mut state, owner, original);
             if original == "Shivan Devastator" {
                 state.objects.get_mut(o).counters.plus1_plus1 = 2;
             }
@@ -3290,6 +3303,8 @@ fn a_permanent_copy_enters_with_the_copied_cards_enters_abilities_but_gogo_doesn
                 }
                 "The Fire Crystal" => {
                     let crystal = put(&mut state, P0, copier);
+                    // The token isn't cast: no counters.
+                    put(&mut state, P0, "Coin of Mastery");
                     lands(&mut state, P0, 6);
                     advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
                     engine::step(&mut state, Action::ActivateAbility(crystal, 0)).unwrap();
@@ -3317,6 +3332,10 @@ fn a_permanent_copy_enters_with_the_copied_cards_enters_abilities_but_gogo_doesn
             let gogo = copier == "Gogo, Mysterious Mime";
             let expected: &[&str] = match original {
                 _ if gogo => &[],
+                // Player 1's Spider-Punk gives riot only to player 1's Spiders,
+                // and one legend each is fine.
+                "Spider-Punk" if owner == P1 => &["riot"],
+                "Headliner Scarlett" if owner == P1 => &["trigger"],
                 "Spider-Punk" => &["riot", "riot", "legend"],
                 "Headliner Scarlett" => &["legend", "trigger"],
                 "Shivan Devastator" | "Summon: Esper Valigarmanda" => &[],
@@ -3328,13 +3347,16 @@ fn a_permanent_copy_enters_with_the_copied_cards_enters_abilities_but_gogo_doesn
             asked.sort();
             let mut expected = expected.to_vec();
             expected.sort();
-            assert_eq!(asked, expected, "{copier} copying {original}");
+            assert_eq!(asked, expected, "{copier} copying {owner:?}'s {original}");
             match original {
                 // X is 0: a 0/0 (the token is gone), or Gogo's 2/0.
                 "Shivan Devastator" if copier == "The Fire Crystal" => assert_eq!(copy, crystal_of(&state), "the token died"),
                 "Shivan Devastator" => assert_ne!(zone(&state, copy), Zone::Battlefield, "{copier}"),
                 "Summon: Esper Valigarmanda" => assert_eq!(state.objects.get(copy).counters.lore, if gogo { 0 } else { 1 }, "{copier}"),
-                _ => assert_eq!(state.objects.get(copy).name, if gogo { copier } else { original }, "{copier}"),
+                _ => {
+                    assert_eq!(state.objects.get(copy).name, if gogo { copier } else { original }, "{copier}");
+                    assert_eq!(state.objects.get(copy).counters.plus1_plus1, 0, "{copier}");
+                }
             }
         }
     }
@@ -3378,6 +3400,20 @@ fn dragonspark_reactor_counts_a_copy_entering_only_as_an_artifact() {
         }
         assert_eq!(state.objects.get(reactor).counters.charge, if counts { 1 } else { 0 }, "{copier} copying {copied:?}");
     }
+    // Gogo becomes an artifact creature without entering.
+    let mut state = game();
+    let reactor = put(&mut state, P0, "Dragonspark Reactor");
+    let gogo = put(&mut state, P0, "Gogo, Mysterious Mime");
+    let titan = put(&mut state, P0, "Depthshaker Titan");
+    advance(&mut state, |s, d| s.step == Step::BeginCombat && matches!(d, Decision::ChooseTargets { .. }));
+    engine::step(&mut state, Action::ChooseTarget(Target::Object(titan))).unwrap();
+    drive(&mut state, |s, d| match d {
+        Decision::ChooseEffectOption { option_count: 2, .. } => Some(Action::ChooseEffectOption(1)),
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => None,
+    });
+    assert!(engine::object_has_type(&state, gogo, mtg_kernel::card_def::CardType::Artifact));
+    assert_eq!(state.objects.get(reactor).counters.charge, 0, "Gogo");
 }
 
 #[test]
@@ -3570,5 +3606,121 @@ fn shivan_devastator_without_its_mana_cost_paid_has_x_0_and_dies() {
         let dead = graveyard.iter().filter(|&&o| state.objects.get(o).name == "Shivan Devastator").count();
         assert_eq!(dead, if source == "Call Forth the Tempest" { 2 } else { 1 }, "{source}");
         assert!(named(&state, player, "Shivan Devastator").is_empty(), "{source}");
+    }
+}
+
+#[test]
+fn deflecting_swat_and_delayed_blast_fireball_cast_with_flashback_pay_their_mana_cost() {
+    // 118.9a: flashback is the one alternative cost, so a Deflecting Swat
+    // cast with it isn't free with a commander out; one in hand is. A
+    // flashback Delayed Blast Fireball isn't cast from exile: {1}{R}{R}, 2.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    for (extra, ok) in [(3, true), (2, false)] {
+        let mut state = game();
+        let ognis = state.commander.as_ref().unwrap().commanders[0];
+        propose_and_commit(&mut state, ProposedEvent::zone_change(ognis, Zone::Battlefield));
+        let swat = put_in(&mut state, P0, "Deflecting Swat", Zone::Graveyard);
+        lands(&mut state, P0, 1);
+        cast(&mut state, "Flashback", Some(Target::Object(swat)), 0);
+        lands(&mut state, P0, 1 + extra);
+        let in_hand = put_in(&mut state, P0, "Deflecting Swat", Zone::Hand);
+        let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::CastSpell(bolt)).unwrap();
+        let d = advance(&mut state, |_, d| matches!(d, Decision::ChooseTargets { .. } | Decision::CastSpellOrPass { .. }));
+        if matches!(d, Decision::ChooseTargets { .. }) {
+            engine::step(&mut state, Action::ChooseTarget(Target::Player(P1))).unwrap();
+        }
+        let Decision::CastSpellOrPass { player: P0, castable_spells, .. } = engine::advance_until_decision(&mut state) else {
+            panic!("player 0 holds priority over its Bolt")
+        };
+        assert_eq!(castable_spells.contains(&swat), ok, "flashback with {extra} lands");
+        assert!(castable_spells.contains(&in_hand), "free from hand");
+    }
+
+    for lands_count in [3, 2] {
+        let mut state = game();
+        let fireball = put_in(&mut state, P0, "Delayed Blast Fireball", Zone::Graveyard);
+        lands(&mut state, P0, 1);
+        cast(&mut state, "Flashback", Some(Target::Object(fireball)), 0);
+        lands(&mut state, P0, lands_count);
+        assert_eq!(castable(&mut state, fireball), lands_count == 3, "{lands_count} lands");
+        if lands_count == 3 {
+            cast_from_graveyard(&mut state, fireball, None);
+            assert_eq!(state.players[1].life, 38);
+        }
+    }
+}
+
+#[test]
+fn throne_of_eldraine_mana_pays_shivan_devastators_x() {
+    // Shivan Devastator is a monocolored red spell: four red Throne mana pay
+    // {X}{R} with X up to 3.
+    let mut state = game();
+    tapped_throne(&mut state, ManaColor::R);
+    let shivan = put_in(&mut state, P0, "Shivan Devastator", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(shivan)).unwrap();
+    let mut largest = None;
+    drive(&mut state, |s, d| match d {
+        Decision::ChooseEffectOption { option_count, .. } => {
+            largest = Some(option_count - 1);
+            Some(Action::ChooseEffectOption(option_count - 1))
+        }
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => first_choice(s, d),
+    });
+    assert_eq!(largest, Some(3));
+    assert_eq!(state.objects.get(shivan).counters.plus1_plus1, 3);
+}
+
+#[test]
+fn lands_exiled_by_two_sources_share_the_one_land_drop() {
+    // 305.2: each exiled Mountain may be played while no land was played
+    // this turn; after one, none of the others. Urabrask exiles in the
+    // upkeep and Laelia in combat, before the spells in a main phase.
+    let spells = ["Reckless Impulse", "Wrenn's Resolve", "Light Up the Stage", "Embrace the Unknown"];
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    for first in ["Urabrask, Heretic Praetor", "Laelia, the Blade Reforged"].into_iter().chain(spells) {
+        for second in spells {
+            pairs.push((first, second));
+        }
+    }
+    pairs.push(("Urabrask, Heretic Praetor", "Laelia, the Blade Reforged"));
+    for (first, second) in pairs {
+        let mut state = game();
+        for source in [first, second] {
+            match source {
+                "Urabrask, Heretic Praetor" => {
+                    put(&mut state, P0, source);
+                    to_my_next_upkeep(&mut state);
+                }
+                "Laelia, the Blade Reforged" => {
+                    let laelia = put(&mut state, P0, source);
+                    attack_with(&mut state, vec![laelia]);
+                }
+                _ => {
+                    advance(&mut state, |s, d| {
+                        matches!(s.step, Step::Main1 | Step::Main2) && s.stack.is_empty() && matches!(d, Decision::CastSpellOrPass { player: P0, .. })
+                    });
+                    lands(&mut state, P0, 3);
+                    let spell = put_in(&mut state, P0, source, Zone::Hand);
+                    engine::step(&mut state, Action::CastSpell(spell)).unwrap();
+                    drive(&mut state, |s, d| match d {
+                        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+                        _ => first_choice(s, d),
+                    });
+                }
+            }
+        }
+        advance(&mut state, |s, d| {
+            matches!(s.step, Step::Main1 | Step::Main2) && s.stack.is_empty() && matches!(d, Decision::CastSpellOrPass { player: P0, .. })
+        });
+        let exiled: Vec<ObjectId> = state.exile.iter().copied().filter(|&o| state.objects.get(o).owner == P0).collect();
+        let Decision::CastSpellOrPass { land_drops, .. } = engine::advance_until_decision(&mut state) else { unreachable!() };
+        assert!(exiled.len() >= 2 && exiled.iter().all(|o| land_drops.contains(o)), "{first}, {second}: {exiled:?} {land_drops:?}");
+        engine::step(&mut state, Action::PlayLand(exiled[0])).unwrap();
+        let Decision::CastSpellOrPass { land_drops, .. } = engine::advance_until_decision(&mut state) else { unreachable!() };
+        assert!(exiled[1..].iter().all(|o| !land_drops.contains(o)), "{first}, {second}");
     }
 }
