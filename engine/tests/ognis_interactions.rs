@@ -2813,6 +2813,7 @@ fn pyreswipe_hawks_steal_lasts_past_the_turn_and_serves_the_thief() {
 enum ArtifactKind {
     Card,
     Token,
+    TappedToken,
     TorquedCreature,
     TorquedEnchantment,
     Animated,
@@ -2821,9 +2822,10 @@ enum ArtifactKind {
 }
 
 impl ArtifactKind {
-    const ALL: [ArtifactKind; 7] = [
+    const ALL: [ArtifactKind; 8] = [
         ArtifactKind::Card,
         ArtifactKind::Token,
+        ArtifactKind::TappedToken,
         ArtifactKind::TorquedCreature,
         ArtifactKind::TorquedEnchantment,
         ArtifactKind::Animated,
@@ -2848,6 +2850,12 @@ fn artifact_of_kind(state: &mut GameState, kind: ArtifactKind) -> ObjectId {
     match kind {
         ArtifactKind::Card => put(state, P0, "Sol Ring"),
         ArtifactKind::Token => put(state, P0, "Treasure Token"),
+        // As Ognis makes them.
+        ArtifactKind::TappedToken => {
+            let t = put(state, P0, "Treasure Token");
+            state.objects.get_mut(t).tapped = true;
+            t
+        }
         ArtifactKind::Theirs => put(state, P1, "Sol Ring"),
         ArtifactKind::Plain => put(state, P0, "Guttersnipe"),
         ArtifactKind::Animated => {
@@ -2918,7 +2926,7 @@ fn each_kind_of_artifact_counts_for_the_vault_starforge_titan_and_sacrifices_and
             Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
             _ => first_choice(s, d),
         });
-        assert_eq!(candidates.contains(&o), mine, "{kind:?}: Starforge");
+        assert_eq!(candidates.contains(&o), mine && kind != ArtifactKind::TappedToken, "{kind:?}: Starforge");
 
         // Depthshaker Titan: noncreature artifacts you control.
         let mut state = game();
@@ -2970,7 +2978,20 @@ fn each_kind_of_artifact_counts_for_the_vault_starforge_titan_and_sacrifices_and
         put(&mut state, P1, "Treasure Token");
         let smaug = put(&mut state, P0, "Smaug the Magnificent");
         attack_with(&mut state, vec![smaug]);
-        assert_eq!(40 - state.players[1].life, 4 + i32::from(kind == ArtifactKind::Token), "{kind:?}: Smaug");
+        let treasure = matches!(kind, ArtifactKind::Token | ArtifactKind::TappedToken);
+        assert_eq!(40 - state.players[1].life, 4 + i32::from(treasure), "{kind:?}: Smaug");
+
+        // Player 0's own Shattering Spree and Untimely Malfunction may aim at
+        // any artifact, Vandalblast only at one player 0 doesn't control.
+        for spell in ["Shattering Spree", "Untimely Malfunction", "Vandalblast"] {
+            let mut state = game();
+            let o = artifact_of_kind(&mut state, kind);
+            put(&mut state, P1, "Arcane Signet");
+            lands(&mut state, P0, 2);
+            let offered = targets_offered(&mut state, spell, 0);
+            let expected = if spell == "Vandalblast" { kind == ArtifactKind::Theirs } else { kind != ArtifactKind::Plain };
+            assert_eq!(offered.contains(&Target::Object(o)), expected, "{kind:?}: {spell}");
+        }
     }
 }
 
@@ -3150,6 +3171,38 @@ fn red_spell_reducers_lower_overload_x_and_redirect_lightnings_extra_cost_but_no
             assert_eq!(choice, affordable, "{reducers:?} with {lands_count} lands");
             assert_eq!(state.players[1].life, if affordable { 40 } else { 35 }, "{reducers:?} with {lands_count} lands");
             assert_eq!(state.players[0].life, 37);
+        }
+
+        // Player 1's Deflecting Swat, with no commander out: {2}{R} less r.
+        let need = 3 - r;
+        for lands_count in [need, need - 1] {
+            let mut state = game();
+            for x in reducers {
+                put(&mut state, P1, x);
+            }
+            lands(&mut state, P1, lands_count);
+            let swat = put_in(&mut state, P1, "Deflecting Swat", Zone::Hand);
+            assert_eq!(offered_against_bolt(&mut state, swat), lands_count == need, "Swat with {reducers:?} and {lands_count} lands");
+        }
+
+        // Player 0's reducers don't lower player 1's Redirect Lightning: with
+        // two lands only the life payment is left, so there is no choice.
+        let mut state = game();
+        for x in reducers {
+            put(&mut state, P0, x);
+        }
+        lands(&mut state, P0, 1);
+        lands(&mut state, P1, 2);
+        let redirect = bolt_and_answer(&mut state, Target::Player(P1), "Redirect Lightning", None, Target::Player(P0));
+        assert_eq!((zone(&state, redirect), state.players[1].life), (Zone::Graveyard, 35), "{reducers:?}");
+
+        // Secluded Starforge's ability isn't a spell: still {2}.
+        for lands_count in [2, 1] {
+            let mut state = setup(lands_count);
+            let forge = put(&mut state, P0, "Secluded Starforge");
+            put(&mut state, P0, "Guttersnipe");
+            advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+            assert_eq!(offered_ability(&mut state, forge, 0), lands_count == 2, "Starforge with {reducers:?} and {lands_count} lands");
         }
 
         // Foretelling still takes {2}, plotting {1}{R}.
@@ -3461,4 +3514,61 @@ fn each_players_commander_cards_read_their_own_commander() {
     lands(&mut state, P0, 3);
     cast(&mut state, "Chaos Warp", Some(Target::Object(ognis)), 1);
     assert_eq!(zone(&state, ognis), Zone::Command);
+}
+
+#[test]
+fn light_up_the_stage_cast_with_flashback_cant_also_use_spectacle() {
+    // 118.9a: one alternative cost per spell. From the graveyard with
+    // flashback it costs {2}{R}, though an opponent lost life this turn.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let mut state = game();
+    let stage = put_in(&mut state, P0, "Light Up the Stage", Zone::Graveyard);
+    lands(&mut state, P0, 1);
+    cast(&mut state, "Flashback", Some(Target::Object(stage)), 0);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    propose_and_commit(&mut state, ProposedEvent::life_loss(P1, 1));
+    lands(&mut state, P0, 2);
+    assert!(!castable(&mut state, stage), "not for {{R}}");
+    lands(&mut state, P0, 1);
+    assert!(castable(&mut state, stage));
+}
+
+#[test]
+fn shivan_devastator_without_its_mana_cost_paid_has_x_0_and_dies() {
+    // 107.3b: cast by cascade without paying its mana cost, X is 0; 107.3m:
+    // put onto the battlefield (player 1's, by player 0's Chaos Warp or Wild
+    // Magic Surge), X is 0 too. A 0/0 with no counters dies.
+    for source in ["Call Forth the Tempest", "Chaos Warp", "Wild Magic Surge"] {
+        let mut state = game();
+        let player = if source == "Call Forth the Tempest" { P0 } else { P1 };
+        for i in 0..10 {
+            library_card(&mut state, player, i, "Shivan Devastator");
+        }
+        let target = match source {
+            "Chaos Warp" => Some(put(&mut state, P1, "Treasure Token")),
+            "Wild Magic Surge" => Some(put(&mut state, P1, "Guttersnipe")),
+            _ => None,
+        };
+        lands(&mut state, P0, 8);
+        let spell = put_in(&mut state, P0, source, Zone::Hand);
+        advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+        engine::step(&mut state, Action::CastSpell(spell)).unwrap();
+        let mut cast_by_cascade = 0;
+        drive(&mut state, |s, d| match d {
+            Decision::ChooseTargets { .. } if target.is_some() => Some(Action::ChooseTarget(Target::Object(target.unwrap()))),
+            Decision::ChooseCascadeCast { .. } => {
+                cast_by_cascade += 1;
+                Some(Action::ChooseCascadeCast(true))
+            }
+            Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+            _ => first_choice(s, d),
+        });
+        if source == "Call Forth the Tempest" {
+            assert_eq!(cast_by_cascade, 2, "both cascades hit a Shivan");
+        }
+        let graveyard = &state.players[player.index()].graveyard;
+        let dead = graveyard.iter().filter(|&&o| state.objects.get(o).name == "Shivan Devastator").count();
+        assert_eq!(dead, if source == "Call Forth the Tempest" { 2 } else { 1 }, "{source}");
+        assert!(named(&state, player, "Shivan Devastator").is_empty(), "{source}");
+    }
 }
