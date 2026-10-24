@@ -2443,3 +2443,368 @@ fn mirror_each_spider_punk_gives_riot_only_to_its_controllers_spiders() {
     assert_eq!(riots, 1);
     assert_eq!(state.objects.get(spider_man).counters.plus1_plus1, 1);
 }
+
+/// Player 0 takes player 1's `card` with Zealous Conscripts (five Mountains,
+/// all tapped after).
+fn steal(state: &mut GameState, card: &str) -> ObjectId {
+    let theirs = put(state, P1, card);
+    lands(state, P0, 5);
+    cast(state, "Zealous Conscripts", Some(Target::Object(theirs)), 0);
+    assert_eq!(state.objects.get(theirs).controller, P0, "{card}");
+    theirs
+}
+
+#[test]
+fn stolen_creatures_read_the_thief_as_you() {
+    // 109.5, 613.1b: Zealous Conscripts gives what it takes haste.
+    use mtg_kernel::card_def::Keywords;
+    // Laelia exiles the thief's top card for the thief, and grows.
+    let mut state = game();
+    let laelia = steal(&mut state, "Laelia, the Blade Reforged");
+    let libraries = (state.players[0].library.len(), state.players[1].library.len());
+    attack_with(&mut state, vec![laelia]);
+    assert_eq!((state.players[0].library.len(), state.players[1].library.len()), (libraries.0 - 1, libraries.1));
+    let exiled = *state.exile.last().unwrap();
+    assert_eq!(state.objects.get(exiled).owner, P0);
+    assert!(state.engine.exile_play_permissions.iter().any(|p| p.object == exiled && p.holder == P0));
+    assert_eq!(state.objects.get(laelia).counters.plus1_plus1, 1);
+
+    // Hobgoblin grows when the thief discards.
+    let mut state = game();
+    let hobgoblin = steal(&mut state, "Hobgoblin, Mantled Marauder");
+    let base = engine::effective_power(&state, hobgoblin);
+    put_in(&mut state, P0, "Mountain", Zone::Hand);
+    lands(&mut state, P0, 2);
+    let answers = put_in(&mut state, P0, "Demand Answers", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(answers)).unwrap();
+    drive(&mut state, |s, d| match d {
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => first_choice(s, d),
+    });
+    assert_eq!(engine::effective_power(&state, hobgoblin), base + 2);
+
+    // Gogo's trigger is the thief's, aimed at the thief's creatures.
+    let mut state = game();
+    let gogo = steal(&mut state, "Gogo, Mysterious Mime");
+    let conscripts = named(&state, P0, "Zealous Conscripts")[0];
+    let theirs = put(&mut state, P1, "Guttersnipe");
+    let d = advance(&mut state, |s, d| s.step == Step::BeginCombat && matches!(d, Decision::ChooseTargets { .. }));
+    let Decision::ChooseTargets { player, legal_targets, .. } = d else { unreachable!() };
+    assert_eq!(player, P0);
+    assert_eq!(legal_targets, vec![Target::Object(conscripts)], "not {gogo:?} or {theirs:?}");
+
+    // Depthshaker Titan gives the thief's artifact creatures trample and haste.
+    let mut state = game();
+    steal(&mut state, "Depthshaker Titan");
+    let mine = put(&mut state, P0, "Sol Ring");
+    let theirs = put(&mut state, P1, "Sol Ring");
+    animate(&mut state, mine);
+    animate(&mut state, theirs);
+    for k in [Keywords::TRAMPLE, Keywords::HASTE] {
+        assert!(engine::has_effective_keyword(&state, mine, k));
+        assert!(!engine::has_effective_keyword(&state, theirs, k));
+    }
+}
+
+#[test]
+fn stolen_noncreature_permanents_read_the_thief_as_you() {
+    // 109.5, 613.1b: each is taken from player 1 with Zealous Conscripts,
+    // which then attacks or pays where needed.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    let conscripts = |state: &GameState| named(state, P0, "Zealous Conscripts")[0];
+
+    // Dolmen Gate protects the thief's attacker.
+    let mut state = game();
+    steal(&mut state, "Dolmen Gate");
+    let blocker = put(&mut state, P1, "Zealous Conscripts");
+    let attacker = conscripts(&state);
+    assert_eq!(attack_into_block(&mut state, attacker, blocker), (0, true));
+
+    // Raging River triggers on the thief's attack; player 1 divides.
+    let mut state = game();
+    steal(&mut state, "Raging River");
+    put(&mut state, P1, "Guttersnipe");
+    let attacker = conscripts(&state);
+    advance(&mut state, |_, d| matches!(d, Decision::DeclareAttackers { .. }));
+    engine::step(&mut state, Action::DeclareAttackers(vec![attacker])).unwrap();
+    let d = advance(&mut state, |_, d| matches!(d, Decision::ChooseEffectTargets { .. } | Decision::DeclareBlockers { .. }));
+    assert!(matches!(d, Decision::ChooseEffectTargets { player: P1, .. }), "{d:?}");
+
+    // Connecting the Dots exiles from the thief's library.
+    let mut state = game();
+    steal(&mut state, "Connecting the Dots");
+    let libraries = (state.players[0].library.len(), state.players[1].library.len());
+    let attacker = conscripts(&state);
+    attack_with(&mut state, vec![attacker]);
+    assert_eq!((state.players[0].library.len(), state.players[1].library.len()), (libraries.0 - 1, libraries.1));
+
+    // Arcane Signet makes the thief's commander's colors.
+    let mut state = game();
+    let signet = steal(&mut state, "Arcane Signet");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert_eq!(engine::available_mana_ability_choices(P0, signet, &state), vec![ManaColor::B, ManaColor::R, ManaColor::G]);
+    engine::step(&mut state, Action::ActivateManaAbilityChoice(signet, ManaColor::G)).unwrap();
+    assert_eq!(state.players[0].mana_pool[ManaColor::G.pool_index()], 1);
+
+    // Throne of Eldraine keeps its owner's color and draws for the thief.
+    let mut state = game();
+    let throne = put_in(&mut state, P1, "Throne of Eldraine", Zone::Hand);
+    propose_and_commit(&mut state, ProposedEvent::zone_change(throne, Zone::Battlefield));
+    assert!(matches!(engine::advance_until_decision(&mut state), Decision::ChooseColor { player: P1, .. }));
+    engine::step(&mut state, Action::ChooseColor(ManaColor::R)).unwrap();
+    lands(&mut state, P0, 5);
+    cast(&mut state, "Zealous Conscripts", Some(Target::Object(throne)), 0);
+    lands(&mut state, P0, 3);
+    let hands = (state.players[0].hand.len(), state.players[1].hand.len());
+    activate_with(&mut state, throne, 0, &[], &[], &[]);
+    assert_eq!((state.players[0].hand.len(), state.players[1].hand.len()), (hands.0 + 2, hands.1));
+
+    // Coin of Mastery makes the thief's Treasure and counts its creatures.
+    let mut state = game();
+    let coin = steal(&mut state, "Coin of Mastery");
+    activate(&mut state, coin, 0, None);
+    let treasure = named(&state, P0, "Treasure Token")[0];
+    engine::step(&mut state, Action::ActivateManaAbilityChoice(treasure, ManaColor::R)).unwrap();
+    lands(&mut state, P0, 2);
+    let snipe = cast(&mut state, "Guttersnipe", None, 0);
+    assert_eq!(state.objects.get(snipe).counters.plus1_plus1, 1);
+
+    // Amulet of Vigor untaps the thief's Ognis Treasure.
+    let mut state = game();
+    steal(&mut state, "Amulet of Vigor");
+    put(&mut state, P0, "Ognis, the Dragon's Lash");
+    let attacker = conscripts(&state);
+    attack_with(&mut state, vec![attacker]);
+    let treasures = named(&state, P0, "Treasure Token");
+    assert_eq!(treasures.len(), 1);
+    assert!(!state.objects.get(treasures[0]).tapped);
+
+    // Hylda's Crown taps for free on the thief's turn and counts the owner's
+    // tapped creatures.
+    let mut state = game();
+    let crown = steal(&mut state, "Hylda's Crown of Winter");
+    let theirs = put(&mut state, P1, "Guttersnipe");
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    assert!(offered_ability(&mut state, crown, 0), "no mana on the thief's turn");
+    activate(&mut state, crown, 0, Some(Target::Object(theirs)));
+    lands(&mut state, P0, 3);
+    let hand = state.players[0].hand.len();
+    activate(&mut state, crown, 1, None);
+    assert_eq!(state.players[0].hand.len(), hand + 1);
+
+    // Fomori Vault counts the thief's artifacts and looks at the thief's library.
+    let mut state = game();
+    let vault = steal(&mut state, "Fomori Vault");
+    for p in [P0, P0, P1, P1, P1] {
+        put(&mut state, p, "Sol Ring");
+    }
+    lands(&mut state, P0, 3);
+    put_in(&mut state, P0, "Mountain", Zone::Hand);
+    let top: Vec<Target> = state.players[0].library[..2].iter().map(|&o| Target::Object(o)).collect();
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::ActivateAbility(vault, 0)).unwrap();
+    let mut offered = None;
+    drive(&mut state, |s, d| match d {
+        Decision::ChooseEffectTargets { legal_targets, .. } => {
+            offered = Some(legal_targets.clone());
+            Some(Action::ChooseEffectTarget(legal_targets[0]))
+        }
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => first_choice(s, d),
+    });
+    assert_eq!(offered, Some(top), "two artifacts: the thief's top two");
+
+    // Demolition Field aims at the owner's lands and searches the thief's library.
+    let mut state = game();
+    let field = steal(&mut state, "Demolition Field");
+    let mine = put(&mut state, P0, "Strip Mine");
+    let theirs = put(&mut state, P1, "Strip Mine");
+    lands(&mut state, P0, 2);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::ActivateAbility(field, 0)).unwrap();
+    let libraries = (state.players[0].library.len(), state.players[1].library.len());
+    let mut asked = Vec::new();
+    drive(&mut state, |s, d| match d {
+        Decision::ChooseTargets { legal_targets, .. } => {
+            assert_eq!(legal_targets, &vec![Target::Object(theirs)], "not {mine:?}");
+            Some(Action::ChooseTarget(Target::Object(theirs)))
+        }
+        Decision::ChooseEffectOption { player, .. } => {
+            asked.push(*player);
+            Some(Action::ChooseEffectOption(1))
+        }
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => first_choice(s, d),
+    });
+    assert_eq!(asked, vec![P1, P0], "the land's controller, then the thief");
+    assert_eq!((state.players[0].library.len(), state.players[1].library.len()), (libraries.0 - 1, libraries.1 - 1));
+}
+
+#[test]
+fn spells_read_a_stolen_permanent_as_its_controllers() {
+    // 109.5: "you control", "an opponent controls" and "your opponents
+    // control" read the stolen permanent's controller, the thief.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    // Vandalblast: the thief's own Vandalblast spares it, aimed or overloaded.
+    for overload in [false, true] {
+        let mut state = game();
+        let stolen = steal(&mut state, "Sol Ring");
+        let other = put(&mut state, P1, "Sol Ring");
+        if overload {
+            lands(&mut state, P0, 5);
+            cast(&mut state, "Vandalblast", None, 1);
+            assert_eq!((zone(&state, stolen), zone(&state, other)), (Zone::Battlefield, Zone::Graveyard));
+        } else {
+            lands(&mut state, P0, 1);
+            let offered = targets_offered(&mut state, "Vandalblast", 0);
+            assert_eq!(offered, vec![Target::Object(other)]);
+        }
+    }
+
+    // Wild Magic Surge: not the thief's target; its owner may aim at it, and
+    // the thief reveals from the thief's library.
+    let mut state = game();
+    let ring = steal(&mut state, "Sol Ring");
+    let snipe = put(&mut state, P1, "Guttersnipe");
+    lands(&mut state, P0, 2);
+    assert_eq!(targets_offered(&mut state, "Wild Magic Surge", 0), vec![Target::Object(snipe)], "not {ring:?}");
+    let mut state = game();
+    let ring = steal(&mut state, "Sol Ring");
+    let found = library_card(&mut state, P0, 2, "Sol Ring");
+    lands(&mut state, P1, 2);
+    let surge = put_in(&mut state, P1, "Wild Magic Surge", Zone::Hand);
+    let libraries = (state.players[0].library.len(), state.players[1].library.len());
+    drive(&mut state, |s, d| match d {
+        Decision::CastSpellOrPass { player: P1, castable_spells, .. } if castable_spells.contains(&surge) => Some(Action::CastSpell(surge)),
+        Decision::ChooseTargets { player: P1, .. } => Some(Action::ChooseTarget(Target::Object(ring))),
+        Decision::CastSpellOrPass { .. } if zone(s, surge) == Zone::Hand || !s.stack.is_empty() => Some(Action::Pass),
+        Decision::CastSpellOrPass { .. } => None,
+        _ => first_choice(s, d),
+    });
+    assert_eq!(zone(&state, ring), Zone::Graveyard);
+    assert_eq!(named(&state, P0, "Sol Ring"), vec![found]);
+    assert_eq!((state.players[0].library.len(), state.players[1].library.len()), (libraries.0 - 1, libraries.1));
+
+    // Call Forth the Tempest: 5 (the Conscripts) to the owner's other
+    // creature, none to the stolen one.
+    let mut state = game();
+    let stolen = steal(&mut state, "Spider-Punk");
+    let other = put(&mut state, P1, "Guttersnipe");
+    lands(&mut state, P0, 8);
+    let tempest = put_in(&mut state, P0, "Call Forth the Tempest", Zone::Hand);
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    engine::step(&mut state, Action::CastSpell(tempest)).unwrap();
+    drive(&mut state, |s, d| match d {
+        Decision::CastSpellOrPass { .. } if !s.stack.is_empty() => Some(Action::Pass),
+        _ => first_choice(s, d),
+    });
+    assert_eq!(zone(&state, other), Zone::Graveyard);
+    assert_eq!((zone(&state, stolen), state.objects.get(stolen).damage), (Zone::Battlefield, 0));
+
+    // Deflecting Swat: a stolen commander is a commander the thief controls.
+    for take_ognis in [true, false] {
+        let mut state = game();
+        let ognis = state.commander.as_ref().unwrap().commanders[1];
+        propose_and_commit(&mut state, ProposedEvent::zone_change(ognis, Zone::Battlefield));
+        let snipe = put(&mut state, P1, "Guttersnipe");
+        lands(&mut state, P0, 5);
+        cast(&mut state, "Zealous Conscripts", Some(Target::Object(if take_ognis { ognis } else { snipe })), 0);
+        lands(&mut state, P1, 1);
+        let bolt = put_in(&mut state, P1, "Lightning Bolt", Zone::Hand);
+        let swat = put_in(&mut state, P0, "Deflecting Swat", Zone::Hand);
+        let mut offered = None;
+        drive(&mut state, |s, d| match d {
+            Decision::CastSpellOrPass { player: P1, castable_spells, .. } if castable_spells.contains(&bolt) => Some(Action::CastSpell(bolt)),
+            Decision::ChooseTargets { player: P1, .. } => Some(Action::ChooseTarget(Target::Player(P0))),
+            Decision::CastSpellOrPass { player: P0, castable_spells, .. } if zone(s, bolt) == Zone::Stack => {
+                offered = Some(castable_spells.contains(&swat));
+                None
+            }
+            Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+            other => panic!("unhandled decision {other:?}"),
+        });
+        assert_eq!(offered, Some(take_ognis), "with no mana left");
+    }
+}
+
+#[test]
+fn pyreswipe_hawks_steal_lasts_past_the_turn_and_serves_the_thief() {
+    // 611.2b: "for as long as you control this creature". Liquimetal Torque
+    // makes a creature an artifact long enough to be taken; control stays
+    // after the Torque's effect ends.
+    let take = |state: &mut GameState, card: &str| {
+        put(state, P0, "Pyreswipe Hawk");
+        let theirs = put(state, P1, card);
+        if card != "Ruby Medallion" {
+            let torque = put(state, P0, "Liquimetal Torque");
+            activate(state, torque, 0, Some(Target::Object(theirs)));
+        }
+        lands(state, P0, 6);
+        cast(state, "Guttersnipe", None, 0);
+        cast(state, "Guttersnipe", Some(Target::Object(theirs)), 0);
+        assert_eq!(state.objects.get(theirs).controller, P0, "{card}");
+        theirs
+    };
+
+    // Ruby Medallion reduces the thief's spells, still the thief's next turn.
+    let mut state = game();
+    let ruby = take(&mut state, "Ruby Medallion");
+    lands(&mut state, P0, 1);
+    let impulse = put_in(&mut state, P0, "Reckless Impulse", Zone::Hand);
+    assert!(castable(&mut state, impulse), "{{1}}{{R}} for one mana");
+    to_my_next_upkeep(&mut state);
+    assert_eq!(state.objects.get(ruby).controller, P0);
+
+    // Urabrask: the owner's draw is exiled in the owner's upkeep, and the
+    // thief impulses in the thief's.
+    let mut state = game();
+    let urabrask = take(&mut state, "Urabrask, Heretic Praetor");
+    let turn = state.turn;
+    advance(&mut state, |s, _| s.active_player == P1 && s.step == Step::Main1);
+    assert_eq!(state.objects.get(urabrask).controller, P0);
+    assert_eq!((state.players[1].hand.len(), state.players[1].library.len()), (0, 9), "no draw, only one card gone");
+    let theirs: Vec<_> = state.exile.iter().copied().filter(|&o| state.objects.get(o).owner == P1).collect();
+    assert_eq!(theirs.len(), 1);
+    assert!(state.engine.exile_play_permissions.iter().any(|p| p.object == theirs[0] && p.holder == P1));
+    advance(&mut state, |s, _| s.active_player == P0 && s.turn != turn && s.step == Step::Main1);
+    let mine: Vec<_> = state.exile.iter().copied().filter(|&o| state.objects.get(o).owner == P0).collect();
+    assert_eq!(mine.len(), 1);
+    assert!(state.engine.exile_play_permissions.iter().any(|p| p.object == mine[0] && p.holder == P0));
+
+    // Esper Valigarmanda: lore and chapter II come after the thief's draw
+    // step, and the thief casts the card its owner exiled with it.
+    let mut state = game();
+    let saga = put(&mut state, P1, "Summon: Esper Valigarmanda");
+    state.objects.get_mut(saga).counters.lore = 1;
+    let bolt = put_in(&mut state, P1, "Lightning Bolt", Zone::Graveyard);
+    {
+        use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+        use mtg_kernel::state::{ExiledWithV1, ObjectLinkV4};
+        propose_and_commit(&mut state, ProposedEvent::zone_change(bolt, Zone::Exile));
+        let link = |s: &GameState, o: ObjectId| ObjectLinkV4 { object: o, zone_change_count: s.objects.get(o).zone_change_count };
+        let entry = ExiledWithV1 { source: link(&state, saga), card: link(&state, bolt) };
+        state.exiled_with.push(entry);
+    }
+    put(&mut state, P0, "Pyreswipe Hawk");
+    let torque = put(&mut state, P0, "Liquimetal Torque");
+    activate(&mut state, torque, 0, Some(Target::Object(saga)));
+    lands(&mut state, P0, 6);
+    cast(&mut state, "Guttersnipe", None, 0);
+    cast(&mut state, "Guttersnipe", Some(Target::Object(saga)), 0);
+    assert_eq!(state.objects.get(saga).controller, P0);
+    end_turn(&mut state);
+    let mut caster = None;
+    pass_until(&mut state, |s, d| match d {
+        _ if zone(s, bolt) == Zone::Graveyard => Some(None),
+        Decision::ChooseCastFromExile { player, .. } => {
+            caster = Some(*player);
+            Some(Some(Action::ChooseCastFromExile(Some(bolt))))
+        }
+        Decision::ChooseTargets { .. } => Some(Some(Action::ChooseTarget(Target::Player(P1)))),
+        _ => None,
+    });
+    assert_eq!(caster, Some(P0));
+    assert_eq!(state.objects.get(saga).counters.lore, 2, "none after the owner's draw step");
+    assert_eq!(state.players[1].life, 33, "the Bolt, and 2 from each Guttersnipe");
+}
