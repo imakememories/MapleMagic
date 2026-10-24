@@ -3724,3 +3724,54 @@ fn lands_exiled_by_two_sources_share_the_one_land_drop() {
         assert!(exiled[1..].iter().all(|o| !land_drops.contains(o)), "{first}, {second}");
     }
 }
+
+#[test]
+fn throne_of_eldraine_mana_pays_flashback_and_the_red_answers_to_a_spell() {
+    // Deflecting Swat, Redirect Lightning, Flashback and a flashback Reckless
+    // Impulse are monocolored red spells: a red Throne pays them, a blue one
+    // doesn't. Autopay never taps the Throne, so player 1 taps it first (G6).
+    // The opponent's Coin of Mastery adds nothing to Shivan's X.
+    use mtg_kernel::event::{propose_and_commit, ProposedEvent};
+    for answer in ["Deflecting Swat", "Redirect Lightning"] {
+        for (color, offered) in [(ManaColor::R, true), (ManaColor::U, false)] {
+            let mut state = game();
+            let throne = put_in(&mut state, P1, "Throne of Eldraine", Zone::Hand);
+            propose_and_commit(&mut state, ProposedEvent::zone_change(throne, Zone::Battlefield));
+            assert!(matches!(engine::advance_until_decision(&mut state), Decision::ChooseColor { player: P1, .. }));
+            engine::step(&mut state, Action::ChooseColor(color)).unwrap();
+            let card = put_in(&mut state, P1, answer, Zone::Hand);
+            let bolt = put_in(&mut state, P0, "Lightning Bolt", Zone::Hand);
+            lands(&mut state, P0, 1);
+            let mut castable = None;
+            drive(&mut state, |s, d| match d {
+                Decision::CastSpellOrPass { player: P0, .. } if s.stack.is_empty() => Some(Action::CastSpell(bolt)),
+                Decision::ChooseTargets { .. } => Some(Action::ChooseTarget(Target::Player(P1))),
+                Decision::CastSpellOrPass { player: P1, .. } if !s.objects.get(throne).tapped => Some(Action::ActivateManaAbility(throne)),
+                Decision::CastSpellOrPass { player: P1, castable_spells, .. } => {
+                    castable = Some(castable_spells.contains(&card));
+                    None
+                }
+                Decision::CastSpellOrPass { .. } => Some(Action::Pass),
+                other => panic!("unhandled decision {other:?}"),
+            });
+            assert_eq!(castable, Some(offered), "{answer} with a {color:?} Throne");
+        }
+    }
+
+    let mut state = game();
+    tapped_throne(&mut state, ManaColor::R);
+    let impulse = put_in(&mut state, P0, "Reckless Impulse", Zone::Graveyard);
+    cast(&mut state, "Flashback", Some(Target::Object(impulse)), 0);
+    assert!(castable(&mut state, impulse), "{{1}}{{R}} from the three red left");
+
+    let mut state = game();
+    put(&mut state, P1, "Coin of Mastery");
+    let treasures = [put(&mut state, P0, "Treasure Token"), put(&mut state, P0, "Treasure Token"), put(&mut state, P0, "Treasure Token")];
+    advance(&mut state, |_, d| matches!(d, Decision::CastSpellOrPass { .. }));
+    for t in treasures {
+        engine::step(&mut state, Action::ActivateManaAbilityChoice(t, ManaColor::R)).unwrap();
+    }
+    let shivan = cast(&mut state, "Shivan Devastator", None, 2);
+    assert_eq!(state.objects.get(shivan).counters.plus1_plus1, 2, "X only");
+}
+
